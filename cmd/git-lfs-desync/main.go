@@ -197,7 +197,8 @@ Configure Git LFS to use this agent:
   [lfs "customtransfer.desync"]
     path = /usr/local/bin/git-lfs-desync
     args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/
-    concurrent = false
+    concurrent = true
+    concurrenttransfers = 5
 
   [lfs]
     standalonetransferagent = desync`,

@@ -86,13 +86,14 @@ The transfer agent config must be set on every machine that pushes or pulls LFS 
 [lfs "customtransfer.desync"]
     path = /usr/local/bin/git-lfs-desync
     args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/
-    concurrent = false
+    concurrent = true
+    concurrenttransfers = 5
 
 [lfs]
     standalonetransferagent = desync
 ```
 
-`concurrent = false` is required because git-lfs would otherwise run multiple agent processes simultaneously, each trying to write to stdout independently.
+`concurrent = true` allows git-lfs to pipeline multiple transfer events to the same agent process. `concurrenttransfers` (default 3 in git-lfs) caps the number of in-flight transfers; the agent reads this value from the init message and uses it to size an internal goroutine pool. For maximum throughput, set `concurrenttransfers` to roughly `--concurrency / N` where N is the average number of chunks per file.
 
 With `standalonetransferagent` set, git-lfs bypasses the normal LFS HTTP API entirely — no LFS server is needed.
 
@@ -104,7 +105,7 @@ To scope the agent to a single repository instead of globally:
 git config lfs.customtransfer.desync.path /usr/local/bin/git-lfs-desync
 git config lfs.customtransfer.desync.args \
     "--store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"
-git config lfs.customtransfer.desync.concurrent false
+git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 ```
 
@@ -129,7 +130,7 @@ git clone <git-remote> myrepo
 cd myrepo
 git config lfs.customtransfer.desync.path /usr/local/bin/git-lfs-desync
 git config lfs.customtransfer.desync.args "--store s3+https://..."
-git config lfs.customtransfer.desync.concurrent false
+git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 S3_ACCESS_KEY=... S3_SECRET_KEY=... git lfs pull
 ```
@@ -164,7 +165,7 @@ Uploads are not affected — chunks are always written directly to `--store`.
     path = /usr/local/bin/git-lfs-desync
     args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ \
            --cache /var/cache/lfs/chunks
-    concurrent = false
+    concurrent = true
 ```
 
 The cache directory must exist before the agent runs:
@@ -199,7 +200,7 @@ mkdir -p /data/lfs/chunks /data/lfs/index
 [lfs "customtransfer.desync"]
     path = /usr/local/bin/git-lfs-desync
     args = --store /data/lfs/chunks --index-store /data/lfs/index
-    concurrent = false
+    concurrent = true
 
 [lfs]
     standalonetransferagent = desync
@@ -261,7 +262,7 @@ git config lfs.customtransfer.desync.args \
     "--store s3+http://localhost:9000/lfs-test/chunks/ \
      --index-store s3+http://localhost:9000/lfs-test/index/ \
      --cache /tmp/lfs-cache"
-git config lfs.customtransfer.desync.concurrent false
+git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 # Standalone mode requires a dummy lfs.url (no real LFS server)
 git config lfs.url "https://localhost"
@@ -312,7 +313,7 @@ git config lfs.customtransfer.desync.args \
     "--store s3+http://localhost:9000/lfs-test/chunks/ \
      --index-store s3+http://localhost:9000/lfs-test/index/ \
      --cache /tmp/lfs-cache"
-git config lfs.customtransfer.desync.concurrent false
+git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 git config lfs.url "https://localhost"
 

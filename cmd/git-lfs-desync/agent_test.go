@@ -472,6 +472,83 @@ func TestAgentWithCache(t *testing.T) {
 	}
 }
 
+func TestAgentConcurrentTransfers(t *testing.T) {
+	chunkDir := t.TempDir()
+	indexDir := t.TempDir()
+	tmpDir := t.TempDir()
+
+	chunkStore, err := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chunkStore.Close()
+
+	indexStore, err := desync.NewLocalIndexStore(indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer indexStore.Close()
+
+	var buf bytes.Buffer
+	a := &Agent{
+		writeStore:      chunkStore,
+		readStore:       chunkStore,
+		indexWriteStore: indexStore,
+		n:               2,
+		minChunk:        4 * 1024,
+		avgChunk:        16 * 1024,
+		maxChunk:        64 * 1024,
+		tmpDir:          tmpDir,
+		enc:             json.NewEncoder(&buf),
+	}
+
+	// Build input: init (concurrenttransfers=3) + 3 uploads + terminate.
+	var input bytes.Buffer
+	enc := json.NewEncoder(&input)
+
+	enc.Encode(initRequest{Event: "init", Operation: "upload", Concurrent: true, ConcurrentTransfers: 3})
+
+	oids := []string{"oid-concurrent-1", "oid-concurrent-2", "oid-concurrent-3"}
+	content := bytes.Repeat([]byte("concurrent-test "), 5000)
+	for _, oid := range oids {
+		f := filepath.Join(t.TempDir(), "src-"+oid)
+		if err := os.WriteFile(f, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		enc.Encode(transferRequest{Event: "upload", OID: oid, Size: int64(len(content)), Path: f})
+	}
+	enc.Encode(map[string]string{"event": "terminate"})
+
+	if err := a.run(context.Background(), &input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	// Collect all complete events and verify each OID succeeded.
+	dec := json.NewDecoder(&buf)
+	completes := map[string]completeEvent{}
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			break
+		}
+		var evt completeEvent
+		json.Unmarshal(raw, &evt)
+		if evt.Event == "complete" {
+			completes[evt.OID] = evt
+		}
+	}
+	for _, oid := range oids {
+		evt, ok := completes[oid]
+		if !ok {
+			t.Errorf("no complete event for OID %s", oid)
+			continue
+		}
+		if evt.Error != nil {
+			t.Errorf("OID %s error: %v", oid, evt.Error.Message)
+		}
+	}
+}
+
 func TestAgentTerminate(t *testing.T) {
 	var input bytes.Buffer
 	enc := json.NewEncoder(&input)

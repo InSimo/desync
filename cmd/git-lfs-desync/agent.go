@@ -17,8 +17,10 @@ import (
 // LFS custom transfer protocol message types.
 
 type initRequest struct {
-	Event     string `json:"event"`
-	Operation string `json:"operation"`
+	Event               string `json:"event"`
+	Operation           string `json:"operation"`
+	Concurrent          bool   `json:"concurrent"`
+	ConcurrentTransfers int    `json:"concurrenttransfers"`
 }
 
 type transferRequest struct {
@@ -67,23 +69,54 @@ type Agent struct {
 	mu              sync.Mutex
 }
 
-// Run reads LFS protocol messages from r (typically os.Stdin) and dispatches handlers.
+// Run reads LFS protocol messages from stdin and dispatches handlers.
 // Output is written to os.Stdout.
 func (a *Agent) Run(ctx context.Context) error {
+	a.enc = json.NewEncoder(os.Stdout)
 	return a.run(ctx, os.Stdin)
 }
 
 func (a *Agent) run(ctx context.Context, r io.Reader) error {
-	a.enc = json.NewEncoder(os.Stdout)
-
 	dec := json.NewDecoder(r)
+
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return nil // EOF with no messages
+	}
+	var base struct {
+		Event string `json:"event"`
+	}
+	json.Unmarshal(raw, &base)
+
+	switch base.Event {
+	case "init":
+		var req initRequest
+		json.Unmarshal(raw, &req)
+		a.handleInit(raw)
+		n := req.ConcurrentTransfers
+		if n <= 0 {
+			n = 1
+		}
+		return a.runLoop(ctx, dec, n)
+	case "terminate":
+		return nil
+	default:
+		// Unknown first event — treat as serial.
+		return a.runLoop(ctx, dec, 1)
+	}
+}
+
+func (a *Agent) runLoop(ctx context.Context, dec *json.Decoder, concurrentTransfers int) error {
+	sem := make(chan struct{}, concurrentTransfers)
+	var wg sync.WaitGroup
+
 	for {
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
-			// EOF means git-lfs closed stdin without sending "terminate"; treat as clean exit.
+			// EOF — git-lfs closed stdin without "terminate".
+			wg.Wait()
 			return nil
 		}
-
 		var base struct {
 			Event string `json:"event"`
 		}
@@ -92,16 +125,24 @@ func (a *Agent) run(ctx context.Context, r io.Reader) error {
 		}
 
 		switch base.Event {
-		case "init":
-			a.handleInit(raw)
-		case "upload":
-			a.handleUpload(ctx, raw)
-		case "download":
-			a.handleDownload(ctx, raw)
+		case "upload", "download":
+			wg.Add(1)
+			sem <- struct{}{} // backpressure: blocks if at capacity
+			ev := base.Event
+			go func(msg json.RawMessage) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if ev == "upload" {
+					a.handleUpload(ctx, msg)
+				} else {
+					a.handleDownload(ctx, msg)
+				}
+			}(raw)
 		case "terminate":
+			wg.Wait()
 			return nil
 		default:
-			// Unknown events: ignore and continue.
+			// ignore unknown events
 		}
 	}
 }
