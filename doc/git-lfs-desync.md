@@ -34,6 +34,8 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 |---|---|---|
 | `-s`, `--store` | *(required)* | Chunk store location. See [Supported Backends](#supported-backends) for URL schemes. |
 | `--index-store` | derived from `--store` | Index store location. Defaults to replacing the last path segment of `--store` with `index` (or a sibling `index` directory for local paths). |
+| `-c`, `--cache` | — | Local chunk store used as a download cache. On a cache miss, the chunk is fetched from `--store` and saved to the cache; subsequent downloads are served from the cache. Uploads always go directly to `--store`. Accepts the same URL schemes as `--store`. |
+| `--cache-repair` | `true` | If the cache returns a corrupt chunk, re-download it from `--store` and replace the cached copy. |
 | `-n`, `--concurrency` | `10` | Number of concurrent goroutines for chunk I/O. |
 | `-m`, `--chunk-size` | `16:64:256` | Min:avg:max chunk size in KB. |
 | `-e`, `--error-retry` | `3` | Number of times to retry on network error. |
@@ -142,6 +144,46 @@ s3://bucket/lfs/index/<lfs-oid>.caibx              # index per LFS object
 ```
 
 The index store defaults to `s3+https://host/bucket/lfs/index/` (last path segment of `--store` replaced with `index`). For local paths, e.g. `--store /data/lfs/chunks`, the index defaults to `/data/lfs/index`. Override with `--index-store` if needed.
+
+---
+
+## Download Cache
+
+The `--cache` flag adds a local fast-path in front of the remote chunk store. On download:
+
+1. The agent looks up each chunk in the cache first.
+2. On a miss, the chunk is fetched from `--store` and written to the cache automatically.
+3. Subsequent downloads of the same file (or any file sharing chunks) are served entirely from the cache without touching the remote store.
+
+Uploads are not affected — chunks are always written directly to `--store`.
+
+### Example: S3 store with a local cache
+
+```ini
+[lfs "customtransfer.desync"]
+    path = /usr/local/bin/git-lfs-desync
+    args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ \
+           --cache /var/cache/lfs/chunks
+    concurrent = false
+```
+
+The cache directory must exist before the agent runs:
+
+```sh
+mkdir -p /var/cache/lfs/chunks
+```
+
+### Example: SFTP store with a local cache
+
+```sh
+git config lfs.customtransfer.desync.args \
+    "--store sftp://user@fileserver/lfs/chunks \
+     --cache ~/.cache/lfs/chunks"
+```
+
+### Cache repair
+
+With the default `--cache-repair=true`, if a cached chunk fails its checksum the agent discards it, re-fetches the chunk from `--store`, and repopulates the cache. Set `--cache-repair=false` to disable this behaviour (the download will then fail on a corrupt chunk).
 
 ---
 
