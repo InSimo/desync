@@ -116,6 +116,7 @@ func TestAgentUploadDownload(t *testing.T) {
 	var buf bytes.Buffer
 	a := &Agent{
 		writeStore:      chunkStore,
+		readStore:       chunkStore,
 		indexWriteStore: indexStore,
 		n:               4,
 		minChunk:        4 * 1024,
@@ -243,6 +244,7 @@ func TestAgentUploadDownloadViaLocalURL(t *testing.T) {
 	var buf bytes.Buffer
 	a := &Agent{
 		writeStore:      chunkStore,
+		readStore:       chunkStore,
 		indexWriteStore: indexStore,
 		n:               4,
 		minChunk:        4 * 1024,
@@ -317,6 +319,156 @@ func TestAgentUploadDownloadViaLocalURL(t *testing.T) {
 	}
 	if !bytes.Equal(got, content) {
 		t.Error("downloaded content does not match source")
+	}
+}
+
+// TestAgentWithCache verifies that when a cache store is configured, chunks
+// fetched from the remote store during a download are stored in the cache,
+// and a subsequent download is served entirely from the cache (the remote
+// store can be absent for the second download).
+func TestAgentWithCache(t *testing.T) {
+	remoteDir := t.TempDir()
+	cacheDir := t.TempDir()
+	indexDir := t.TempDir()
+	tmpDir := t.TempDir()
+
+	remoteStore, err := desync.NewLocalStore(remoteDir, desync.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remoteStore.Close()
+
+	cacheStore, err := desync.NewLocalStore(cacheDir, desync.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cacheStore.Close()
+
+	indexStore, err := desync.NewLocalIndexStore(indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer indexStore.Close()
+
+	// Upload: write chunks to the remote store (no cache on upload path).
+	srcFile := filepath.Join(t.TempDir(), "source.bin")
+	content := bytes.Repeat([]byte("cache-test-content "), 5000)
+	if err := os.WriteFile(srcFile, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	oid := "cache-test-oid-xyz"
+	uploadAgent := &Agent{
+		writeStore:      remoteStore,
+		readStore:       remoteStore,
+		indexWriteStore: indexStore,
+		n:               4,
+		minChunk:        4 * 1024,
+		avgChunk:        16 * 1024,
+		maxChunk:        64 * 1024,
+		tmpDir:          tmpDir,
+		enc:             json.NewEncoder(&buf),
+	}
+	uploadMsg, _ := json.Marshal(transferRequest{Event: "upload", OID: oid, Size: int64(len(content)), Path: srcFile})
+	uploadAgent.handleUpload(context.Background(), uploadMsg)
+	var uploadDone completeEvent
+	dec := json.NewDecoder(&buf)
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		json.Unmarshal(raw, &uploadDone)
+	}
+	if uploadDone.Error != nil {
+		t.Fatalf("upload error: %v", uploadDone.Error.Message)
+	}
+
+	// First download: readStore is Cache{remote, cache}. Chunks are fetched
+	// from the remote store and automatically saved to cacheDir.
+	buf.Reset()
+	downloadAgent := &Agent{
+		writeStore:      remoteStore,
+		readStore:       desync.NewCache(remoteStore, cacheStore),
+		indexWriteStore: indexStore,
+		n:               4,
+		minChunk:        4 * 1024,
+		avgChunk:        16 * 1024,
+		maxChunk:        64 * 1024,
+		tmpDir:          tmpDir,
+		enc:             json.NewEncoder(&buf),
+	}
+	dlMsg, _ := json.Marshal(transferRequest{Event: "download", OID: oid, Size: int64(len(content))})
+	downloadAgent.handleDownload(context.Background(), dlMsg)
+	var dl1Complete completeEvent
+	dec = json.NewDecoder(&buf)
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		json.Unmarshal(raw, &dl1Complete)
+	}
+	if dl1Complete.Error != nil {
+		t.Fatalf("first download error: %v", dl1Complete.Error.Message)
+	}
+	got, err := os.ReadFile(dl1Complete.Path)
+	if err != nil {
+		t.Fatalf("reading first download: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Error("first download content mismatch")
+	}
+
+	// Verify the cache was populated: cacheDir should now contain chunk files.
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Error("cache directory is empty after first download; cache was not populated")
+	}
+
+	// Second download: readStore uses only the cache (no remote). All chunks
+	// must be served from the cache without touching the remote store.
+	buf.Reset()
+	cacheOnlyAgent := &Agent{
+		writeStore:      cacheStore,
+		readStore:       cacheStore,
+		indexWriteStore: indexStore,
+		n:               4,
+		minChunk:        4 * 1024,
+		avgChunk:        16 * 1024,
+		maxChunk:        64 * 1024,
+		tmpDir:          tmpDir,
+		enc:             json.NewEncoder(&buf),
+	}
+	cacheOnlyAgent.handleDownload(context.Background(), dlMsg)
+	var dl2Complete completeEvent
+	dec = json.NewDecoder(&buf)
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		json.Unmarshal(raw, &dl2Complete)
+	}
+	if dl2Complete.Error != nil {
+		t.Fatalf("cache-only download error: %v", dl2Complete.Error.Message)
+	}
+	got, err = os.ReadFile(dl2Complete.Path)
+	if err != nil {
+		t.Fatalf("reading cache-only download: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Error("cache-only download content mismatch")
 	}
 }
 

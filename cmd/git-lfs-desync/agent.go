@@ -56,6 +56,7 @@ type lfsError struct {
 // Agent implements the Git LFS custom transfer agent protocol.
 type Agent struct {
 	writeStore      desync.WriteStore
+	readStore       desync.Store // used for downloads; may wrap writeStore with a cache
 	indexWriteStore desync.IndexWriteStore
 	n               int
 	minChunk        uint64
@@ -169,7 +170,7 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	tmpFile := filepath.Join(a.tmpDir, "git-lfs-desync-"+req.OID)
 
 	// Wrap the store to count bytes retrieved.
-	cs := newCountingReadStore(a.writeStore, idx)
+	cs := newCountingReadStore(a.readStore, idx)
 
 	// Start progress reporting goroutine.
 	progressCtx, stopProgress := context.WithCancel(ctx)

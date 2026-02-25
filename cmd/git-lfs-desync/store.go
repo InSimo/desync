@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net/url"
 	"runtime"
+	"time"
 
 	"github.com/folbricht/desync"
 	minio "github.com/minio/minio-go/v6"
+	"github.com/spf13/cobra"
 )
 
 // chunkStoreFromURL creates a WriteStore from a URL or filesystem path.
@@ -126,4 +128,59 @@ func indexStoreFromURL(location string, opt desync.StoreOptions) (desync.IndexWr
 		}
 		return s, nil
 	}
+}
+
+// buildReadStore returns the store used for chunk reads during downloads.
+// If cacheLocation is empty, it returns chunkStore directly. Otherwise it
+// creates a cache store from cacheLocation and wraps chunkStore in a
+// desync.Cache so that downloads hit the local cache before the remote store.
+// TLS/retry flag values are forwarded to the cache store options unchanged;
+// the cmd parameter is used to detect which flags were explicitly passed.
+func buildReadStore(
+	cmd *cobra.Command,
+	chunkStore desync.WriteStore,
+	cacheLocation string,
+	cacheRepair bool,
+	concurrency int,
+	errorRetry int,
+	clientCert, clientKey, caCert string,
+	trustInsecure bool,
+	errorRetryInterval time.Duration,
+) (desync.Store, error) {
+	if cacheLocation == "" {
+		return chunkStore, nil
+	}
+
+	cacheOpt, err := cfg.GetStoreOptionsFor(cacheLocation)
+	if err != nil {
+		return nil, err
+	}
+	cacheOpt.N = concurrency
+	cacheOpt.ErrorRetry = errorRetry
+	if cmd.Flags().Changed("client-cert") {
+		cacheOpt.ClientCert = clientCert
+	}
+	if cmd.Flags().Changed("client-key") {
+		cacheOpt.ClientKey = clientKey
+	}
+	if cmd.Flags().Changed("ca-cert") {
+		cacheOpt.CACert = caCert
+	}
+	if cmd.Flags().Changed("trust-insecure") {
+		cacheOpt.TrustInsecure = trustInsecure
+	}
+	if cmd.Flags().Changed("error-retry-base-interval") {
+		cacheOpt.ErrorRetryBaseInterval = errorRetryInterval
+	}
+
+	cacheStore, err := chunkStoreFromURL(cacheLocation, cacheOpt)
+	if err != nil {
+		return nil, fmt.Errorf("creating cache store: %w", err)
+	}
+
+	var cacheLayer desync.WriteStore = cacheStore
+	if cacheRepair {
+		cacheLayer = desync.NewRepairableCache(cacheStore)
+	}
+	return desync.NewCache(chunkStore, cacheLayer), nil
 }

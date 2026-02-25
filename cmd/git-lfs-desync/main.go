@@ -171,6 +171,8 @@ func main() {
 	var (
 		storeURL            string
 		indexURL            string
+		cache               string
+		cacheRepair         bool
 		concurrency         int
 		chunkSize           string
 		errorRetry          int
@@ -234,7 +236,17 @@ Configure Git LFS to use this agent:
 			if err != nil {
 				return err
 			}
-			defer chunkStore.Close()
+
+			// Build the read store used for downloads, optionally wrapping the
+			// chunk store with a local cache tier. readStore.Close() closes the
+			// full chain (chunkStore and, if present, the cache store).
+			readStore, err := buildReadStore(cmd, chunkStore, cache, cacheRepair,
+				concurrency, errorRetry, clientCert, clientKey, caCert, trustInsecure, errorRetryInterval)
+			if err != nil {
+				chunkStore.Close()
+				return err
+			}
+			defer readStore.Close()
 
 			if indexURL == "" {
 				indexURL, err = deriveIndexURL(storeURL)
@@ -278,6 +290,7 @@ Configure Git LFS to use this agent:
 
 			agent := &Agent{
 				writeStore:      chunkStore,
+				readStore:       readStore,
 				indexWriteStore: indexStore,
 				n:               concurrency,
 				minChunk:        minChunk,
@@ -295,6 +308,10 @@ Configure Git LFS to use this agent:
 		"chunk store location (required); supports s3+https://, sftp://, https://, gs://, or local path")
 	flags.StringVar(&indexURL, "index-store", "",
 		"index store location (default: sibling 'index' directory of --store); same schemes as --store")
+	flags.StringVarP(&cache, "cache", "c", "",
+		"local chunk store used as download cache; chunks missing from the cache are fetched from --store and saved locally")
+	flags.BoolVar(&cacheRepair, "cache-repair", true,
+		"replace corrupt chunks in the cache by re-downloading them from --store")
 	flags.IntVarP(&concurrency, "concurrency", "n", 10, "number of concurrent goroutines")
 	flags.StringVarP(&chunkSize, "chunk-size", "m", "16:64:256", "min:avg:max chunk size in KB")
 	flags.IntVarP(&errorRetry, "error-retry", "e", desync.DefaultErrorRetry, "number of times to retry on network error")
