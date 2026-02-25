@@ -17,6 +17,7 @@ func TestDeriveIndexURL(t *testing.T) {
 		input string
 		want  string
 	}{
+		// S3 URLs — replace last path segment with "index/".
 		{
 			"s3+https://s3.amazonaws.com/my-bucket/chunks/",
 			"s3+https://s3.amazonaws.com/my-bucket/index/",
@@ -28,6 +29,19 @@ func TestDeriveIndexURL(t *testing.T) {
 		{
 			"s3+https://host/bucket/chunks",
 			"s3+https://host/bucket/index/",
+		},
+		// Local filesystem paths — sibling "index" directory.
+		{
+			"/path/to/chunks",
+			"/path/to/index",
+		},
+		{
+			"/path/to/chunks/",
+			"/path/to/index",
+		},
+		{
+			"chunks",
+			"index",
 		},
 	}
 	for _, c := range cases {
@@ -189,6 +203,114 @@ func TestAgentUploadDownload(t *testing.T) {
 	}
 
 	// Verify downloaded content matches source.
+	got, err := os.ReadFile(dlComplete.Path)
+	if err != nil {
+		t.Fatalf("reading downloaded file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Error("downloaded content does not match source")
+	}
+}
+
+// TestAgentUploadDownloadViaLocalURL exercises the full upload/download cycle
+// using chunkStoreFromURL and indexStoreFromURL with local directory paths,
+// verifying that the store factory functions work end-to-end.
+func TestAgentUploadDownloadViaLocalURL(t *testing.T) {
+	chunkDir := t.TempDir()
+	indexDir := t.TempDir()
+	tmpDir := t.TempDir()
+
+	opt := desync.StoreOptions{}
+
+	chunkStore, err := chunkStoreFromURL(chunkDir, opt)
+	if err != nil {
+		t.Fatalf("chunkStoreFromURL(%q): %v", chunkDir, err)
+	}
+	defer chunkStore.Close()
+
+	indexStore, err := indexStoreFromURL(indexDir, opt)
+	if err != nil {
+		t.Fatalf("indexStoreFromURL(%q): %v", indexDir, err)
+	}
+	defer indexStore.Close()
+
+	srcFile := filepath.Join(t.TempDir(), "source.bin")
+	content := bytes.Repeat([]byte("hello desync git-lfs local "), 5000)
+	if err := os.WriteFile(srcFile, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	a := &Agent{
+		writeStore:      chunkStore,
+		indexWriteStore: indexStore,
+		n:               4,
+		minChunk:        4 * 1024,
+		avgChunk:        16 * 1024,
+		maxChunk:        64 * 1024,
+		tmpDir:          tmpDir,
+		enc:             json.NewEncoder(&buf),
+	}
+
+	oid := "localurl-test-oid-abc123"
+
+	// Upload.
+	uploadMsg, _ := json.Marshal(transferRequest{
+		Event: "upload",
+		OID:   oid,
+		Size:  int64(len(content)),
+		Path:  srcFile,
+	})
+	a.handleUpload(context.Background(), uploadMsg)
+
+	var uploadComplete completeEvent
+	dec := json.NewDecoder(&buf)
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		json.Unmarshal(raw, &uploadComplete)
+	}
+	if uploadComplete.Event != "complete" {
+		t.Fatalf("expected complete event, got %q", uploadComplete.Event)
+	}
+	if uploadComplete.Error != nil {
+		t.Fatalf("upload error: %v", uploadComplete.Error.Message)
+	}
+
+	// Download.
+	buf.Reset()
+	downloadMsg, _ := json.Marshal(transferRequest{
+		Event: "download",
+		OID:   oid,
+		Size:  int64(len(content)),
+	})
+	a.handleDownload(context.Background(), downloadMsg)
+
+	var dlComplete completeEvent
+	dec = json.NewDecoder(&buf)
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		json.Unmarshal(raw, &dlComplete)
+	}
+	if dlComplete.Event != "complete" {
+		t.Fatalf("expected complete event, got %q", dlComplete.Event)
+	}
+	if dlComplete.Error != nil {
+		t.Fatalf("download error: %v", dlComplete.Error.Message)
+	}
+	if dlComplete.Path == "" {
+		t.Fatal("expected non-empty path in download complete event")
+	}
+
 	got, err := os.ReadFile(dlComplete.Path)
 	if err != nil {
 		t.Fatalf("reading downloaded file: %v", err)

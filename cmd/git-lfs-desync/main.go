@@ -144,8 +144,9 @@ func deriveIndexURL(storeURL string) (string, error) {
 		return "", fmt.Errorf("invalid store URL %q: %w", storeURL, err)
 	}
 	// len(Scheme) <= 1 catches empty scheme (plain paths) and Windows drive letters (e.g. "C").
+	// filepath.Clean normalises the path before Dir so a trailing slash is stripped first.
 	if len(u.Scheme) <= 1 {
-		return filepath.Join(filepath.Dir(storeURL), "index"), nil
+		return filepath.Join(filepath.Dir(filepath.Clean(storeURL)), "index"), nil
 	}
 	p := strings.TrimSuffix(u.Path, "/")
 	idx := strings.LastIndex(p, "/")
