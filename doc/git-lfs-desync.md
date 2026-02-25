@@ -217,6 +217,8 @@ args = --store /data/lfs/chunks
 
 ## Local Testing with MinIO (S3 path)
 
+> **Warning:** The MinIO instance started below uses well-known default credentials (`minioadmin`/`minioadmin`) and listens on an unencrypted HTTP port. Do not expose it to the internet or any untrusted network. Keep it bound to `localhost` and tear it down when you are done testing.
+
 The following steps reproduce the full upload/download cycle locally using [MinIO](https://min.io/) as an S3-compatible backend, testing the `s3+http://` code path without any AWS account.
 
 ### 1. Start MinIO
