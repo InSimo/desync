@@ -242,18 +242,25 @@ docker exec minio-lfs mc mb local/lfs-test
 go build -o /tmp/git-lfs-desync ./cmd/git-lfs-desync
 ```
 
-### 3. Set up a test repository
+### 3. Set up a local cache directory
+
+```sh
+mkdir -p /tmp/lfs-cache
+```
+
+### 4. Set up a test repository
 
 ```sh
 mkdir /tmp/lfs-repo && cd /tmp/lfs-repo
 git init
 git lfs install
 
-# Point LFS at the local agent and MinIO bucket
+# Point LFS at the local agent, MinIO bucket, and local cache
 git config lfs.customtransfer.desync.path /tmp/git-lfs-desync
 git config lfs.customtransfer.desync.args \
     "--store s3+http://localhost:9000/lfs-test/chunks/ \
-     --index-store s3+http://localhost:9000/lfs-test/index/"
+     --index-store s3+http://localhost:9000/lfs-test/index/ \
+     --cache /tmp/lfs-cache"
 git config lfs.customtransfer.desync.concurrent false
 git config lfs.standalonetransferagent desync
 # Standalone mode requires a dummy lfs.url (no real LFS server)
@@ -264,7 +271,7 @@ git add .gitattributes
 git commit -m "Track .bin files with LFS"
 ```
 
-### 4. Add a large file and push
+### 5. Add a large file and push
 
 ```sh
 # Create a test file (20 MB of random data)
@@ -291,17 +298,20 @@ docker exec minio-lfs mc ls local/lfs-test/chunks/ | wc -l
 # → number of chunks (e.g. 327 for a 20 MB random file)
 ```
 
-### 5. Clone and verify download
+The cache is not populated on upload — only downloads fill the cache.
+
+### 6. Clone and verify download (cache populated on first pull)
 
 ```sh
 S3_ACCESS_KEY=minioadmin S3_SECRET_KEY=minioadmin git clone /tmp/lfs-bare /tmp/lfs-clone
 cd /tmp/lfs-clone
 
-# Configure agent in the clone
+# Configure agent in the clone with the same local cache
 git config lfs.customtransfer.desync.path /tmp/git-lfs-desync
 git config lfs.customtransfer.desync.args \
     "--store s3+http://localhost:9000/lfs-test/chunks/ \
-     --index-store s3+http://localhost:9000/lfs-test/index/"
+     --index-store s3+http://localhost:9000/lfs-test/index/ \
+     --cache /tmp/lfs-cache"
 git config lfs.customtransfer.desync.concurrent false
 git config lfs.standalonetransferagent desync
 git config lfs.url "https://localhost"
@@ -313,9 +323,18 @@ sha256sum large.bin
 # Must match $ORIGINAL_SHA
 ```
 
-### 6. Cleanup
+After the pull, chunks are stored in `/tmp/lfs-cache`. Verify:
+
+```sh
+ls /tmp/lfs-cache/ | wc -l
+# → subdirectory entries (chunks are stored in two-character prefix directories)
+```
+
+A second `git lfs pull` (or any clone using the same `--cache` directory) will be served from the local cache without hitting MinIO.
+
+### 7. Cleanup
 
 ```sh
 docker rm -f minio-lfs
-rm -rf /tmp/lfs-repo /tmp/lfs-bare /tmp/lfs-clone /tmp/git-lfs-desync
+rm -rf /tmp/lfs-repo /tmp/lfs-bare /tmp/lfs-clone /tmp/lfs-cache /tmp/git-lfs-desync
 ```
