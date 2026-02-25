@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/folbricht/desync"
-	minio "github.com/minio/minio-go/v6"
 	"github.com/minio/minio-go/v6/pkg/credentials"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -68,10 +67,16 @@ func (c Config) GetS3CredentialsFor(u *url.URL) (*credentials.Credentials, strin
 }
 
 // GetStoreOptionsFor returns optional config options for a specific store.
+// Returns an error if more than one config entry matches the location.
 func (c Config) GetStoreOptionsFor(location string) (options desync.StoreOptions, err error) {
 	options = desync.NewStoreOptionsWithDefaults()
+	found := false
 	for k, v := range c.StoreOptions {
 		if locationMatch(k, location) {
+			if found {
+				return options, fmt.Errorf("multiple configuration entries match %q", location)
+			}
+			found = true
 			options = v
 		}
 	}
@@ -128,38 +133,19 @@ func initConfig() error {
 	return nil
 }
 
-func newS3Store(storeURL string, opt desync.StoreOptions) (desync.WriteStore, error) {
-	u, err := url.Parse(storeURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid store URL %q: %w", storeURL, err)
-	}
-	creds, region := cfg.GetS3CredentialsFor(u)
-	s, err := desync.NewS3Store(u, creds, region, opt, minio.BucketLookupAuto)
-	if err != nil {
-		return nil, fmt.Errorf("creating S3 chunk store: %w", err)
-	}
-	return s, nil
-}
-
-func newS3IndexStore(indexURL string, opt desync.StoreOptions) (desync.IndexWriteStore, error) {
-	u, err := url.Parse(indexURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid index store URL %q: %w", indexURL, err)
-	}
-	creds, region := cfg.GetS3CredentialsFor(u)
-	s, err := desync.NewS3IndexStore(u, creds, region, opt, minio.BucketLookupAuto)
-	if err != nil {
-		return nil, fmt.Errorf("creating S3 index store: %w", err)
-	}
-	return s, nil
-}
-
-// deriveIndexURL replaces the last path segment of storeURL with "index".
-// e.g. s3+https://host/bucket/chunks/ → s3+https://host/bucket/index/
+// deriveIndexURL derives an index store location from a chunk store location.
+// For URLs (scheme length > 1): replaces the last path segment with "index/".
+//   e.g. s3+https://host/bucket/chunks/ → s3+https://host/bucket/index/
+// For plain filesystem paths: returns a sibling "index" directory.
+//   e.g. /path/to/chunks → /path/to/index,  chunks → index
 func deriveIndexURL(storeURL string) (string, error) {
 	u, err := url.Parse(storeURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid store URL %q: %w", storeURL, err)
+	}
+	// len(Scheme) <= 1 catches empty scheme (plain paths) and Windows drive letters (e.g. "C").
+	if len(u.Scheme) <= 1 {
+		return filepath.Join(filepath.Dir(storeURL), "index"), nil
 	}
 	p := strings.TrimSuffix(u.Path, "/")
 	idx := strings.LastIndex(p, "/")
@@ -182,11 +168,16 @@ func main() {
 	}()
 
 	var (
-		storeURL    string
-		indexURL    string
-		concurrency int
-		chunkSize   string
-		errorRetry  int
+		storeURL            string
+		indexURL            string
+		concurrency         int
+		chunkSize           string
+		errorRetry          int
+		clientCert          string
+		clientKey           string
+		caCert              string
+		trustInsecure       bool
+		errorRetryInterval  time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -194,7 +185,9 @@ func main() {
 		Short: "Git LFS custom transfer agent using desync chunking",
 		Long: `git-lfs-desync is a Git LFS custom transfer agent that chunks large files
 using content-defined chunking (SipHash rolling hash), stores deduplicated
-chunks in S3, and stores resulting indexes keyed by LFS OID.
+compressed chunks in a desync store, and stores resulting indexes keyed by
+LFS OID. Supported store backends: local filesystem, S3-compatible, SFTP,
+HTTP/HTTPS, and Google Cloud Storage.
 
 Configure Git LFS to use this agent:
 
@@ -220,8 +213,23 @@ Configure Git LFS to use this agent:
 			}
 			opt.N = concurrency
 			opt.ErrorRetry = errorRetry
+			if cmd.Flags().Changed("client-cert") {
+				opt.ClientCert = clientCert
+			}
+			if cmd.Flags().Changed("client-key") {
+				opt.ClientKey = clientKey
+			}
+			if cmd.Flags().Changed("ca-cert") {
+				opt.CACert = caCert
+			}
+			if cmd.Flags().Changed("trust-insecure") {
+				opt.TrustInsecure = trustInsecure
+			}
+			if cmd.Flags().Changed("error-retry-base-interval") {
+				opt.ErrorRetryBaseInterval = errorRetryInterval
+			}
 
-			chunkStore, err := newS3Store(storeURL, opt)
+			chunkStore, err := chunkStoreFromURL(storeURL, opt)
 			if err != nil {
 				return err
 			}
@@ -240,8 +248,23 @@ Configure Git LFS to use this agent:
 			}
 			idxOpt.N = concurrency
 			idxOpt.ErrorRetry = errorRetry
+			if cmd.Flags().Changed("client-cert") {
+				idxOpt.ClientCert = clientCert
+			}
+			if cmd.Flags().Changed("client-key") {
+				idxOpt.ClientKey = clientKey
+			}
+			if cmd.Flags().Changed("ca-cert") {
+				idxOpt.CACert = caCert
+			}
+			if cmd.Flags().Changed("trust-insecure") {
+				idxOpt.TrustInsecure = trustInsecure
+			}
+			if cmd.Flags().Changed("error-retry-base-interval") {
+				idxOpt.ErrorRetryBaseInterval = errorRetryInterval
+			}
 
-			indexStore, err := newS3IndexStore(indexURL, idxOpt)
+			indexStore, err := indexStoreFromURL(indexURL, idxOpt)
 			if err != nil {
 				return err
 			}
@@ -267,11 +290,19 @@ Configure Git LFS to use this agent:
 	}
 
 	flags := cmd.Flags()
-	flags.StringVarP(&storeURL, "store", "s", "", "S3 chunk store URL (required), e.g. s3+https://s3.amazonaws.com/bucket/chunks/")
-	flags.StringVar(&indexURL, "index-store", "", "S3 index store URL (default: replace last path component of --store with 'index')")
+	flags.StringVarP(&storeURL, "store", "s", "",
+		"chunk store location (required); supports s3+https://, sftp://, https://, gs://, or local path")
+	flags.StringVar(&indexURL, "index-store", "",
+		"index store location (default: sibling 'index' directory of --store); same schemes as --store")
 	flags.IntVarP(&concurrency, "concurrency", "n", 10, "number of concurrent goroutines")
 	flags.StringVarP(&chunkSize, "chunk-size", "m", "16:64:256", "min:avg:max chunk size in KB")
 	flags.IntVarP(&errorRetry, "error-retry", "e", desync.DefaultErrorRetry, "number of times to retry on network error")
+	flags.StringVar(&clientCert, "client-cert", "", "path to client certificate for TLS authentication")
+	flags.StringVar(&clientKey, "client-key", "", "path to client key for TLS authentication")
+	flags.StringVar(&caCert, "ca-cert", "", "CA certificate file to trust instead of OS trust store")
+	flags.BoolVarP(&trustInsecure, "trust-insecure", "t", false, "trust invalid certificates")
+	flags.DurationVarP(&errorRetryInterval, "error-retry-base-interval", "b",
+		desync.DefaultErrorRetryBaseInterval, "initial retry delay, increases linearly with each attempt")
 	flags.StringVar(&cfgFile, "config", "", "desync config file (default: $HOME/.config/desync/config.json)")
 
 	if err := cmd.Execute(); err != nil {

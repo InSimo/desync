@@ -3,10 +3,10 @@
 `git-lfs-desync` is a [Git LFS custom transfer agent](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md) that stores LFS objects using desync's content-defined chunking. Instead of uploading whole files to an LFS server, it:
 
 1. Splits each file into variable-size chunks using a SipHash rolling hash.
-2. Compresses and deduplicates chunks in an S3-compatible store.
-3. Stores a `.caibx` index (keyed by LFS OID) in a separate S3 prefix.
+2. Compresses and deduplicates chunks in a desync-compatible store.
+3. Stores a `.caibx` index (keyed by LFS OID) in a separate index store.
 
-On download, it fetches the index and reassembles the file from S3 chunks. Chunks are shared across all files and commits — only genuinely new content is uploaded.
+On download, it fetches the index and reassembles the file from the chunk store. Chunks are shared across all files and commits — only genuinely new content is uploaded.
 
 ## Building
 
@@ -16,20 +16,39 @@ go install github.com/folbricht/desync/cmd/git-lfs-desync@latest
 go build -o /usr/local/bin/git-lfs-desync ./cmd/git-lfs-desync
 ```
 
+## Supported Backends
+
+| Protocol | URL Scheme | Notes |
+|---|---|---|
+| **Local filesystem** | `/path/to/dir` or `./dir` | No credentials needed; simplest setup |
+| **S3-compatible** | `s3+https://host/bucket/prefix/` | AWS S3, MinIO, Ceph RGW, etc. |
+| **SFTP** | `sftp://user@host/path/` | Uses SSH keys or agent |
+| **HTTP/HTTPS** | `https://host/path/` | Requires a write-capable HTTP store server |
+| **Google Cloud Storage** | `gs://bucket/prefix/` | Uses GCS application default credentials |
+
+SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent.
+
 ## Flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `-s`, `--store` | *(required)* | S3 URL for chunk storage, e.g. `s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/` |
-| `--index-store` | derived from `--store` | S3 URL for index storage. Defaults to replacing the last path segment of `--store` with `index/`. |
+| `-s`, `--store` | *(required)* | Chunk store location. See [Supported Backends](#supported-backends) for URL schemes. |
+| `--index-store` | derived from `--store` | Index store location. Defaults to replacing the last path segment of `--store` with `index` (or a sibling `index` directory for local paths). |
 | `-n`, `--concurrency` | `10` | Number of concurrent goroutines for chunk I/O. |
 | `-m`, `--chunk-size` | `16:64:256` | Min:avg:max chunk size in KB. |
-| `-e`, `--error-retry` | `3` | Number of times to retry on S3 errors. |
+| `-e`, `--error-retry` | `3` | Number of times to retry on network error. |
+| `-b`, `--error-retry-base-interval` | `500ms` | Initial retry delay; increases linearly with each attempt. |
+| `--client-cert` | — | Path to client certificate for mutual TLS. |
+| `--client-key` | — | Path to client key for mutual TLS. |
+| `--ca-cert` | — | CA certificate file to trust instead of the OS trust store. |
+| `-t`, `--trust-insecure` | `false` | Trust invalid/self-signed certificates. |
 | `--config` | `$HOME/.config/desync/config.json` | desync config file for S3 credentials and store options. |
 
 ## Credentials
 
-Credentials are resolved in this order:
+### S3
+
+S3 credentials are resolved in this order:
 
 1. **Environment variables** `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_REGION` (or the standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`).
 2. **desync config file** (`~/.config/desync/config.json`) — per-endpoint credentials keyed by `http://host` or `https://host`.
@@ -49,6 +68,14 @@ Example config file with static credentials for a specific endpoint:
 }
 ```
 
+### SFTP
+
+SFTP stores authenticate via the SSH agent or `~/.ssh` keys. No extra configuration is required beyond having a valid SSH key for the host.
+
+### GCS
+
+GCS stores use [application default credentials](https://cloud.google.com/docs/authentication/application-default-credentials). Run `gcloud auth application-default login` or set `GOOGLE_APPLICATION_CREDENTIALS`.
+
 ## Git Configuration
 
 The transfer agent config must be set on every machine that pushes or pulls LFS objects. The simplest place is `~/.gitconfig` (global), so it applies to all repos.
@@ -65,7 +92,7 @@ The transfer agent config must be set on every machine that pushes or pulls LFS 
 
 `concurrent = false` is required because git-lfs would otherwise run multiple agent processes simultaneously, each trying to write to stdout independently.
 
-With `standalonetransferagent` set, git-lfs bypasses the normal LFS HTTP API entirely — no LFS server is needed. The S3 bucket is the only backend.
+With `standalonetransferagent` set, git-lfs bypasses the normal LFS HTTP API entirely — no LFS server is needed.
 
 ### Per-repo config
 
@@ -114,13 +141,40 @@ s3://bucket/lfs/chunks/<xx>/<64-hex-chars>.cacnk   # compressed chunks
 s3://bucket/lfs/index/<lfs-oid>.caibx              # index per LFS object
 ```
 
-The index store defaults to `s3+https://host/bucket/lfs/index/` (last path segment of `--store` replaced with `index`). Override with `--index-store` if needed.
+The index store defaults to `s3+https://host/bucket/lfs/index/` (last path segment of `--store` replaced with `index`). For local paths, e.g. `--store /data/lfs/chunks`, the index defaults to `/data/lfs/index`. Override with `--index-store` if needed.
 
 ---
 
-## Local Testing with MinIO
+## Local Directory (simplest setup)
 
-The following steps reproduce the full upload/download cycle locally using [MinIO](https://min.io/) as an S3-compatible backend, without any AWS account.
+No cloud account needed. Useful for single-machine setups or testing.
+
+```sh
+mkdir -p /data/lfs/chunks /data/lfs/index
+```
+
+```ini
+[lfs "customtransfer.desync"]
+    path = /usr/local/bin/git-lfs-desync
+    args = --store /data/lfs/chunks --index-store /data/lfs/index
+    concurrent = false
+
+[lfs]
+    standalonetransferagent = desync
+```
+
+Or let `--index-store` be derived automatically:
+
+```ini
+args = --store /data/lfs/chunks
+# index store defaults to /data/lfs/index
+```
+
+---
+
+## Local Testing with MinIO (S3 path)
+
+The following steps reproduce the full upload/download cycle locally using [MinIO](https://min.io/) as an S3-compatible backend, testing the `s3+http://` code path without any AWS account.
 
 ### 1. Start MinIO
 
