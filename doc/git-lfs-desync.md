@@ -46,6 +46,7 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `-t`, `--trust-insecure` | `false` | Trust invalid/self-signed certificates. |
 | `--config` | `$HOME/.config/desync/config.json` | desync config file for S3 credentials and store options. Mutually exclusive with `--config-from-git`. |
 | `--config-from-git` | — | Read the desync config from a git object (e.g. `origin/_desync:config.json`). Mutually exclusive with `--config`. |
+| `--digest` | `sha512-256` | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. |
 
 ## Credentials
 
