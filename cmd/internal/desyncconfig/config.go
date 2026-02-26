@@ -27,11 +27,20 @@ type S3Creds struct {
 	AwsRegion string `json:"aws-region,omitempty"`
 }
 
+// Defaults holds config-file defaults for CLI flags that users often want to
+// set once rather than on every invocation.
+type Defaults struct {
+	Digest     string   `json:"digest,omitempty"`
+	Stores     []string `json:"stores,omitempty"`
+	IndexStore string   `json:"index-store,omitempty"`
+}
+
 // Config is used to hold the global tool configuration. It's used to customize
 // store features and provide credentials where needed.
 type Config struct {
 	S3Credentials map[string]S3Creds             `json:"s3-credentials"`
 	StoreOptions  map[string]desync.StoreOptions `json:"store-options"`
+	Defaults      Defaults                       `json:"defaults,omitempty"`
 }
 
 // GetS3CredentialsFor attempts to find creds and region for an S3 location in the
@@ -87,6 +96,44 @@ func (c Config) GetStoreOptionsFor(location string) (options desync.StoreOptions
 		}
 	}
 	return options, nil
+}
+
+// ResolveDigest returns cli if non-empty, otherwise c.Defaults.Digest.
+// An empty return value is valid and causes SetDigestAlgorithm to select the
+// built-in default (SHA512-256).
+func (c Config) ResolveDigest(cli string) string {
+	if cli != "" {
+		return cli
+	}
+	return c.Defaults.Digest
+}
+
+// ResolveStores returns cli if non-nil/non-empty, otherwise c.Defaults.Stores.
+func (c Config) ResolveStores(cli []string) []string {
+	if len(cli) > 0 {
+		return cli
+	}
+	return c.Defaults.Stores
+}
+
+// ResolveStore returns cli if non-empty, otherwise the first entry of
+// c.Defaults.Stores. Returns "" when both are empty; callers report the error.
+func (c Config) ResolveStore(cli string) string {
+	if cli != "" {
+		return cli
+	}
+	if len(c.Defaults.Stores) > 0 {
+		return c.Defaults.Stores[0]
+	}
+	return ""
+}
+
+// ResolveIndexStore returns cli if non-empty, otherwise c.Defaults.IndexStore.
+func (c Config) ResolveIndexStore(cli string) string {
+	if cli != "" {
+		return cli
+	}
+	return c.Defaults.IndexStore
 }
 
 // SetDigestAlgorithm sets the global desync.Digest to the algorithm named by

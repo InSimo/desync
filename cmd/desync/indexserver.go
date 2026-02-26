@@ -68,6 +68,7 @@ func runIndexServer(ctx context.Context, opt indexServerOptions, args []string) 
 	}
 
 	// Checkout the store
+	opt.store = cfg.ResolveIndexStore(opt.store)
 	if opt.store == "" {
 		return errors.New("no store provided")
 	}

@@ -50,6 +50,7 @@ func runMtree(ctx context.Context, opt mtreeOptions, args []string) error {
 	if err := opt.cmdStoreOptions.validate(); err != nil {
 		return err
 	}
+	opt.stores = cfg.ResolveStores(opt.stores)
 	if opt.readIndex && len(opt.stores) == 0 {
 		return errors.New("-i requires at least one store (-s <location>)")
 	}

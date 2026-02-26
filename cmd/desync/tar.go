@@ -70,6 +70,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 	if err := opt.cmdStoreOptions.validate(); err != nil {
 		return err
 	}
+	opt.store = cfg.ResolveStore(opt.store)
 	if opt.createIndex && opt.store == "" {
 		return errors.New("-i requires a store (-s <location>)")
 	}

@@ -43,6 +43,7 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 	if err := opt.cmdStoreOptions.validate(); err != nil {
 		return err
 	}
+	opt.store = cfg.ResolveStore(opt.store)
 	if opt.store == "" {
 		return errors.New("no store provided")
 	}

@@ -85,7 +85,7 @@ func initConfig() {
 var digestAlgorithm string
 
 func setDigestAlgorithm() {
-	if err := desyncconfig.SetDigestAlgorithm(digestAlgorithm); err != nil {
+	if err := desyncconfig.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
 		die(err)
 	}
 }

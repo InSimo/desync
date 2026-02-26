@@ -115,9 +115,11 @@ Configure Git LFS to use this agent:
 			if err := initConfig(); err != nil {
 				return err
 			}
-			return desyncconfig.SetDigestAlgorithm(digestAlgorithm)
+			return desyncconfig.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm))
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			storeURL = cfg.ResolveStore(storeURL)
+			indexURL = cfg.ResolveIndexStore(indexURL)
 			if storeURL == "" {
 				return fmt.Errorf("--store is required")
 			}
@@ -217,7 +219,7 @@ Configure Git LFS to use this agent:
 
 	flags := cmd.Flags()
 	flags.StringVarP(&storeURL, "store", "s", "",
-		"chunk store location (required); supports s3+https://, sftp://, https://, gs://, or local path")
+		"chunk store location; supports s3+https://, sftp://, https://, gs://, or local path (may be set via config defaults)")
 	flags.StringVar(&indexURL, "index-store", "",
 		"index store location (default: sibling 'index' directory of --store); same schemes as --store")
 	flags.StringVarP(&cache, "cache", "c", "",
@@ -236,7 +238,7 @@ Configure Git LFS to use this agent:
 	flags.StringVar(&cfgFile, "config", "", "desync config file (default: $HOME/.config/desync/config.json)")
 	flags.StringVar(&cfgFromGit, "config-from-git", "",
 		"read desync config from a git object (e.g. origin/_desync:config.json)")
-	flags.StringVar(&digestAlgorithm, "digest", "sha512-256", "digest algorithm, sha512-256 or sha256")
+	flags.StringVar(&digestAlgorithm, "digest", "", "digest algorithm, sha512-256 or sha256 (default sha512-256)")
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)

@@ -83,6 +83,7 @@ func runExtract(ctx context.Context, opt extractOptions, args []string) error {
 	}
 
 	// Checkout the store
+	opt.stores = cfg.ResolveStores(opt.stores)
 	if len(opt.stores) == 0 {
 		return errors.New("no store provided")
 	}

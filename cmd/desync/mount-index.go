@@ -79,6 +79,10 @@ func runMountIndex(ctx context.Context, opt mountIndexOptions, args []string) er
 	mountPoint := args[1]
 	mountFName := strings.TrimSuffix(filepath.Base(indexFile), filepath.Ext(indexFile))
 
+	if opt.storeFile == "" {
+		opt.stores = cfg.ResolveStores(opt.stores)
+	}
+
 	// Parse the store locations, open the stores and add a cache if requested
 	s, err := mountIndexStore(opt)
 	if err != nil {

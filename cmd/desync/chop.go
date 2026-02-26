@@ -53,6 +53,7 @@ func runChop(ctx context.Context, opt chopOptions, args []string) error {
 	if err := opt.cmdStoreOptions.validate(); err != nil {
 		return err
 	}
+	opt.store = cfg.ResolveStore(opt.store)
 	if opt.store == "" {
 		return errors.New("no target store provided")
 	}

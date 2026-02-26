@@ -38,6 +38,7 @@ invalid chunks are deleted from the store.`,
 }
 
 func runVerify(ctx context.Context, opt verifyOptions, args []string) error {
+	opt.store = cfg.ResolveStore(opt.store)
 	if opt.store == "" {
 		return errors.New("no store provided")
 	}

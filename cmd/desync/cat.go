@@ -73,6 +73,7 @@ func runCat(ctx context.Context, opt catOptions, args []string) error {
 	inFile := args[0]
 
 	// Checkout the store
+	opt.stores = cfg.ResolveStores(opt.stores)
 	if len(opt.stores) == 0 {
 		return errors.New("no store provided")
 	}

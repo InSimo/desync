@@ -89,6 +89,10 @@ func runChunkServer(ctx context.Context, opt chunkServerOptions, args []string) 
 		addresses = []string{":http"}
 	}
 
+	if opt.storeFile == "" {
+		opt.stores = cfg.ResolveStores(opt.stores)
+	}
+
 	// Extract the store setup from command line options and validate it
 	s, err := chunkServerStore(opt)
 	if err != nil {

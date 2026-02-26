@@ -51,6 +51,7 @@ func runCache(ctx context.Context, opt cacheOptions, args []string) error {
 	if err := opt.cmdStoreOptions.validate(); err != nil {
 		return err
 	}
+	opt.stores = cfg.ResolveStores(opt.stores)
 	if len(opt.stores) == 0 {
 		return errors.New("no source store provided")
 	}

@@ -48,6 +48,8 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 		return err
 	}
 
+	opt.store = cfg.ResolveStore(opt.store)
+
 	min, avg, max, err := parseChunkSizeParam(opt.chunkSize)
 	if err != nil {
 		return err

@@ -32,8 +32,8 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 
 | Flag | Default | Description |
 |---|---|---|
-| `-s`, `--store` | *(required)* | Chunk store location. See [Supported Backends](#supported-backends) for URL schemes. |
-| `--index-store` | derived from `--store` | Index store location. Defaults to replacing the last path segment of `--store` with `index` (or a sibling `index` directory for local paths). |
+| `-s`, `--store` | config default or *(required)* | Chunk store location. See [Supported Backends](#supported-backends) for URL schemes. May be set via the `defaults.stores` config key. |
+| `--index-store` | config default, then derived from `--store` | Index store location. Falls back to `defaults.index-store` in the config, then to replacing the last path segment of `--store` with `index` (or a sibling `index` directory for local paths). |
 | `-c`, `--cache` | — | Local chunk store used as a download cache. On a cache miss, the chunk is fetched from `--store` and saved to the cache; subsequent downloads are served from the cache. Uploads always go directly to `--store`. Accepts the same URL schemes as `--store`. |
 | `--cache-repair` | `true` | If the cache returns a corrupt chunk, re-download it from `--store` and replace the cached copy. |
 | `-n`, `--concurrency` | `10` | Number of concurrent goroutines for chunk I/O. |
@@ -46,7 +46,77 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `-t`, `--trust-insecure` | `false` | Trust invalid/self-signed certificates. |
 | `--config` | `$HOME/.config/desync/config.json` | desync config file for S3 credentials and store options. Mutually exclusive with `--config-from-git`. |
 | `--config-from-git` | — | Read the desync config from a git object (e.g. `origin/_desync:config.json`). Mutually exclusive with `--config`. |
-| `--digest` | `sha512-256` | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. |
+| `--digest` | config default, then `sha512-256` | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. May be set via the `defaults.digest` config key. |
+
+## Config defaults
+
+Flags that are the same for every invocation (store URL, index store URL, digest algorithm) can be set once in the desync config file under a `defaults` key, so the bare `git-lfs-desync` command works without extra `args` in the LFS agent config.
+
+### Precedence
+
+```
+CLI flag  >  config defaults  >  built-in default
+```
+
+For `--index-store` the derived-from-store fallback is applied after the config default:
+
+```
+CLI --index-store  >  defaults.index-store  >  derived from --store
+```
+
+### JSON shape
+
+```json
+{
+  "defaults": {
+    "digest":      "sha512-256",
+    "stores":      ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"],
+    "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/"
+  }
+}
+```
+
+| Key | Type | Description |
+|---|---|---|
+| `defaults.stores` | array of strings | Chunk store(s). The first entry is used as the single store for `git-lfs-desync`. Additional entries are ignored by this command (but used by multi-store `desync` subcommands). |
+| `defaults.index-store` | string | Index store URL or path. |
+| `defaults.digest` | string | Digest algorithm (`sha512-256` or `sha256`). |
+
+### Example: store URL in config, no per-invocation flags
+
+```sh
+cat ~/.config/desync/config.json
+```
+```json
+{
+  "s3-credentials": {
+    "https://s3.amazonaws.com": {
+      "access-key": "AKIAIOSFODNN7EXAMPLE",
+      "secret-key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "aws-region": "us-east-1"
+    }
+  },
+  "defaults": {
+    "stores": ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"]
+  }
+}
+```
+
+LFS agent config (no `--store` needed):
+
+```ini
+[lfs "customtransfer.desync"]
+    path = /usr/local/bin/git-lfs-desync
+    concurrent = true
+    concurrenttransfers = 5
+
+[lfs]
+    standalonetransferagent = desync
+```
+
+The store URL can also come from a git-resident config via `--config-from-git`, which is useful for sharing a team config without per-machine setup.
+
+---
 
 ## Credentials
 

@@ -58,6 +58,8 @@ func runInspectChunks(ctx context.Context, opt inspectChunksOptions, args []stri
 		outFile = stdout
 	}
 
+	opt.store = cfg.ResolveStore(opt.store)
+
 	// Read the input
 	c, err := readCaibxFile(args[0], opt.cmdStoreOptions)
 	if err != nil {
