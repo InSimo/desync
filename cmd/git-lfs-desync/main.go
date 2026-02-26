@@ -2,135 +2,28 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/folbricht/desync"
-	"github.com/minio/minio-go/v6/pkg/credentials"
+	"github.com/folbricht/desync/cmd/internal/desyncconfig"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
-// S3Creds holds credentials or references to an S3 credentials file.
-type S3Creds struct {
-	AccessKey          string `json:"access-key,omitempty"`
-	SecretKey          string `json:"secret-key,omitempty"`
-	AwsCredentialsFile string `json:"aws-credentials-file,omitempty"`
-	AwsProfile         string `json:"aws-profile,omitempty"`
-	AwsRegion          string `json:"aws-region,omitempty"`
-}
-
-// Config holds the global tool configuration.
-type Config struct {
-	S3Credentials map[string]S3Creds             `json:"s3-credentials"`
-	StoreOptions  map[string]desync.StoreOptions `json:"store-options"`
-}
-
-// GetS3CredentialsFor attempts to find creds and region for an S3 location.
-// Environment variables take precedence over config file values.
-func (c Config) GetS3CredentialsFor(u *url.URL) (*credentials.Credentials, string) {
-	accessKey := os.Getenv("S3_ACCESS_KEY")
-	region := os.Getenv("S3_REGION")
-	secretKey := os.Getenv("S3_SECRET_KEY")
-	sessionToken := os.Getenv("S3_SESSION_TOKEN")
-	if accessKey == "" && secretKey == "" {
-		accessKey = os.Getenv("AWS_ACCESS_KEY_ID")
-		secretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
-		sessionToken = os.Getenv("AWS_SESSION_TOKEN")
-	}
-	if accessKey != "" || secretKey != "" {
-		return NewStaticCredentials(accessKey, secretKey, sessionToken), region
-	}
-
-	key := &url.URL{
-		Scheme: strings.TrimPrefix(u.Scheme, "s3+"),
-		Host:   u.Host,
-	}
-	credsConfig := c.S3Credentials[key.String()]
-	creds := NewStaticCredentials("", "", "")
-	region = credsConfig.AwsRegion
-
-	if credsConfig.AccessKey != "" {
-		creds = NewStaticCredentials(credsConfig.AccessKey, credsConfig.SecretKey, "")
-	} else if credsConfig.AwsCredentialsFile != "" {
-		creds = NewRefreshableSharedCredentials(credsConfig.AwsCredentialsFile, credsConfig.AwsProfile, time.Now)
-	}
-	return creds, region
-}
-
-// GetStoreOptionsFor returns optional config options for a specific store.
-// Returns an error if more than one config entry matches the location.
-func (c Config) GetStoreOptionsFor(location string) (options desync.StoreOptions, err error) {
-	options = desync.NewStoreOptionsWithDefaults()
-	found := false
-	for k, v := range c.StoreOptions {
-		if locationMatch(k, location) {
-			if found {
-				return options, fmt.Errorf("multiple configuration entries match %q", location)
-			}
-			found = true
-			options = v
-		}
-	}
-	return options, nil
-}
-
-// locationMatch returns true if the pattern matches the location string.
-func locationMatch(pattern, loc string) bool {
-	l, err := url.Parse(loc)
-	if err != nil {
-		return false
-	}
-	if len(l.Scheme) > 1 {
-		trimmedLoc := strings.TrimSuffix(loc, "/")
-		trimmedPattern := strings.TrimSuffix(pattern, "/")
-		m, _ := filepath.Match(trimmedPattern, trimmedLoc)
-		return m
-	}
-	p1, err := filepath.Abs(pattern)
-	if err != nil {
-		return false
-	}
-	p2, err := filepath.Abs(loc)
-	if err != nil {
-		return false
-	}
-	m, _ := filepath.Match(p1, p2)
-	return m
-}
-
-var cfg Config
+var cfg desyncconfig.Config
 var cfgFile string
 
 func initConfig() error {
-	if cfgFile == "" {
-		switch runtime.GOOS {
-		case "windows":
-			cfgFile = filepath.Join(os.Getenv("HOMEDRIVE")+os.Getenv("HOMEPATH"), ".config", "desync", "config.json")
-		default:
-			cfgFile = filepath.Join(os.Getenv("HOME"), ".config", "desync", "config.json")
-		}
-		if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
-			return nil
-		}
-	}
-	f, err := os.Open(cfgFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err = json.NewDecoder(f).Decode(&cfg); err != nil {
-		return errors.Wrap(err, "reading "+cfgFile)
-	}
-	return nil
+	var err error
+	cfg, cfgFile, err = desyncconfig.LoadConfig(cfgFile)
+	return err
 }
 
 // deriveIndexURL derives an index store location from a chunk store location.

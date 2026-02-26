@@ -1,10 +1,9 @@
-package main
+package desyncconfig
 
 import (
 	"os"
-	"time"
-
 	"path/filepath"
+	"time"
 
 	"github.com/go-ini/ini"
 	"github.com/minio/minio-go/v6/pkg/credentials"
