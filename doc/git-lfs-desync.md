@@ -201,7 +201,8 @@ git stash pop
 ```ini
 [lfs "customtransfer.desync"]
     path = /usr/local/bin/git-lfs-desync
-    args = --config-from-git origin/_desync:config.json
+    args = --config-from-git origin/_desync:config.json \
+           --cache ~/.cache/desync/chunks
     concurrent = true
     concurrenttransfers = 5
 
@@ -210,6 +211,12 @@ git stash pop
 ```
 
 The store and index store URLs are read from `defaults` in the committed config, so no `--store` flag is needed here.
+
+A local cache (`--cache`) is strongly recommended. Because desync stores deduplicated chunks, many chunks are shared across different files and commits. Without a cache every download fetches each chunk from the remote store, even if it was retrieved moments ago for another file. With a cache, chunks are saved to a local directory on first download and served from there on all subsequent accesses — making repeated checkouts, branch switches, and multi-file pulls significantly faster. Create the directory before first use:
+
+```sh
+mkdir -p ~/.cache/desync/chunks
+```
 
 `git clone` fetches all remote tracking branches by default, so `origin/_desync` is available immediately after cloning without a separate `git fetch`. On machines that already have the repository checked out before `_desync` was pushed, run `git fetch origin _desync` once.
 
