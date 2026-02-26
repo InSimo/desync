@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -19,8 +21,20 @@ import (
 
 var cfg desyncconfig.Config
 var cfgFile string
+var cfgFromGit string
 
 func initConfig() error {
+	if cfgFile != "" && cfgFromGit != "" {
+		return fmt.Errorf("--config and --config-from-git are mutually exclusive")
+	}
+	if cfgFromGit != "" {
+		out, err := exec.Command("git", "cat-file", "--text-conv", cfgFromGit).Output()
+		if err != nil {
+			return fmt.Errorf("reading config from git object %q: %w", cfgFromGit, err)
+		}
+		cfg, err = desyncconfig.LoadConfigFromReader(bytes.NewReader(out))
+		return err
+	}
 	var err error
 	cfg, cfgFile, err = desyncconfig.LoadConfig(cfgFile)
 	return err
@@ -216,6 +230,8 @@ Configure Git LFS to use this agent:
 	flags.DurationVarP(&errorRetryInterval, "error-retry-base-interval", "b",
 		desync.DefaultErrorRetryBaseInterval, "initial retry delay, increases linearly with each attempt")
 	flags.StringVar(&cfgFile, "config", "", "desync config file (default: $HOME/.config/desync/config.json)")
+	flags.StringVar(&cfgFromGit, "config-from-git", "",
+		"read desync config from a git object (e.g. origin/_desync:config.json)")
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)

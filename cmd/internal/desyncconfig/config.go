@@ -3,6 +3,7 @@ package desyncconfig
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -86,6 +87,15 @@ func (c Config) GetStoreOptionsFor(location string) (options desync.StoreOptions
 		}
 	}
 	return options, nil
+}
+
+// LoadConfigFromReader JSON-decodes a Config from r.
+func LoadConfigFromReader(r io.Reader) (Config, error) {
+	var cfg Config
+	if err := json.NewDecoder(r).Decode(&cfg); err != nil {
+		return cfg, errors.Wrap(err, "decoding config")
+	}
+	return cfg, nil
 }
 
 // LoadConfig resolves the config file path (using the platform default if cfgFile
