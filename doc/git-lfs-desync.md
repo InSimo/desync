@@ -44,7 +44,8 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `--client-key` | — | Path to client key for mutual TLS. |
 | `--ca-cert` | — | CA certificate file to trust instead of the OS trust store. |
 | `-t`, `--trust-insecure` | `false` | Trust invalid/self-signed certificates. |
-| `--config` | `$HOME/.config/desync/config.json` | desync config file for S3 credentials and store options. |
+| `--config` | `$HOME/.config/desync/config.json` | desync config file for S3 credentials and store options. Mutually exclusive with `--config-from-git`. |
+| `--config-from-git` | — | Read the desync config from a git object (e.g. `origin/_desync:config.json`). Mutually exclusive with `--config`. |
 
 ## Credentials
 
@@ -77,6 +78,66 @@ SFTP stores authenticate via the SSH agent or `~/.ssh` keys. No extra configurat
 ### GCS
 
 GCS stores use [application default credentials](https://cloud.google.com/docs/authentication/application-default-credentials). Run `gcloud auth application-default login` or set `GOOGLE_APPLICATION_CREDENTIALS`.
+
+## Config from Git (`--config-from-git`)
+
+`git-lfs-desync` is invoked by Git itself during clone, fetch, and push operations, with the working directory set to the repository root. This means the desync config — containing S3 credentials and store options — normally needs to live at a fixed path on each developer's machine, making it awkward to onboard contributors or run in CI environments.
+
+`--config-from-git <object>` solves this by reading the config JSON directly from the repository's object database via `git cat-file --text-conv <object>`. The object name can be any git ref, tree path, or blob — for example, a file on a dedicated branch that never mingles with the main working tree.
+
+### Storing the config in a `_desync` branch
+
+A clean pattern is to keep the config on an orphan branch named `_desync`. Because this branch has no parent commits, the credentials never appear in the normal commit log. The branch can be pushed to and fetched from the remote independently of the code history.
+
+#### 1. Create the orphan branch and commit the config
+
+```sh
+# Stash any in-progress work first, as the orphan checkout clears the index
+git stash
+
+git checkout --orphan _desync
+git rm -rf .    # clear the index; leaves the working tree clean for our new file
+
+cat > config.json <<'EOF'
+{
+  "s3-credentials": {
+    "https://s3.amazonaws.com": {
+      "access-key": "AKIAIOSFODNN7EXAMPLE",
+      "secret-key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "aws-region": "us-east-1"
+    }
+  }
+}
+EOF
+
+git add config.json
+git commit -m "desync config"
+git push origin _desync
+
+# Return to the previous branch and restore any stashed work
+git checkout -
+git stash pop
+```
+
+#### 2. Reference it in the LFS agent args
+
+```ini
+[lfs "customtransfer.desync"]
+    path = /usr/local/bin/git-lfs-desync
+    args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ \
+           --config-from-git origin/_desync:config.json
+    concurrent = true
+    concurrenttransfers = 5
+
+[lfs]
+    standalonetransferagent = desync
+```
+
+`git clone` fetches all remote tracking branches by default, so `origin/_desync` is available immediately after cloning without a separate `git fetch`. On machines that already have the repository checked out before `_desync` was pushed, run `git fetch origin _desync` once.
+
+> **Security note:** Anyone with read access to the remote can read the credentials on the `_desync` branch. Use this pattern only when the remote is private and access-controlled. If finer-grained access control is needed (e.g. read access to code but not to S3 keys), store credentials in environment variables or a local file via `--config` instead.
+
+---
 
 ## Git Configuration
 
