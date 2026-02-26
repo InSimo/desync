@@ -179,6 +179,10 @@ cat > config.json <<'EOF'
       "secret-key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
       "aws-region": "us-east-1"
     }
+  },
+  "defaults": {
+    "stores":      ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"],
+    "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/"
   }
 }
 EOF
@@ -197,14 +201,15 @@ git stash pop
 ```ini
 [lfs "customtransfer.desync"]
     path = /usr/local/bin/git-lfs-desync
-    args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ \
-           --config-from-git origin/_desync:config.json
+    args = --config-from-git origin/_desync:config.json
     concurrent = true
     concurrenttransfers = 5
 
 [lfs]
     standalonetransferagent = desync
 ```
+
+The store and index store URLs are read from `defaults` in the committed config, so no `--store` flag is needed here.
 
 `git clone` fetches all remote tracking branches by default, so `origin/_desync` is available immediately after cloning without a separate `git fetch`. On machines that already have the repository checked out before `_desync` was pushed, run `git fetch origin _desync` once.
 
