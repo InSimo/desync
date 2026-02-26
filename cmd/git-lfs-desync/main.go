@@ -22,6 +22,7 @@ import (
 var cfg desyncconfig.Config
 var cfgFile string
 var cfgFromGit string
+var digestAlgorithm string
 
 func initConfig() error {
 	if cfgFile != "" && cfgFromGit != "" {
@@ -111,7 +112,10 @@ Configure Git LFS to use this agent:
     standalonetransferagent = desync`,
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return initConfig()
+			if err := initConfig(); err != nil {
+				return err
+			}
+			return desyncconfig.SetDigestAlgorithm(digestAlgorithm)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if storeURL == "" {
@@ -232,6 +236,7 @@ Configure Git LFS to use this agent:
 	flags.StringVar(&cfgFile, "config", "", "desync config file (default: $HOME/.config/desync/config.json)")
 	flags.StringVar(&cfgFromGit, "config-from-git", "",
 		"read desync config from a git object (e.g. origin/_desync:config.json)")
+	flags.StringVar(&digestAlgorithm, "digest", "sha512-256", "digest algorithm, sha512-256 or sha256")
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)
