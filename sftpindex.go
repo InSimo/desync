@@ -58,6 +58,12 @@ func (s *SFTPIndexStore) StoreIndex(name string, idx Index) error {
 	return s.StoreObject(s.pathFromName(name), r)
 }
 
+// HasIndex returns true if an index with the given name exists in the store.
+func (s *SFTPIndexStore) HasIndex(name string) (bool, error) {
+	_, err := s.client.Stat(s.pathFromName(name))
+	return err == nil, nil
+}
+
 func (s *SFTPIndexStore) pathFromName(name string) string {
 	return path.Join(s.path, name)
 }

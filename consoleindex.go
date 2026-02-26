@@ -31,6 +31,11 @@ func (s ConsoleIndexStore) StoreIndex(name string, idx Index) error {
 	return err
 }
 
+// HasIndex always returns false for the console store since stdin cannot be probed.
+func (s ConsoleIndexStore) HasIndex(string) (bool, error) {
+	return false, nil
+}
+
 func (s ConsoleIndexStore) String() string {
 	return "-"
 }

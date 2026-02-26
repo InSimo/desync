@@ -37,6 +37,7 @@ type PruneStore interface {
 type IndexStore interface {
 	GetIndexReader(name string) (io.ReadCloser, error)
 	GetIndex(name string) (Index, error)
+	HasIndex(name string) (bool, error)
 	io.Closer
 	fmt.Stringer
 }

@@ -49,6 +49,12 @@ func (s S3IndexStore) GetIndex(name string) (i Index, e error) {
 	return IndexFromReader(obj)
 }
 
+// HasIndex returns true if an index with the given name exists in the store.
+func (s S3IndexStore) HasIndex(name string) (bool, error) {
+	_, err := s.client.StatObject(s.bucket, s.prefix+name, minio.StatObjectOptions{})
+	return err == nil, nil
+}
+
 // StoreIndex writes the index file to the S3 store
 func (s S3IndexStore) StoreIndex(name string, idx Index) error {
 	contentType := "application/octet-stream"

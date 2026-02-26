@@ -2,6 +2,7 @@ package desync
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/url"
 )
@@ -39,6 +40,23 @@ func (r *RemoteHTTPIndex) GetIndex(name string) (i Index, e error) {
 		return i, err
 	}
 	return IndexFromReader(ir)
+}
+
+// HasIndex returns true if an index with the given name exists in the store.
+func (r RemoteHTTPIndex) HasIndex(name string) (bool, error) {
+	u, _ := r.location.Parse(name)
+	statusCode, _, err := r.IssueRetryableHttpRequest("HEAD", u, func() io.Reader { return nil })
+	if err != nil {
+		return false, err
+	}
+	switch statusCode {
+	case 200:
+		return true, nil
+	case 404:
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected status code: %d", statusCode)
+	}
 }
 
 // StoreIndex adds a new chunk to the store

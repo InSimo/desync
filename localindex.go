@@ -62,6 +62,18 @@ func (s LocalIndexStore) StoreIndex(name string, idx Index) error {
 	return err
 }
 
+// HasIndex returns true if an index with the given name exists in the store.
+func (s LocalIndexStore) HasIndex(name string) (bool, error) {
+	_, err := os.Stat(s.Path + name)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 func (s LocalIndexStore) String() string {
 	return s.Path
 }

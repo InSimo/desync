@@ -62,6 +62,16 @@ func (s GCIndexStore) GetIndex(name string) (i Index, e error) {
 	return IndexFromReader(obj)
 }
 
+// HasIndex returns true if an index with the given name exists in the store.
+func (s GCIndexStore) HasIndex(name string) (bool, error) {
+	ctx := context.TODO()
+	_, err := s.client.Object(s.prefix + name).Attrs(ctx)
+	if err == storage.ErrObjectNotExist {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // StoreIndex writes the index file to the Google Storage store
 func (s GCIndexStore) StoreIndex(name string, idx Index) error {
 	ctx := context.TODO()
