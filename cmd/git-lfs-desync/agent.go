@@ -161,6 +161,12 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 		return
 	}
 
+	// Skip re-upload if this OID is already present in the index store.
+	if exists, err := a.indexWriteStore.HasIndex(req.OID + ".caibx"); err == nil && exists {
+		a.sendComplete(req.OID, "", nil)
+		return
+	}
+
 	// Chunk the file and build an index.
 	pb := &lfsProgressBar{agent: a, oid: req.OID, totalBytes: req.Size}
 	idx, _, err := desync.IndexFromFile(ctx, req.Path, a.n, a.minChunk, a.avgChunk, a.maxChunk, pb)
