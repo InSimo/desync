@@ -31,11 +31,12 @@ func newChunkCommand(ctx context.Context) *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.Uint64VarP(&opt.startPos, "start", "S", 0, "starting position")
-	flags.StringVarP(&opt.chunkSize, "chunk-size", "m", "16:64:256", "min:avg:max chunk size in kb")
+	flags.StringVarP(&opt.chunkSize, "chunk-size", "m", "", "min:avg:max chunk size in kb (default 16:64:256)")
 	return cmd
 }
 
 func runChunk(ctx context.Context, opt chunkOptions, args []string) error {
+	opt.chunkSize = cfg.ResolveChunkSize(opt.chunkSize)
 	min, avg, max, err := parseChunkSizeParam(opt.chunkSize)
 	if err != nil {
 		return err

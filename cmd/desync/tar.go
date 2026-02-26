@@ -52,7 +52,7 @@ the input can be a tar file or a stream from STDIN with '-'.
 	}
 	flags := cmd.Flags()
 	flags.StringVarP(&opt.store, "store", "s", "", "target store (used with -i)")
-	flags.StringVarP(&opt.chunkSize, "chunk-size", "m", "16:64:256", "min:avg:max chunk size in kb")
+	flags.StringVarP(&opt.chunkSize, "chunk-size", "m", "", "min:avg:max chunk size in kb (default 16:64:256)")
 	flags.BoolVarP(&opt.createIndex, "index", "i", false, "create index file (caidx), not catar")
 	flags.StringVar(&opt.inFormat, "input-format", "disk", "input format, 'disk' or 'tar'")
 	flags.BoolVarP(&opt.NoTime, "no-time", "", false, "set file timestamps to zero in the archive")
@@ -71,6 +71,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 		return err
 	}
 	opt.store = cfg.ResolveStore(opt.store)
+	opt.chunkSize = cfg.ResolveChunkSize(opt.chunkSize)
 	if opt.createIndex && opt.store == "" {
 		return errors.New("-i requires a store (-s <location>)")
 	}

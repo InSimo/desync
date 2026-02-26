@@ -37,7 +37,7 @@ to STDOUT.`,
 	}
 	flags := cmd.Flags()
 	flags.StringVarP(&opt.store, "store", "s", "", "target store")
-	flags.StringVarP(&opt.chunkSize, "chunk-size", "m", "16:64:256", "min:avg:max chunk size in kb")
+	flags.StringVarP(&opt.chunkSize, "chunk-size", "m", "", "min:avg:max chunk size in kb (default 16:64:256)")
 	flags.BoolVarP(&opt.printStats, "print-stats", "", false, "print chunking statistics to stderr when done")
 	addStoreOptions(&opt.cmdStoreOptions, flags)
 	return cmd
@@ -49,6 +49,7 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 	}
 
 	opt.store = cfg.ResolveStore(opt.store)
+	opt.chunkSize = cfg.ResolveChunkSize(opt.chunkSize)
 
 	min, avg, max, err := parseChunkSizeParam(opt.chunkSize)
 	if err != nil {

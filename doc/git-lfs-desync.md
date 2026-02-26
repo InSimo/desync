@@ -37,7 +37,7 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `-c`, `--cache` | — | Local chunk store used as a download cache. On a cache miss, the chunk is fetched from `--store` and saved to the cache; subsequent downloads are served from the cache. Uploads always go directly to `--store`. Accepts the same URL schemes as `--store`. |
 | `--cache-repair` | `true` | If the cache returns a corrupt chunk, re-download it from `--store` and replace the cached copy. |
 | `-n`, `--concurrency` | `10` | Number of concurrent goroutines for chunk I/O. |
-| `-m`, `--chunk-size` | `16:64:256` | Min:avg:max chunk size in KB. |
+| `-m`, `--chunk-size` | config default, then `16:64:256` | Min:avg:max chunk size in KB. May be set via the `defaults.chunk-size` config key. |
 | `-e`, `--error-retry` | `3` | Number of times to retry on network error. |
 | `-b`, `--error-retry-base-interval` | `500ms` | Initial retry delay; increases linearly with each attempt. |
 | `--client-cert` | — | Path to client certificate for mutual TLS. |
@@ -71,7 +71,8 @@ CLI --index-store  >  defaults.index-store  >  derived from --store
   "defaults": {
     "digest":      "sha512-256",
     "stores":      ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"],
-    "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/"
+    "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/",
+    "chunk-size":  "16:64:256"
   }
 }
 ```
@@ -81,6 +82,7 @@ CLI --index-store  >  defaults.index-store  >  derived from --store
 | `defaults.stores` | array of strings | Chunk store(s). The first entry is used as the single store for `git-lfs-desync`. Additional entries are ignored by this command (but used by multi-store `desync` subcommands). |
 | `defaults.index-store` | string | Index store URL or path. |
 | `defaults.digest` | string | Digest algorithm (`sha512-256` or `sha256`). |
+| `defaults.chunk-size` | string | Min:avg:max chunk size in KB, e.g. `"16:64:256"`. |
 
 ### Example: store URL in config, no per-invocation flags
 

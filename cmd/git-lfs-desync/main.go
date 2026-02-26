@@ -120,6 +120,7 @@ Configure Git LFS to use this agent:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			storeURL = cfg.ResolveStore(storeURL)
 			indexURL = cfg.ResolveIndexStore(indexURL)
+			chunkSize = cfg.ResolveChunkSize(chunkSize)
 			if storeURL == "" {
 				return fmt.Errorf("--store is required")
 			}
@@ -227,7 +228,7 @@ Configure Git LFS to use this agent:
 	flags.BoolVar(&cacheRepair, "cache-repair", true,
 		"replace corrupt chunks in the cache by re-downloading them from --store")
 	flags.IntVarP(&concurrency, "concurrency", "n", 10, "number of concurrent goroutines")
-	flags.StringVarP(&chunkSize, "chunk-size", "m", "16:64:256", "min:avg:max chunk size in KB")
+	flags.StringVarP(&chunkSize, "chunk-size", "m", "", "min:avg:max chunk size in KB (default 16:64:256)")
 	flags.IntVarP(&errorRetry, "error-retry", "e", desync.DefaultErrorRetry, "number of times to retry on network error")
 	flags.StringVar(&clientCert, "client-cert", "", "path to client certificate for TLS authentication")
 	flags.StringVar(&clientKey, "client-key", "", "path to client key for TLS authentication")

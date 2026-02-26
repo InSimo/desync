@@ -27,12 +27,17 @@ type S3Creds struct {
 	AwsRegion string `json:"aws-region,omitempty"`
 }
 
+// DefaultChunkSize is the built-in min:avg:max chunk size used when neither
+// the CLI flag nor the config file specifies one.
+const DefaultChunkSize = "16:64:256"
+
 // Defaults holds config-file defaults for CLI flags that users often want to
 // set once rather than on every invocation.
 type Defaults struct {
 	Digest     string   `json:"digest,omitempty"`
 	Stores     []string `json:"stores,omitempty"`
 	IndexStore string   `json:"index-store,omitempty"`
+	ChunkSize  string   `json:"chunk-size,omitempty"`
 }
 
 // Config is used to hold the global tool configuration. It's used to customize
@@ -134,6 +139,19 @@ func (c Config) ResolveIndexStore(cli string) string {
 		return cli
 	}
 	return c.Defaults.IndexStore
+}
+
+// ResolveChunkSize returns cli if non-empty, otherwise c.Defaults.ChunkSize,
+// otherwise DefaultChunkSize. The return value is always a valid non-empty
+// min:avg:max string suitable for passing to parseChunkSizeParam.
+func (c Config) ResolveChunkSize(cli string) string {
+	if cli != "" {
+		return cli
+	}
+	if c.Defaults.ChunkSize != "" {
+		return c.Defaults.ChunkSize
+	}
+	return DefaultChunkSize
 }
 
 // SetDigestAlgorithm sets the global desync.Digest to the algorithm named by
