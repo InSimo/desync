@@ -6,6 +6,8 @@ This project re-implements many features of upstream [casync](https://github.com
 
 For support and discussion, see [![Gitter chat](https://badges.gitter.im/desync-casync-client/Lobby.png)](https://gitter.im/desync-casync-client/Lobby). Feature requests should be discussed there before filing, unless you're interested in doing the work to implement them yourself.
 
+This project also includes `git-lfs-desync`, a [Git LFS custom transfer agent](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md). Instead of uploading whole files to an LFS server it splits each file into content-defined chunks, deduplicates and compresses them in a desync store, and records the resulting index keyed by LFS OID. Only genuinely new chunks are uploaded; chunks shared across files and commits are stored once and reused. See [doc/git-lfs-desync.md](doc/git-lfs-desync.md) for full documentation and usage examples.
+
 ## Goals And Non-Goals
 
 Among the distinguishing factors:
