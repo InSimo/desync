@@ -89,6 +89,21 @@ func (c Config) GetStoreOptionsFor(location string) (options desync.StoreOptions
 	return options, nil
 }
 
+// SetDigestAlgorithm sets the global desync.Digest to the algorithm named by
+// algorithm. Valid values are "" or "sha512-256" (the default) and "sha256".
+// Returns an error for any other value.
+func SetDigestAlgorithm(algorithm string) error {
+	switch algorithm {
+	case "", "sha512-256":
+		desync.Digest = desync.SHA512256{}
+	case "sha256":
+		desync.Digest = desync.SHA256{}
+	default:
+		return fmt.Errorf("invalid digest algorithm '%s'", algorithm)
+	}
+	return nil
+}
+
 // LoadConfigFromReader JSON-decodes a Config from r.
 func LoadConfigFromReader(r io.Reader) (Config, error) {
 	var cfg Config

@@ -85,13 +85,8 @@ func initConfig() {
 var digestAlgorithm string
 
 func setDigestAlgorithm() {
-	switch digestAlgorithm {
-	case "", "sha512-256":
-		desync.Digest = desync.SHA512256{}
-	case "sha256":
-		desync.Digest = desync.SHA256{}
-	default:
-		die(fmt.Errorf("invalid digest algorithm '%s'", digestAlgorithm))
+	if err := desyncconfig.SetDigestAlgorithm(digestAlgorithm); err != nil {
+		die(err)
 	}
 }
 
