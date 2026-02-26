@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/folbricht/desync"
@@ -546,6 +547,78 @@ func TestAgentConcurrentTransfers(t *testing.T) {
 		if evt.Error != nil {
 			t.Errorf("OID %s error: %v", oid, evt.Error.Message)
 		}
+	}
+}
+
+type trackingIndexWriteStore struct {
+	desync.IndexWriteStore
+	storeCalls atomic.Int64
+}
+
+func (s *trackingIndexWriteStore) StoreIndex(name string, idx desync.Index) error {
+	s.storeCalls.Add(1)
+	return s.IndexWriteStore.StoreIndex(name, idx)
+}
+
+func TestAgentUploadSkipsRedundantUpload(t *testing.T) {
+	chunkDir := t.TempDir()
+	indexDir := t.TempDir()
+	tmpDir := t.TempDir()
+
+	chunkStore, err := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chunkStore.Close()
+
+	rawIndex, err := desync.NewLocalIndexStore(indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawIndex.Close()
+	trackerIndex := &trackingIndexWriteStore{IndexWriteStore: rawIndex}
+
+	content := bytes.Repeat([]byte("redundant-upload-test "), 5000)
+	srcFile := filepath.Join(t.TempDir(), "source.bin")
+	if err := os.WriteFile(srcFile, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newAgent := func() *Agent {
+		var buf bytes.Buffer
+		return &Agent{
+			writeStore:      chunkStore,
+			readStore:       chunkStore,
+			indexWriteStore: trackerIndex,
+			n:               4,
+			minChunk:        4 * 1024,
+			avgChunk:        16 * 1024,
+			maxChunk:        64 * 1024,
+			tmpDir:          tmpDir,
+			enc:             json.NewEncoder(&buf),
+		}
+	}
+
+	uploadMsg, _ := json.Marshal(transferRequest{
+		Event: "upload", OID: "dup-upload-oid",
+		Size: int64(len(content)), Path: srcFile,
+	})
+
+	// First upload: must succeed and call StoreIndex.
+	a1 := newAgent()
+	a1.handleUpload(context.Background(), uploadMsg)
+	if trackerIndex.storeCalls.Load() == 0 {
+		t.Fatal("first upload did not call StoreIndex")
+	}
+
+	// Reset counter, then upload the same OID again.
+	trackerIndex.storeCalls.Store(0)
+	a2 := newAgent()
+	a2.handleUpload(context.Background(), uploadMsg)
+
+	// Without the HasIndex fix this assertion FAILS (second upload calls StoreIndex again).
+	if n := trackerIndex.storeCalls.Load(); n != 0 {
+		t.Errorf("second upload called StoreIndex %d times; expected 0 (OID already indexed)", n)
 	}
 }
 
