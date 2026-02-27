@@ -114,7 +114,17 @@ func runChop(ctx context.Context, opt chopOptions, args []string) error {
 	pb := desync.NewProgressBar("")
 
 	// Chop up the file into chunks and store them in the target store
-	return desync.ChopFile(ctx, dataFile, chunks, s, opt.n, pb)
+	if err := desync.ChopFile(ctx, dataFile, chunks, s, opt.n, pb); err != nil {
+		return err
+	}
+	if sps, ok := s.(desync.SafePruneStore); ok {
+		ids := make(map[desync.ChunkID]struct{}, len(c.Chunks))
+		for _, chunk := range c.Chunks {
+			ids[chunk.ID] = struct{}{}
+		}
+		return sps.RescueChunks(ctx, ids)
+	}
+	return nil
 }
 
 // Read a list of chunk IDs from a file. Blank lines are skipped.

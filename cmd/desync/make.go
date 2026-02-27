@@ -86,7 +86,21 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 	if opt.printStats {
 		printJSON(stderr, stats) // write to stderr since stdout could be used for index data
 	}
-	return storeCaibxFile(index, indexFile, opt.cmdStoreOptions)
+	if err := storeCaibxFile(index, indexFile, opt.cmdStoreOptions); err != nil {
+		return err
+	}
+	if s != nil {
+		if sps, ok := s.(desync.SafePruneStore); ok {
+			ids := make(map[desync.ChunkID]struct{}, len(index.Chunks))
+			for _, c := range index.Chunks {
+				ids[c.ID] = struct{}{}
+			}
+			if err := sps.RescueChunks(ctx, ids); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func parseChunkSizeParam(s string) (min, avg, max uint64, err error) {

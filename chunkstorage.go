@@ -52,6 +52,11 @@ func (s *ChunkStorage) StoreChunk(chunk *Chunk) (err error) {
 
 	// Skip this chunk if the store already has it
 	if hasChunk, err := s.ws.HasChunk(chunk.ID()); err != nil || hasChunk {
+		if hasChunk {
+			if sps, ok := s.ws.(SafePruneStore); ok {
+				_ = sps.UntagPrunable(chunk.ID())
+			}
+		}
 		return err
 	}
 

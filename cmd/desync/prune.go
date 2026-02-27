@@ -130,5 +130,12 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		}
 	}
 
+	if opt.cmdStoreOptions.safePruning {
+		ss, ok := s.(desync.SafePruneStore)
+		if !ok {
+			return fmt.Errorf("store '%s' does not support safe pruning", s)
+		}
+		return ss.SafePrune(ctx, ids)
+	}
 	return s.Prune(ctx, ids)
 }

@@ -33,6 +33,35 @@ type PruneStore interface {
 	Prune(ctx context.Context, ids map[ChunkID]struct{}) error
 }
 
+// SafePruneStore extends PruneStore with the two-run safe pruning protocol.
+// Stores that implement this interface can be pruned concurrently with
+// ongoing chunk write operations. See doc/safe-pruning.md for the full
+// protocol description.
+type SafePruneStore interface {
+	PruneStore
+
+	// SafePrune runs one iteration of the safe pruning algorithm. It must
+	// be called at least twice (on separate invocations) for any chunk to
+	// actually be deleted: the first call marks candidates with a .prunable
+	// companion file; the second call quarantines still-unreferenced marked
+	// chunks by renaming their data file to .pruning; a prior call's
+	// quarantined chunks are deleted at the start of each run.
+	SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error
+
+	// UntagPrunable removes the .prunable companion file for a chunk when a
+	// writer finds the chunk already present in the store. This prevents the
+	// chunk from being quarantined by a concurrent prune run. It is a no-op
+	// if the companion file does not exist.
+	UntagPrunable(id ChunkID) error
+
+	// RescueChunks checks every chunk in ids: if its data has been renamed to
+	// .pruning (quarantined), it renames it back; if a stale .prunable
+	// companion exists alongside a live .cacnk, it is deleted. Called by
+	// writers after committing an index (or after ChopFile in the chop
+	// command) to recover any chunks quarantined during the write window.
+	RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error
+}
+
 // IndexStore is implemented by stores that hold indexes.
 type IndexStore interface {
 	GetIndexReader(name string) (io.ReadCloser, error)
@@ -105,6 +134,11 @@ type StoreOptions struct {
 
 	// Store and read chunks uncompressed, without chunk file extension
 	Uncompressed bool `json:"uncompressed"`
+
+	// SafePruning enables the two-run safe pruning protocol, which allows the
+	// prune command to run concurrently with chunk write operations without
+	// risking deletion of newly written chunks. See doc/safe-pruning.md.
+	SafePruning bool `json:"safe-pruning,omitempty"`
 }
 
 // NewStoreOptionsWithDefaults creates a new StoreOptions struct with the default values set

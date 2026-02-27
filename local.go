@@ -259,3 +259,148 @@ func (s LocalStore) nameFromID(id ChunkID) (dir, name string) {
 	}
 	return
 }
+
+func (s LocalStore) pruningPathsFromID(id ChunkID) (prunable, pruning string) {
+	_, p := s.nameFromID(id)
+	return p + PrunableExt, p + PruningExt
+}
+
+// UntagPrunable removes the .prunable companion file for a chunk, if it exists.
+func (s LocalStore) UntagPrunable(id ChunkID) error {
+	prunable, _ := s.pruningPathsFromID(id)
+	err := os.Remove(prunable)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
+// For each chunk: removes any .prunable marker; if the .cacnk is missing but
+// a .pruning file exists, renames it back.
+func (s LocalStore) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
+	for id := range ids {
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		_, cacnk := s.nameFromID(id)
+		prunable, pruning := s.pruningPathsFromID(id)
+		// Always remove any prunable marker.
+		if err := os.Remove(prunable); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if _, err := os.Stat(cacnk); err == nil {
+			// .cacnk exists; remove stale quarantined copy if any.
+			if err2 := os.Remove(pruning); err2 != nil && !os.IsNotExist(err2) {
+				return err2
+			}
+		} else if os.IsNotExist(err) {
+			// .cacnk missing; rescue from quarantine if available.
+			if _, serr := os.Stat(pruning); serr == nil {
+				if err2 := os.Rename(pruning, cacnk); err2 != nil {
+					return err2
+				}
+			}
+		} else {
+			return err
+		}
+	}
+	return nil
+}
+
+// SafePrune implements the two-run safe pruning protocol for a LocalStore.
+// Phase 1: delete previously quarantined (.pruning) chunks and orphaned
+// .prunable markers. Phase 2: for chunks not in ids, create a .prunable
+// marker on first encounter, or quarantine (rename .cacnk → .pruning) if
+// the marker already exists; for chunks in ids, remove any .prunable marker.
+func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
+	// Phase 1: cleanup — remove quarantined chunks and orphaned prunable markers.
+	if err := filepath.Walk(s.Base, func(path string, info os.FileInfo, err error) error {
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(path, PruningExt) {
+			return os.Remove(path)
+		}
+		if strings.HasSuffix(path, PrunableExt) {
+			// Remove orphaned marker if corresponding .cacnk is gone.
+			cacnk := strings.TrimSuffix(path, PrunableExt)
+			if _, serr := os.Stat(cacnk); os.IsNotExist(serr) {
+				return os.Remove(path)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	// Phase 2: mark new candidates and quarantine previously marked chunks.
+	return filepath.Walk(s.Base, func(path string, info os.FileInfo, err error) error {
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		if err != nil {
+			// A file deleted during quarantine (e.g. .prunable removed after
+			// renaming .cacnk → .pruning) may still appear in the walk's
+			// pre-read directory listing. Treat "not exist" as "skip".
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// Skip temp files and non-chunk files (.prunable, .pruning, etc.).
+		if strings.HasPrefix(filepath.Base(path), tmpChunkPrefix) {
+			_ = os.Remove(path)
+			return nil
+		}
+		var sID string
+		if s.Opt.Uncompressed {
+			if !strings.HasSuffix(path, UncompressedChunkExt) {
+				return nil
+			}
+			sID = strings.TrimSuffix(filepath.Base(path), UncompressedChunkExt)
+		} else {
+			if !strings.HasSuffix(path, CompressedChunkExt) {
+				return nil
+			}
+			sID = strings.TrimSuffix(filepath.Base(path), CompressedChunkExt)
+		}
+		id, err := ChunkIDFromString(sID)
+		if err != nil {
+			return nil
+		}
+		prunable, pruning := s.pruningPathsFromID(id)
+		if _, ok := ids[id]; ok {
+			// Chunk is in keep-set: remove any prunable marker.
+			if rerr := os.Remove(prunable); rerr != nil && !os.IsNotExist(rerr) {
+				return rerr
+			}
+			return nil
+		}
+		// Chunk is not in keep-set.
+		if _, serr := os.Stat(prunable); os.IsNotExist(serr) {
+			// First encounter: create empty marker.
+			return os.WriteFile(prunable, nil, 0644)
+		}
+		// Already marked: quarantine by renaming .cacnk → .pruning, then remove marker.
+		if rerr := os.Rename(path, pruning); rerr != nil {
+			return rerr
+		}
+		return os.Remove(prunable)
+	})
+}

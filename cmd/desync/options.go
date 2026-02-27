@@ -20,6 +20,7 @@ type cmdStoreOptions struct {
 	cacheRepair            bool
 	errorRetry             int
 	errorRetryBaseInterval time.Duration
+	safePruning            bool
 	pflag.FlagSet
 }
 
@@ -49,6 +50,9 @@ func (o cmdStoreOptions) MergedWith(opt desync.StoreOptions) desync.StoreOptions
 	if o.FlagSet.Lookup("error-retry-base-interval").Changed {
 		opt.ErrorRetryBaseInterval = o.errorRetryBaseInterval
 	}
+	if o.FlagSet.Lookup("safe-pruning") != nil && o.FlagSet.Lookup("safe-pruning").Changed {
+		opt.SafePruning = true
+	}
 	return opt
 }
 
@@ -70,6 +74,7 @@ func addStoreOptions(o *cmdStoreOptions, f *pflag.FlagSet) {
 	f.BoolVarP(&o.cacheRepair, "cache-repair", "r", true, "replace invalid chunks in the cache from source")
 	f.IntVarP(&o.errorRetry, "error-retry", "e", desync.DefaultErrorRetry, "number of times to retry in case of network error")
 	f.DurationVarP(&o.errorRetryBaseInterval, "error-retry-base-interval", "b", desync.DefaultErrorRetryBaseInterval, "initial retry delay, increases linearly with each subsequent attempt")
+	f.BoolVar(&o.safePruning, "safe-pruning", false, "enable safe concurrent pruning protocol (see doc/safe-pruning.md)")
 
 	o.FlagSet = *f
 }

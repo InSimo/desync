@@ -143,3 +143,11 @@ const CompressedChunkExt = ".cacnk"
 
 // UncompressedChunkExt is the file extension of uncompressed chunks
 const UncompressedChunkExt = ""
+
+// PrunableExt is the suffix of the empty companion file that marks a chunk
+// as a candidate for deletion in the safe pruning protocol.
+const PrunableExt = ".prunable"
+
+// PruningExt is the suffix appended to a chunk's filename when it has been
+// quarantined by the safe pruning protocol.
+const PruningExt = ".pruning"

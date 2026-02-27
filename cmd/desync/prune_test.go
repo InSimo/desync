@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -46,4 +47,70 @@ func TestPruneCommand(t *testing.T) {
 	pruneCmd.SetArgs([]string{"-s", store, "testdata/blob2.caibx", "--yes"})
 	_, err = pruneCmd.ExecuteC()
 	require.NoError(t, err)
+}
+
+// countFilesWithSuffix counts files under root whose name ends with suffix.
+func countFilesWithSuffix(t *testing.T, root, suffix string) int {
+	t.Helper()
+	var n int
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(path, suffix) {
+			n++
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	return n
+}
+
+// TestSafePruneCommand verifies the three-run safe pruning protocol end-to-end
+// using the CLI. blob1 chunks exclusive to blob1 progress through:
+//
+//	run 1 → marked with .prunable
+//	run 2 → quarantined as .pruning
+//	run 3 → fully deleted
+func TestSafePruneCommand(t *testing.T) {
+	store := t.TempDir()
+
+	// Populate the store with blob1 chunks.
+	chopCmd := newChopCommand(context.Background())
+	chopCmd.SetArgs([]string{"-s", store, "testdata/blob1.caibx", "testdata/blob1"})
+	_, err := chopCmd.ExecuteC()
+	require.NoError(t, err)
+
+	// Run 1: marks unreferenced chunks (blob1-only) with .prunable companions.
+	pruneCmd1 := newPruneCommand(context.Background())
+	pruneCmd1.SetArgs([]string{"--safe-pruning", "-s", store, "testdata/blob2.caibx", "--yes"})
+	_, err = pruneCmd1.ExecuteC()
+	require.NoError(t, err)
+
+	prunableAfterRun1 := countFilesWithSuffix(t, store, ".prunable")
+	pruningAfterRun1 := countFilesWithSuffix(t, store, ".pruning")
+	require.Greater(t, prunableAfterRun1, 0, "run 1 must create .prunable markers")
+	require.Equal(t, 0, pruningAfterRun1, "run 1 must not create any .pruning files")
+
+	// Run 2: quarantines previously marked chunks.
+	pruneCmd2 := newPruneCommand(context.Background())
+	pruneCmd2.SetArgs([]string{"--safe-pruning", "-s", store, "testdata/blob2.caibx", "--yes"})
+	_, err = pruneCmd2.ExecuteC()
+	require.NoError(t, err)
+
+	prunableAfterRun2 := countFilesWithSuffix(t, store, ".prunable")
+	pruningAfterRun2 := countFilesWithSuffix(t, store, ".pruning")
+	require.Equal(t, 0, prunableAfterRun2, "run 2 must clear all .prunable markers")
+	require.Greater(t, pruningAfterRun2, 0, "run 2 must create .pruning (quarantined) files")
+
+	// Run 3: deletes the quarantined .pruning files.
+	pruneCmd3 := newPruneCommand(context.Background())
+	pruneCmd3.SetArgs([]string{"--safe-pruning", "-s", store, "testdata/blob2.caibx", "--yes"})
+	_, err = pruneCmd3.ExecuteC()
+	require.NoError(t, err)
+
+	prunableAfterRun3 := countFilesWithSuffix(t, store, ".prunable")
+	pruningAfterRun3 := countFilesWithSuffix(t, store, ".pruning")
+	require.Equal(t, 0, prunableAfterRun3, "run 3 must leave no .prunable files")
+	require.Equal(t, 0, pruningAfterRun3, "run 3 must delete all .pruning files")
 }

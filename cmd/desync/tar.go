@@ -166,5 +166,15 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 	}
 
 	// Write the index
-	return storeCaibxFile(index, output, opt.cmdStoreOptions)
+	if err := storeCaibxFile(index, output, opt.cmdStoreOptions); err != nil {
+		return err
+	}
+	if sps, ok := s.(desync.SafePruneStore); ok {
+		ids := make(map[desync.ChunkID]struct{}, len(index.Chunks))
+		for _, c := range index.Chunks {
+			ids[c.ID] = struct{}{}
+		}
+		return sps.RescueChunks(ctx, ids)
+	}
+	return nil
 }

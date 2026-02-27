@@ -197,6 +197,167 @@ func (s S3Store) nameFromID(id ChunkID) string {
 	return name
 }
 
+func (s S3Store) pruningNamesFromID(id ChunkID) (prunable, pruning string) {
+	name := s.nameFromID(id)
+	return name + PrunableExt, name + PruningExt
+}
+
+// UntagPrunable removes the .prunable companion object for a chunk, if it exists.
+func (s S3Store) UntagPrunable(id ChunkID) error {
+	prunable, _ := s.pruningNamesFromID(id)
+	err := s.client.RemoveObject(s.bucket, prunable)
+	if err != nil {
+		if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
+			return nil
+		}
+	}
+	return err
+}
+
+// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
+func (s S3Store) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
+	for id := range ids {
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		cacnk := s.nameFromID(id)
+		prunable, pruning := s.pruningNamesFromID(id)
+		// Remove prunable marker (ignore not-found).
+		if err := s.client.RemoveObject(s.bucket, prunable); err != nil {
+			if e, ok := err.(minio.ErrorResponse); !ok || e.Code != "NoSuchKey" {
+				return err
+			}
+		}
+		// Check if .cacnk exists.
+		_, err := s.client.StatObject(s.bucket, cacnk, minio.StatObjectOptions{})
+		if err == nil {
+			// .cacnk exists; remove stale quarantined copy if any.
+			if rerr := s.client.RemoveObject(s.bucket, pruning); rerr != nil {
+				if e, ok := rerr.(minio.ErrorResponse); !ok || e.Code != "NoSuchKey" {
+					return rerr
+				}
+			}
+		} else {
+			// .cacnk missing; try to rescue from quarantine.
+			src := minio.NewSourceInfo(s.bucket, pruning, nil)
+			dst, derr := minio.NewDestinationInfo(s.bucket, cacnk, nil, nil)
+			if derr != nil {
+				return derr
+			}
+			if cerr := s.client.CopyObject(dst, src); cerr != nil {
+				if e, ok := cerr.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
+					continue
+				}
+				return cerr
+			}
+			if rerr := s.client.RemoveObject(s.bucket, pruning); rerr != nil {
+				if e, ok := rerr.(minio.ErrorResponse); !ok || e.Code != "NoSuchKey" {
+					return rerr
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// SafePrune implements the two-run safe pruning protocol for an S3Store.
+func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
+	// Phase 1: cleanup.
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+	objectCh := s.client.ListObjectsV2(s.bucket, s.prefix, true, doneCh)
+	for object := range objectCh {
+		if object.Err != nil {
+			return object.Err
+		}
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		key := object.Key
+		if strings.HasSuffix(key, PruningExt) {
+			if err := s.client.RemoveObject(s.bucket, key); err != nil {
+				return err
+			}
+			continue
+		}
+		if strings.HasSuffix(key, PrunableExt) {
+			cacnk := strings.TrimSuffix(key, PrunableExt)
+			_, err := s.client.StatObject(s.bucket, cacnk, minio.StatObjectOptions{})
+			if err != nil {
+				// orphaned marker
+				if err2 := s.client.RemoveObject(s.bucket, key); err2 != nil {
+					return err2
+				}
+			}
+		}
+	}
+
+	// Phase 2: mark + quarantine.
+	doneCh2 := make(chan struct{})
+	defer close(doneCh2)
+	objectCh2 := s.client.ListObjectsV2(s.bucket, s.prefix, true, doneCh2)
+	for object := range objectCh2 {
+		if object.Err != nil {
+			return object.Err
+		}
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		key := object.Key
+		if strings.HasSuffix(key, PrunableExt) || strings.HasSuffix(key, PruningExt) {
+			continue
+		}
+		id, err := s.idFromName(key)
+		if err != nil {
+			continue
+		}
+		prunable, pruning := s.pruningNamesFromID(id)
+		if _, ok := ids[id]; ok {
+			// In keep-set: remove prunable marker.
+			if rerr := s.client.RemoveObject(s.bucket, prunable); rerr != nil {
+				if e, ok2 := rerr.(minio.ErrorResponse); !ok2 || e.Code != "NoSuchKey" {
+					return rerr
+				}
+			}
+			continue
+		}
+		// Not in keep-set.
+		_, serr := s.client.StatObject(s.bucket, prunable, minio.StatObjectOptions{})
+		if serr != nil {
+			// First encounter: create empty marker.
+			_, perr := s.client.PutObject(s.bucket, prunable, bytes.NewReader(nil), 0, minio.PutObjectOptions{})
+			if perr != nil {
+				return perr
+			}
+		} else {
+			// Already marked: quarantine (copy .cacnk → .pruning, delete .cacnk, delete .prunable).
+			src := minio.NewSourceInfo(s.bucket, key, nil)
+			dst, derr := minio.NewDestinationInfo(s.bucket, pruning, nil, nil)
+			if derr != nil {
+				return derr
+			}
+			if cerr := s.client.CopyObject(dst, src); cerr != nil {
+				return cerr
+			}
+			if rerr := s.client.RemoveObject(s.bucket, key); rerr != nil {
+				return rerr
+			}
+			if rerr := s.client.RemoveObject(s.bucket, prunable); rerr != nil {
+				if e, ok2 := rerr.(minio.ErrorResponse); !ok2 || e.Code != "NoSuchKey" {
+					return rerr
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (s S3Store) idFromName(name string) (ChunkID, error) {
 	var n string
 	if s.opt.Uncompressed {
