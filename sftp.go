@@ -280,136 +280,152 @@ func (s *SFTPStore) UntagPrunable(id ChunkID) error {
 	return err
 }
 
-// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
-func (s *SFTPStore) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
+// ListChunks returns every chunk-related entry in the store together with its
+// pruning status. It is called by commonSafePrune and commonRescueChunks.
+func (s *SFTPStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
 	c := <-s.pool
 	defer func() { s.pool <- c }()
-	for id := range ids {
-		select {
-		case <-ctx.Done():
-			return Interrupted{}
-		default:
-		}
-		cacnk := c.nameFromID(id)
-		prunable, pruning := c.pruningPathsFromID(id)
-		// Remove prunable marker.
-		if err := c.client.Remove(prunable); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		if _, err := c.client.Stat(cacnk); err == nil {
-			// .cacnk exists; remove stale quarantined copy.
-			if rerr := c.client.Remove(pruning); rerr != nil && !os.IsNotExist(rerr) {
-				return rerr
-			}
-		} else if os.IsNotExist(err) {
-			// .cacnk missing; rescue from quarantine.
-			if _, serr := c.client.Stat(pruning); serr == nil {
-				if rerr := c.client.PosixRename(pruning, cacnk); rerr != nil {
-					return rerr
-				}
-			}
-		} else {
-			return err
-		}
+	var entries []ChunkEntry
+	chunkExt := CompressedChunkExt
+	if c.opt.Uncompressed {
+		chunkExt = UncompressedChunkExt
 	}
-	return nil
-}
-
-// SafePrune implements the two-run safe pruning protocol for an SFTPStore.
-func (s *SFTPStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	c := <-s.pool
-	defer func() { s.pool <- c }()
-
-	// Phase 1: cleanup.
 	walker := c.client.Walk(c.path)
 	for walker.Step() {
 		select {
 		case <-ctx.Done():
-			return Interrupted{}
+			return nil, Interrupted{}
 		default:
 		}
 		if err := walker.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		if walker.Stat().IsDir() {
 			continue
 		}
 		p := walker.Path()
-		if strings.HasSuffix(p, PruningExt) {
-			_ = c.client.Remove(p)
-			continue
-		}
-		if strings.HasSuffix(p, PrunableExt) {
+		base := filepath.Base(p)
+		if strings.HasSuffix(base, PruningExt) {
+			nameWithoutPruning := strings.TrimSuffix(base, PruningExt)
+			idStr := strings.TrimSuffix(nameWithoutPruning, chunkExt)
+			id, err := ChunkIDFromString(idStr)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPruning})
+		} else if strings.HasSuffix(base, PrunableExt) {
+			nameWithoutPrunable := strings.TrimSuffix(base, PrunableExt)
+			idStr := strings.TrimSuffix(nameWithoutPrunable, chunkExt)
+			id, err := ChunkIDFromString(idStr)
+			if err != nil {
+				continue
+			}
 			cacnk := strings.TrimSuffix(p, PrunableExt)
 			if _, serr := c.client.Stat(cacnk); os.IsNotExist(serr) {
-				_ = c.client.Remove(p)
+				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
+			} else if serr == nil {
+				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
 			}
+		} else {
+			var idStr string
+			if c.opt.Uncompressed {
+				idStr = base
+			} else {
+				if !strings.HasSuffix(base, CompressedChunkExt) {
+					continue
+				}
+				idStr = strings.TrimSuffix(base, CompressedChunkExt)
+			}
+			id, err := ChunkIDFromString(idStr)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusNormal})
 		}
 	}
+	return entries, nil
+}
 
-	// Phase 2: mark + quarantine.
-	walker2 := c.client.Walk(c.path)
-	for walker2.Step() {
-		select {
-		case <-ctx.Done():
-			return Interrupted{}
-		default:
-		}
-		if err := walker2.Err(); err != nil {
-			return err
-		}
-		if walker2.Stat().IsDir() {
-			continue
-		}
-		p := walker2.Path()
-		if strings.HasPrefix(filepath.Base(p), tmpChunkPrefix) {
-			_ = c.client.Remove(p)
-			continue
-		}
-		var sID string
-		if c.opt.Uncompressed {
-			if !strings.HasSuffix(p, UncompressedChunkExt) {
-				continue
-			}
-			sID = strings.TrimSuffix(filepath.Base(p), UncompressedChunkExt)
-		} else {
-			if !strings.HasSuffix(p, CompressedChunkExt) {
-				continue
-			}
-			sID = strings.TrimSuffix(filepath.Base(p), CompressedChunkExt)
-		}
-		id, err := ChunkIDFromString(sID)
-		if err != nil {
-			continue
-		}
-		prunable, pruning := c.pruningPathsFromID(id)
-		if _, ok := ids[id]; ok {
-			_ = c.client.Remove(prunable)
-			continue
-		}
-		if _, serr := c.client.Stat(prunable); os.IsNotExist(serr) {
-			// First encounter: create empty marker.
-			f, ferr := c.client.Create(prunable)
-			if ferr != nil {
-				return ferr
-			}
-			f.Close()
-		} else {
-			// Already marked: quarantine.
-			if rerr := c.client.PosixRename(p, pruning); rerr != nil {
-				return rerr
-			}
-			// Post-quarantine re-check: if .prunable is gone, a writer removed it
-			// concurrently and may have committed an index referencing this chunk.
-			// Revert the quarantine so the chunk is not left stuck invisible.
-			if _, serr := c.client.Stat(prunable); os.IsNotExist(serr) {
-				_ = c.client.PosixRename(pruning, p)
-				return nil
-			}
-			_ = c.client.Remove(prunable)
-		}
+// MarkerExists reports whether the .prunable companion for id is present.
+func (s *SFTPStore) MarkerExists(id ChunkID) (bool, error) {
+	c := <-s.pool
+	defer func() { s.pool <- c }()
+	prunable, _ := c.pruningPathsFromID(id)
+	_, err := c.client.Stat(prunable)
+	if err == nil {
+		return true, nil
 	}
-	return nil
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// DeletePruning removes the .pruning file for id. No-op if absent.
+func (s *SFTPStore) DeletePruning(id ChunkID) error {
+	c := <-s.pool
+	defer func() { s.pool <- c }()
+	_, pruning := c.pruningPathsFromID(id)
+	err := c.client.Remove(pruning)
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// DeleteMarker removes the .prunable companion for id. No-op if absent.
+func (s *SFTPStore) DeleteMarker(id ChunkID) error {
+	c := <-s.pool
+	defer func() { s.pool <- c }()
+	prunable, _ := c.pruningPathsFromID(id)
+	err := c.client.Remove(prunable)
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// CreateMarker creates an empty .prunable companion file for id.
+func (s *SFTPStore) CreateMarker(id ChunkID) error {
+	c := <-s.pool
+	defer func() { s.pool <- c }()
+	prunable, _ := c.pruningPathsFromID(id)
+	f, err := c.client.Create(prunable)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// Quarantine renames .cacnk to .pruning, making the chunk invisible to readers.
+func (s *SFTPStore) Quarantine(id ChunkID) error {
+	c := <-s.pool
+	defer func() { s.pool <- c }()
+	cacnk := c.nameFromID(id)
+	_, pruning := c.pruningPathsFromID(id)
+	return c.client.PosixRename(cacnk, pruning)
+}
+
+// Restore renames .pruning back to .cacnk. No-op if .pruning is absent.
+func (s *SFTPStore) Restore(id ChunkID) error {
+	c := <-s.pool
+	defer func() { s.pool <- c }()
+	cacnk := c.nameFromID(id)
+	_, pruning := c.pruningPathsFromID(id)
+	if _, err := c.client.Stat(pruning); os.IsNotExist(err) {
+		return nil
+	}
+	return c.client.PosixRename(pruning, cacnk)
+}
+
+// SafePrune implements the two-run safe pruning protocol for an SFTPStore.
+func (s *SFTPStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
+	return commonSafePrune(ctx, ids, s)
+}
+
+// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
+func (s *SFTPStore) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
+	return commonRescueChunks(ctx, ids, s)
 }
 
 // Close terminates all client connections

@@ -33,6 +33,22 @@ type PruneStore interface {
 	Prune(ctx context.Context, ids map[ChunkID]struct{}) error
 }
 
+// ChunkStatus describes the pruning state of a chunk in the store.
+type ChunkStatus int
+
+const (
+	ChunkStatusNormal          ChunkStatus = iota // .cacnk present, no marker
+	ChunkStatusPrunable                           // .cacnk + .prunable marker present
+	ChunkStatusPruning                            // .pruning present (quarantined, invisible)
+	ChunkStatusOrphanedPrunable                   // .prunable with no .cacnk or .pruning
+)
+
+// ChunkEntry pairs a chunk ID with its current pruning state.
+type ChunkEntry struct {
+	ID     ChunkID
+	Status ChunkStatus
+}
+
 // SafePruneStore extends PruneStore with the two-run safe pruning protocol.
 // Stores that implement this interface can be pruned concurrently with
 // ongoing chunk write operations. See doc/safe-pruning.md for the full
@@ -60,6 +76,31 @@ type SafePruneStore interface {
 	// writers after committing an index (or after ChopFile in the chop
 	// command) to recover any chunks quarantined during the write window.
 	RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error
+
+	// ListChunks returns every chunk-related entry in the store together with
+	// its pruning status. All four ChunkStatus values may appear. Called twice
+	// by commonSafePrune (once per phase) and once by commonRescueChunks.
+	ListChunks(ctx context.Context) ([]ChunkEntry, error)
+
+	// MarkerExists reports whether the .prunable companion for id is present.
+	// Called by commonSafePrune for the post-quarantine TOCTOU re-check.
+	MarkerExists(id ChunkID) (bool, error)
+
+	// DeletePruning removes the .pruning file for id. No-op if absent.
+	DeletePruning(id ChunkID) error
+
+	// DeleteMarker removes the .prunable companion for id. No-op if absent.
+	DeleteMarker(id ChunkID) error
+
+	// CreateMarker creates an empty .prunable companion for id.
+	CreateMarker(id ChunkID) error
+
+	// Quarantine renames/copies the .cacnk to .pruning (making the chunk
+	// invisible to readers). Implementations may call a test hook here.
+	Quarantine(id ChunkID) error
+
+	// Restore renames/copies .pruning back to .cacnk. No-op if .pruning absent.
+	Restore(id ChunkID) error
 }
 
 // IndexStore is implemented by stores that hold indexes.

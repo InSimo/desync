@@ -275,55 +275,16 @@ func (s GCStore) UntagPrunable(id ChunkID) error {
 	return err
 }
 
-// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
-func (s GCStore) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
-	for id := range ids {
-		select {
-		case <-ctx.Done():
-			return Interrupted{}
-		default:
-		}
-		cacnk := s.nameFromID(id)
-		prunable, pruning := s.pruningNamesFromID(id)
-		// Remove prunable marker.
-		if err := s.client.Object(prunable).Delete(ctx); err != nil && err != storage.ErrObjectNotExist {
-			return err
-		}
-		// Check if .cacnk exists.
-		_, err := s.client.Object(cacnk).Attrs(ctx)
-		if err == nil {
-			// .cacnk exists; remove stale quarantined copy.
-			if rerr := s.client.Object(pruning).Delete(ctx); rerr != nil && rerr != storage.ErrObjectNotExist {
-				return rerr
-			}
-		} else if err == storage.ErrObjectNotExist {
-			// .cacnk missing; try to rescue from quarantine.
-			copier := s.client.Object(cacnk).CopierFrom(s.client.Object(pruning))
-			if _, cerr := copier.Run(ctx); cerr != nil {
-				if cerr == storage.ErrObjectNotExist {
-					continue
-				}
-				return cerr
-			}
-			if rerr := s.client.Object(pruning).Delete(ctx); rerr != nil && rerr != storage.ErrObjectNotExist {
-				return rerr
-			}
-		} else {
-			return err
-		}
-	}
-	return nil
-}
-
-// SafePrune implements the two-run safe pruning protocol for a GCStore.
-func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	// Phase 1: cleanup.
+// ListChunks returns every chunk-related entry in the store together with its
+// pruning status. It is called by commonSafePrune and commonRescueChunks.
+func (s GCStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
+	var entries []ChunkEntry
 	query := &storage.Query{Prefix: s.prefix}
 	it := s.client.Objects(ctx, query)
 	for {
 		select {
 		case <-ctx.Done():
-			return Interrupted{}
+			return nil, Interrupted{}
 		default:
 		}
 		attrs, err := it.Next()
@@ -331,92 +292,114 @@ func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error 
 			break
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		name := attrs.Name
 		if strings.HasSuffix(name, PruningExt) {
-			if derr := s.client.Object(name).Delete(ctx); derr != nil && derr != storage.ErrObjectNotExist {
-				return derr
-			}
-			continue
-		}
-		if strings.HasSuffix(name, PrunableExt) {
-			cacnk := strings.TrimSuffix(name, PrunableExt)
-			_, serr := s.client.Object(cacnk).Attrs(ctx)
-			if serr == storage.ErrObjectNotExist {
-				// orphaned marker
-				if derr := s.client.Object(name).Delete(ctx); derr != nil && derr != storage.ErrObjectNotExist {
-					return derr
-				}
-			}
-		}
-	}
-
-	// Phase 2: mark + quarantine.
-	it2 := s.client.Objects(ctx, query)
-	for {
-		select {
-		case <-ctx.Done():
-			return Interrupted{}
-		default:
-		}
-		attrs, err := it2.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		name := attrs.Name
-		if strings.HasSuffix(name, PrunableExt) || strings.HasSuffix(name, PruningExt) {
-			continue
-		}
-		id, err := s.idFromName(name)
-		if err != nil {
-			continue
-		}
-		prunable, pruning := s.pruningNamesFromID(id)
-		if _, ok := ids[id]; ok {
-			// In keep-set: remove prunable marker.
-			if rerr := s.client.Object(prunable).Delete(ctx); rerr != nil && rerr != storage.ErrObjectNotExist {
-				return rerr
-			}
-			continue
-		}
-		// Not in keep-set.
-		_, serr := s.client.Object(prunable).Attrs(ctx)
-		if serr == storage.ErrObjectNotExist {
-			// First encounter: create empty marker.
-			w := s.client.Object(prunable).NewWriter(ctx)
-			if werr := w.Close(); werr != nil {
-				return werr
-			}
-		} else if serr == nil {
-			// Already marked: quarantine.
-			copier := s.client.Object(pruning).CopierFrom(s.client.Object(name))
-			if _, cerr := copier.Run(ctx); cerr != nil {
-				return cerr
-			}
-			if rerr := s.client.Object(name).Delete(ctx); rerr != nil {
-				return rerr
-			}
-			// Post-quarantine re-check: if .prunable is gone, a writer removed it
-			// concurrently and may have committed an index referencing this chunk.
-			// Revert the quarantine so the chunk is not left stuck invisible.
-			if _, aerr := s.client.Object(prunable).Attrs(ctx); aerr == storage.ErrObjectNotExist {
-				rc := s.client.Object(name).CopierFrom(s.client.Object(pruning))
-				_, _ = rc.Run(ctx)
-				_ = s.client.Object(pruning).Delete(ctx)
+			cacnkName := strings.TrimSuffix(name, PruningExt)
+			id, err := s.idFromName(cacnkName)
+			if err != nil {
 				continue
 			}
-			if rerr := s.client.Object(prunable).Delete(ctx); rerr != nil && rerr != storage.ErrObjectNotExist {
-				return rerr
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPruning})
+		} else if strings.HasSuffix(name, PrunableExt) {
+			cacnkName := strings.TrimSuffix(name, PrunableExt)
+			id, err := s.idFromName(cacnkName)
+			if err != nil {
+				continue
+			}
+			_, serr := s.client.Object(cacnkName).Attrs(context.Background())
+			if serr == storage.ErrObjectNotExist {
+				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
+			} else if serr == nil {
+				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
 			}
 		} else {
-			return serr
+			id, err := s.idFromName(name)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusNormal})
 		}
 	}
-	return nil
+	return entries, nil
+}
+
+// MarkerExists reports whether the .prunable companion for id is present.
+func (s GCStore) MarkerExists(id ChunkID) (bool, error) {
+	prunable, _ := s.pruningNamesFromID(id)
+	_, err := s.client.Object(prunable).Attrs(context.Background())
+	if err == nil {
+		return true, nil
+	}
+	if err == storage.ErrObjectNotExist {
+		return false, nil
+	}
+	return false, err
+}
+
+// DeletePruning removes the .pruning object for id. No-op if absent.
+func (s GCStore) DeletePruning(id ChunkID) error {
+	_, pruning := s.pruningNamesFromID(id)
+	err := s.client.Object(pruning).Delete(context.Background())
+	if err == storage.ErrObjectNotExist {
+		return nil
+	}
+	return err
+}
+
+// DeleteMarker removes the .prunable companion for id. No-op if absent.
+func (s GCStore) DeleteMarker(id ChunkID) error {
+	prunable, _ := s.pruningNamesFromID(id)
+	err := s.client.Object(prunable).Delete(context.Background())
+	if err == storage.ErrObjectNotExist {
+		return nil
+	}
+	return err
+}
+
+// CreateMarker creates an empty .prunable companion object for id.
+func (s GCStore) CreateMarker(id ChunkID) error {
+	prunable, _ := s.pruningNamesFromID(id)
+	w := s.client.Object(prunable).NewWriter(context.Background())
+	return w.Close()
+}
+
+// Quarantine copies .cacnk to .pruning and deletes .cacnk, making the chunk
+// invisible to readers.
+func (s GCStore) Quarantine(id ChunkID) error {
+	cacnk := s.nameFromID(id)
+	_, pruning := s.pruningNamesFromID(id)
+	copier := s.client.Object(pruning).CopierFrom(s.client.Object(cacnk))
+	if _, err := copier.Run(context.Background()); err != nil {
+		return err
+	}
+	return s.client.Object(cacnk).Delete(context.Background())
+}
+
+// Restore copies .pruning back to .cacnk and deletes .pruning. No-op if
+// .pruning is absent.
+func (s GCStore) Restore(id ChunkID) error {
+	cacnk := s.nameFromID(id)
+	_, pruning := s.pruningNamesFromID(id)
+	copier := s.client.Object(cacnk).CopierFrom(s.client.Object(pruning))
+	if _, err := copier.Run(context.Background()); err != nil {
+		if err == storage.ErrObjectNotExist {
+			return nil
+		}
+		return err
+	}
+	return s.client.Object(pruning).Delete(context.Background())
+}
+
+// SafePrune implements the two-run safe pruning protocol for a GCStore.
+func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
+	return commonSafePrune(ctx, ids, s)
+}
+
+// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
+func (s GCStore) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
+	return commonRescueChunks(ctx, ids, s)
 }
 
 func (s GCStore) idFromName(name string) (ChunkID, error) {
