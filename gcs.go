@@ -400,6 +400,15 @@ func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error 
 			if rerr := s.client.Object(name).Delete(ctx); rerr != nil {
 				return rerr
 			}
+			// Post-quarantine re-check: if .prunable is gone, a writer removed it
+			// concurrently and may have committed an index referencing this chunk.
+			// Revert the quarantine so the chunk is not left stuck invisible.
+			if _, aerr := s.client.Object(prunable).Attrs(ctx); aerr == storage.ErrObjectNotExist {
+				rc := s.client.Object(name).CopierFrom(s.client.Object(pruning))
+				_, _ = rc.Run(ctx)
+				_ = s.client.Object(pruning).Delete(ctx)
+				continue
+			}
 			if rerr := s.client.Object(prunable).Delete(ctx); rerr != nil && rerr != storage.ErrObjectNotExist {
 				return rerr
 			}

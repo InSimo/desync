@@ -29,6 +29,11 @@ type LocalStore struct {
 	Opt StoreOptions
 
 	converters Converters
+
+	// testPostQuarantine, if non-nil, is called by SafePrune immediately after
+	// renaming a chunk to .pruning and before the post-quarantine re-check.
+	// It exists solely to allow tests to inject a concurrent UntagPrunable call.
+	testPostQuarantine func(id ChunkID)
 }
 
 // NewLocalStore creates an instance of a local castore, it only checks presence
@@ -397,10 +402,24 @@ func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) err
 			// First encounter: create empty marker.
 			return os.WriteFile(prunable, nil, 0644)
 		}
-		// Already marked: quarantine by renaming .cacnk → .pruning, then remove marker.
+		// Already marked: quarantine by renaming .cacnk → .pruning.
 		if rerr := os.Rename(path, pruning); rerr != nil {
 			return rerr
 		}
-		return os.Remove(prunable)
+		if s.testPostQuarantine != nil {
+			s.testPostQuarantine(id)
+		}
+		// Post-quarantine re-check: if .prunable is gone, a writer removed it
+		// concurrently (via UntagPrunable) and may have committed an index
+		// referencing this chunk. Revert the quarantine so the chunk is not
+		// left stuck in the invisible .pruning state.
+		if _, serr := os.Stat(prunable); os.IsNotExist(serr) {
+			_ = os.Rename(pruning, path)
+			return nil
+		}
+		if rerr := os.Remove(prunable); rerr != nil && !os.IsNotExist(rerr) {
+			return rerr
+		}
+		return nil
 	})
 }

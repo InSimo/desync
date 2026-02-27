@@ -399,6 +399,13 @@ func (s *SFTPStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) err
 			if rerr := c.client.PosixRename(p, pruning); rerr != nil {
 				return rerr
 			}
+			// Post-quarantine re-check: if .prunable is gone, a writer removed it
+			// concurrently and may have committed an index referencing this chunk.
+			// Revert the quarantine so the chunk is not left stuck invisible.
+			if _, serr := c.client.Stat(prunable); os.IsNotExist(serr) {
+				_ = c.client.PosixRename(pruning, p)
+				return nil
+			}
 			_ = c.client.Remove(prunable)
 		}
 	}

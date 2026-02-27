@@ -59,8 +59,33 @@ Walk the store. For each `.cacnk` file:
   - If **no `.prunable` marker exists**: create an empty `<id>.cacnk.prunable` file
     (first encounter — mark it as a candidate).
   - If a **`.prunable` marker already exists** (marked in a previous run): quarantine
-    the chunk by renaming `<id>.cacnk` → `<id>.cacnk.pruning`, then delete the
-    `.prunable` marker.
+    the chunk by renaming `<id>.cacnk` → `<id>.cacnk.pruning`. Then re-check whether
+    the `.prunable` marker still exists (see [Race Safety](#race-safety)); if it does,
+    delete the `.prunable` marker.
+
+## Race Safety
+
+There is a narrow TOCTOU window during phase 2 quarantine: prune evaluates the
+`.prunable` marker, then executes the rename. A writer could remove `.prunable`
+(via `UntagPrunable`) and commit its index in this gap, after which `RescueChunks`
+would be a no-op (it sees `.cacnk` still present). Prune then quarantines the chunk
+anyway, leaving it stuck in `.pruning` with no writer aware it needs rescue.
+
+**The fix**: after renaming `.cacnk` → `.pruning`, prune immediately re-checks
+whether `.prunable` still exists.
+
+- If `.prunable` is **still present**: the rename was safe — no writer removed the
+  marker during the rename. Delete `.prunable` and leave the chunk quarantined.
+- If `.prunable` is **gone**: a writer removed it concurrently and may have committed
+  an index referencing this chunk. Revert the rename (`.pruning` → `.cacnk`) so
+  the chunk is visible again. The chunk will be re-evaluated in the next prune run.
+
+This works because once `.cacnk` has been renamed to `.pruning`, `HasChunk` returns
+false, so any new writer that checks after the rename will proceed to call
+`StoreChunk` (writing a fresh `.cacnk`) rather than `UntagPrunable`. The only writer
+that can remove `.prunable` after the rename is one that saw `.cacnk` exist before
+the rename — and that writer will call `RescueChunks` with this chunk ID after
+committing its index, restoring the reverted chunk if needed.
 
 ## Why Two Runs Are Required
 

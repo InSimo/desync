@@ -336,7 +336,7 @@ func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error 
 				return perr
 			}
 		} else {
-			// Already marked: quarantine (copy .cacnk → .pruning, delete .cacnk, delete .prunable).
+			// Already marked: quarantine (copy .cacnk → .pruning, delete .cacnk).
 			src := minio.NewSourceInfo(s.bucket, key, nil)
 			dst, derr := minio.NewDestinationInfo(s.bucket, pruning, nil, nil)
 			if derr != nil {
@@ -347,6 +347,20 @@ func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error 
 			}
 			if rerr := s.client.RemoveObject(s.bucket, key); rerr != nil {
 				return rerr
+			}
+			// Post-quarantine re-check: if .prunable is gone, a writer removed it
+			// concurrently and may have committed an index referencing this chunk.
+			// Revert the quarantine so the chunk is not left stuck invisible.
+			_, serr2 := s.client.StatObject(s.bucket, prunable, minio.StatObjectOptions{})
+			if serr2 != nil {
+				// .prunable is gone: revert by restoring .cacnk from .pruning.
+				rsrc := minio.NewSourceInfo(s.bucket, pruning, nil)
+				rdst, rderr := minio.NewDestinationInfo(s.bucket, key, nil, nil)
+				if rderr == nil {
+					_ = s.client.CopyObject(rdst, rsrc)
+				}
+				_ = s.client.RemoveObject(s.bucket, pruning)
+				continue
 			}
 			if rerr := s.client.RemoveObject(s.bucket, prunable); rerr != nil {
 				if e, ok2 := rerr.(minio.ErrorResponse); !ok2 || e.Code != "NoSuchKey" {

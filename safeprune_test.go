@@ -240,3 +240,37 @@ func TestLocalStoreSafePruneUncompressed(t *testing.T) {
 	_, err = os.Stat(pruning)
 	require.True(t, os.IsNotExist(err), ".pruning must be deleted after run 3 (uncompressed)")
 }
+
+// TestLocalStoreSafePruneRaceRevert injects a concurrent UntagPrunable call via
+// testPostQuarantine to simulate the TOCTOU race: SafePrune renames .cacnk →
+// .pruning, then (before the re-check) a writer removes .prunable. SafePrune
+// must detect that .prunable is gone and revert .pruning → .cacnk.
+func TestLocalStoreSafePruneRaceRevert(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewLocalStore(t.TempDir(), StoreOptions{})
+	require.NoError(t, err)
+
+	chunk := NewChunk([]byte("race revert chunk"))
+	require.NoError(t, s.StoreChunk(chunk))
+	id := chunk.ID()
+	_, cacnk := s.nameFromID(id)
+	prunable, pruning := s.pruningPathsFromID(id)
+
+	// Run 1: mark the chunk.
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+	_, err = os.Stat(prunable)
+	require.NoError(t, err, ".prunable must exist after run 1")
+
+	// Run 2 with injected race: after SafePrune renames .cacnk → .pruning the
+	// callback removes .prunable, simulating a writer calling UntagPrunable and
+	// committing its index in the gap. SafePrune must revert the quarantine.
+	s.testPostQuarantine = func(chunkID ChunkID) { s.UntagPrunable(chunkID) }
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+
+	_, err = os.Stat(cacnk)
+	require.NoError(t, err, ".cacnk must be restored after race revert")
+	_, err = os.Stat(pruning)
+	require.True(t, os.IsNotExist(err), ".pruning must be gone after race revert")
+	_, err = os.Stat(prunable)
+	require.True(t, os.IsNotExist(err), ".prunable must be gone (writer removed it)")
+}
