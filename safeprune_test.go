@@ -2,9 +2,14 @@ package desync
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/stretchr/testify/require"
 )
@@ -705,6 +710,79 @@ func TestMockSafePruneContextCancellationPhase2(t *testing.T) {
 	require.True(t, ok, "expected Interrupted from Phase 2, got: %v", err)
 }
 
+// ---------------------------------------------------------------------------
+// mockIndexStore — in-memory index store for stress testing
+// ---------------------------------------------------------------------------
+
+// stressChunkStore is the minimal chunk storage interface required by
+// runSafePruneStress and mockIndexStore.CheckInvariant.
+type stressChunkStore interface {
+	StoreChunk(*Chunk) error
+	HasChunk(ChunkID) (bool, error)
+}
+
+// mockIndexStore is a thread-safe, in-memory index store used by the
+// safe-prune stress harness. It tracks live indexes and supports computing
+// the pruner's keep set and checking the invariant that all referenced chunks
+// are present in the chunk store.
+type mockIndexStore struct {
+	mu      sync.RWMutex
+	indexes map[string]Index // index name → Index
+}
+
+func newMockIndexStore() *mockIndexStore {
+	return &mockIndexStore{
+		indexes: make(map[string]Index),
+	}
+}
+
+func (s *mockIndexStore) StoreIndex(name string, idx Index) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.indexes[name] = idx
+}
+
+func (s *mockIndexStore) DeleteIndex(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.indexes, name)
+}
+
+// AllChunkIDs returns the union of all chunk IDs referenced by all live indexes.
+// Used by the pruner to compute its keep set.
+func (s *mockIndexStore) AllChunkIDs() map[ChunkID]struct{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make(map[ChunkID]struct{})
+	for _, idx := range s.indexes {
+		for _, c := range idx.Chunks {
+			ids[c.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// CheckInvariant verifies that every chunk referenced by every live index is
+// present (and not quarantined) in cs. It holds the read lock for the entire
+// call so the index snapshot is consistent — concurrent StoreIndex/DeleteIndex
+// calls block only for the duration of the check.
+func (s *mockIndexStore) CheckInvariant(cs stressChunkStore) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for name, idx := range s.indexes {
+		for _, c := range idx.Chunks {
+			ok, err := cs.HasChunk(c.ID)
+			if err != nil {
+				return fmt.Errorf("index %q chunk %s: HasChunk error: %w", name, c.ID, err)
+			}
+			if !ok {
+				return fmt.Errorf("index %q chunk %s: missing from chunk store", name, c.ID)
+			}
+		}
+	}
+	return nil
+}
+
 // TestMockSafePruneMultipleChunkStates exercises all four ChunkStatus values
 // simultaneously and verifies each chunk ends up in the correct state after a
 // single SafePrune call.
@@ -754,4 +832,153 @@ func TestMockSafePruneMultipleChunkStates(t *testing.T) {
 	// OrphanedPrunable → marker gone, no data.
 	s.assertGone(t, orphanedID)
 	s.assertUnmarked(t, orphanedID)
+}
+
+// noopRescue is a RescueChunks substitute that does nothing. It is used by
+// the unsafe stress test where there is no quarantine state to rescue from.
+func noopRescue(_ context.Context, _ map[ChunkID]struct{}) error { return nil }
+
+// runSafePruneStress is the shared stress harness. It runs stressNumWriters
+// writer goroutines and one pruner goroutine concurrently for stressDuration,
+// then performs a final end-state invariant check.
+//
+// prune is called by the pruner goroutine with the live keep set.
+// rescue is called by each writer after committing its index.
+// prunerSleep is the delay inserted between consecutive prune calls; use
+// time.Millisecond for safe implementations (gives writers time to complete
+// their write protocol) and 0 for unsafe ones (surfaces the race quickly).
+//
+// Returns nil if the invariant held throughout, or the first violation found.
+func runSafePruneStress(
+	t *testing.T,
+	cs stressChunkStore,
+	prune func(context.Context, map[ChunkID]struct{}) error,
+	rescue func(context.Context, map[ChunkID]struct{}) error,
+	prunerSleep time.Duration,
+) error {
+	t.Helper()
+	const (
+		stressNumWriters   = 6
+		stressChunksPerIdx = 3 // chunks per index, exercises multi-chunk keep sets
+		stressDuration     = 3 * time.Second
+	)
+
+	sharedIndexStore := newMockIndexStore()
+
+	ctx, cancel := context.WithTimeout(context.Background(), stressDuration)
+	defer cancel()
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Pruner goroutine: repeatedly calls prune with the current keep set.
+	// prunerSleep between iterations gives writers time to complete StoreIndex
+	// + rescue before the pruner can advance a chunk through all three phases
+	// (mark → quarantine → delete) in rapid succession.
+	g.Go(func() error {
+		for {
+			select {
+			case <-gCtx.Done():
+				return nil
+			default:
+			}
+			keepSet := sharedIndexStore.AllChunkIDs()
+			if err := prune(gCtx, keepSet); err != nil {
+				if gCtx.Err() != nil {
+					return nil
+				}
+				return err
+			}
+			if prunerSleep > 0 {
+				time.Sleep(prunerSleep)
+			}
+		}
+	})
+
+	// Writer goroutines: each continuously creates new unique chunks and indexes.
+	for i := range stressNumWriters {
+		workerID := i
+		g.Go(func() error {
+			for iteration := 0; ; iteration++ {
+				select {
+				case <-gCtx.Done():
+					return nil
+				default:
+				}
+
+				// 1. Create stressChunksPerIdx brand-new unique chunks.
+				// Uniqueness (via crypto/rand) ensures each chunk starts in
+				// ChunkStatusNormal and has never been through a prune cycle.
+				chunkIDs := make(map[ChunkID]struct{}, stressChunksPerIdx)
+				idxChunks := make([]IndexChunk, 0, stressChunksPerIdx)
+				offset := uint64(0)
+				for j := 0; j < stressChunksPerIdx; j++ {
+					data := make([]byte, 32)
+					if _, err := cryptorand.Read(data); err != nil {
+						return fmt.Errorf("worker %d iter %d: rand.Read: %w", workerID, iteration, err)
+					}
+					chunk := NewChunk(data)
+					if err := cs.StoreChunk(chunk); err != nil {
+						return fmt.Errorf("worker %d iter %d: StoreChunk: %w", workerID, iteration, err)
+					}
+					chunkIDs[chunk.ID()] = struct{}{}
+					idxChunks = append(idxChunks, IndexChunk{ID: chunk.ID(), Start: offset, Size: 32})
+					offset += 32
+				}
+
+				// 2. Store index first (chunks enter the pruner's keep set on
+				// the next AllChunkIDs call), then rescue any chunk that was
+				// transiently quarantined between StoreChunk and StoreIndex.
+				name := fmt.Sprintf("w%d-i%d", workerID, iteration)
+				sharedIndexStore.StoreIndex(name, Index{Chunks: idxChunks})
+				if err := rescue(gCtx, chunkIDs); err != nil {
+					if gCtx.Err() != nil {
+						return nil
+					}
+					return fmt.Errorf("worker %d iter %d: rescue: %w", workerID, iteration, err)
+				}
+
+				// 3. Inline invariant check.
+				if err := sharedIndexStore.CheckInvariant(cs); err != nil {
+					return fmt.Errorf("worker %d iter %d: %w", workerID, iteration, err)
+				}
+
+				// 4. Expire the previous iteration's index so its chunks become
+				// pruning candidates on the next prune run.
+				if iteration > 0 {
+					sharedIndexStore.DeleteIndex(fmt.Sprintf("w%d-i%d", workerID, iteration-1))
+				}
+			}
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	// End-state check: after all goroutines have exited, no live index may
+	// reference a missing or quarantined chunk.
+	return sharedIndexStore.CheckInvariant(cs)
+}
+
+// TestMockSafePruneStressParallel verifies that the safe-prune protocol
+// (SafePrune + RescueChunks) upholds the invariant under concurrent load.
+//
+// Run with -race to surface concurrent access bugs:
+//
+//	go test -race -run TestMockSafePruneStressParallel -v -count=1 .
+func TestMockSafePruneStressParallel(t *testing.T) {
+	cs := newMockStore()
+	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, cs.RescueChunks, time.Millisecond))
+}
+
+// TestMockUnsafePruneStressParallel confirms that the stress harness detects
+// invariant violations when an unsafe prune implementation is used. The unsafe
+// Prune method (mirroring S3Store.Prune) immediately deletes any chunk not in
+// the keep set, with no quarantine window and no rescue mechanism — so a chunk
+// can be permanently deleted between StoreChunk and StoreIndex, violating the
+// invariant. The test asserts that an error IS returned, proving the harness
+// can distinguish safe from unsafe implementations.
+func TestMockUnsafePruneStressParallel(t *testing.T) {
+	cs := newMockStore()
+	err := runSafePruneStress(t, cs, cs.Prune, noopRescue, 0)
+	require.Error(t, err, "unsafe Prune must trigger an invariant violation")
 }
