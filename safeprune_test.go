@@ -844,9 +844,10 @@ func noopRescue(_ context.Context, _ map[ChunkID]struct{}) error { return nil }
 //
 // prune is called by the pruner goroutine with the live keep set.
 // rescue is called by each writer after committing its index.
-// prunerSleep is the delay inserted between consecutive prune calls; use
-// time.Millisecond for safe implementations (gives writers time to complete
-// their write protocol) and 0 for unsafe ones (surfaces the race quickly).
+// prunerSleep is the delay inserted between consecutive prune calls. Both
+// safe and unsafe tests use time.Millisecond so that the conditions are
+// identical and any invariant violation reflects the pruning strategy, not
+// pruning frequency.
 //
 // Returns nil if the invariant held throughout, or the first violation found.
 func runSafePruneStress(
@@ -979,6 +980,6 @@ func TestMockSafePruneStressParallel(t *testing.T) {
 // can distinguish safe from unsafe implementations.
 func TestMockUnsafePruneStressParallel(t *testing.T) {
 	cs := newMockStore()
-	err := runSafePruneStress(t, cs, cs.Prune, noopRescue, 0)
+	err := runSafePruneStress(t, cs, cs.Prune, noopRescue, time.Millisecond)
 	require.Error(t, err, "unsafe Prune must trigger an invariant violation")
 }
