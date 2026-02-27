@@ -55,6 +55,15 @@ type lfsError struct {
 	Message string `json:"message"`
 }
 
+// oidIndexName converts a Git LFS OID to the index file name used in the
+// desync index store. The first 4 characters of the OID are used as a
+// sharding prefix directory to avoid flat-directory hot spots:
+//
+//	"abc123def456..." → "abc1/abc123def456....caibx"
+func oidIndexName(oid string) string {
+	return oid[0:4] + "/" + oid + ".caibx"
+}
+
 // Agent implements the Git LFS custom transfer agent protocol.
 type Agent struct {
 	writeStore      desync.WriteStore
@@ -162,7 +171,7 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	}
 
 	// Skip re-upload if this OID is already present in the index store.
-	if exists, err := a.indexWriteStore.HasIndex(req.OID + ".caibx"); err == nil && exists {
+	if exists, err := a.indexWriteStore.HasIndex(oidIndexName(req.OID)); err == nil && exists {
 		a.sendComplete(req.OID, "", nil)
 		return
 	}
@@ -191,7 +200,7 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	stopProgress()
 
 	// Store the index in the S3 index store.
-	if err := a.indexWriteStore.StoreIndex(req.OID+".caibx", idx); err != nil {
+	if err := a.indexWriteStore.StoreIndex(oidIndexName(req.OID), idx); err != nil {
 		a.sendComplete(req.OID, "", err)
 		return
 	}
@@ -207,7 +216,7 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	}
 
 	// Fetch the index from the S3 index store.
-	idx, err := a.indexWriteStore.GetIndex(req.OID + ".caibx")
+	idx, err := a.indexWriteStore.GetIndex(oidIndexName(req.OID))
 	if err != nil {
 		a.sendComplete(req.OID, "", fmt.Errorf("fetching index for %s: %w", req.OID, err))
 		return

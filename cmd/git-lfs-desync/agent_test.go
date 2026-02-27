@@ -622,6 +622,127 @@ func TestAgentUploadSkipsRedundantUpload(t *testing.T) {
 	}
 }
 
+func TestOIDIndexName(t *testing.T) {
+	cases := []struct {
+		oid  string
+		want string
+	}{
+		{"abc123def456", "abc1/abc123def456.caibx"},
+		{"0000111122223333", "0000/0000111122223333.caibx"},
+		{"deadbeefcafe1234", "dead/deadbeefcafe1234.caibx"},
+	}
+	for _, c := range cases {
+		got := oidIndexName(c.oid)
+		if got != c.want {
+			t.Errorf("oidIndexName(%q) = %q, want %q", c.oid, got, c.want)
+		}
+	}
+}
+
+func TestLocalIndexStoreSharding(t *testing.T) {
+	chunkDir := t.TempDir()
+	indexDir := t.TempDir()
+	tmpDir := t.TempDir()
+
+	chunkStore, err := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chunkStore.Close()
+
+	indexStore, err := desync.NewLocalIndexStore(indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer indexStore.Close()
+
+	srcFile := filepath.Join(t.TempDir(), "source.bin")
+	content := bytes.Repeat([]byte("sharding-test-content "), 5000)
+	if err := os.WriteFile(srcFile, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oid := "abcd1234efgh5678"
+
+	var buf bytes.Buffer
+	a := &Agent{
+		writeStore:      chunkStore,
+		readStore:       chunkStore,
+		indexWriteStore: indexStore,
+		n:               4,
+		minChunk:        4 * 1024,
+		avgChunk:        16 * 1024,
+		maxChunk:        64 * 1024,
+		tmpDir:          tmpDir,
+		enc:             json.NewEncoder(&buf),
+	}
+
+	uploadMsg, _ := json.Marshal(transferRequest{
+		Event: "upload",
+		OID:   oid,
+		Size:  int64(len(content)),
+		Path:  srcFile,
+	})
+	a.handleUpload(context.Background(), uploadMsg)
+
+	var uploadDone completeEvent
+	dec := json.NewDecoder(&buf)
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		json.Unmarshal(raw, &uploadDone)
+	}
+	if uploadDone.Error != nil {
+		t.Fatalf("upload error: %v", uploadDone.Error.Message)
+	}
+
+	// Assert the index is stored at the sharded path, not flat.
+	shardedPath := filepath.Join(indexDir, oid[0:4], oid+".caibx")
+	if _, err := os.Stat(shardedPath); err != nil {
+		t.Errorf("index not found at sharded path %q: %v", shardedPath, err)
+	}
+	flatPath := filepath.Join(indexDir, oid+".caibx")
+	if _, err := os.Stat(flatPath); err == nil {
+		t.Errorf("index unexpectedly found at flat path %q (should be sharded)", flatPath)
+	}
+
+	// Assert download reconstructs the file correctly from the sharded path.
+	buf.Reset()
+	downloadMsg, _ := json.Marshal(transferRequest{
+		Event: "download",
+		OID:   oid,
+		Size:  int64(len(content)),
+	})
+	a.handleDownload(context.Background(), downloadMsg)
+
+	var dlComplete completeEvent
+	dec = json.NewDecoder(&buf)
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		json.Unmarshal(raw, &dlComplete)
+	}
+	if dlComplete.Error != nil {
+		t.Fatalf("download error: %v", dlComplete.Error.Message)
+	}
+
+	got, err := os.ReadFile(dlComplete.Path)
+	if err != nil {
+		t.Fatalf("reading downloaded file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Error("downloaded content does not match source")
+	}
+}
+
 func TestAgentTerminate(t *testing.T) {
 	var input bytes.Buffer
 	enc := json.NewEncoder(&input)

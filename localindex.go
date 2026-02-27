@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -52,8 +53,11 @@ func (s LocalIndexStore) GetIndex(name string) (i Index, e error) {
 
 // StoreIndex stores an index in the index store with the given name.
 func (s LocalIndexStore) StoreIndex(name string, idx Index) error {
-	// Write the index to file
-	i, err := os.Create(s.Path + name)
+	path := s.Path + name
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	i, err := os.Create(path)
 	if err != nil {
 		return err
 	}
