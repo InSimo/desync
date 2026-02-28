@@ -71,24 +71,23 @@ func (s S3IndexStore) StoreIndex(name string, idx Index) error {
 
 // PruneIndexes removes all indexes from the store that are not in the keep set.
 func (s S3IndexStore) PruneIndexes(ctx context.Context, keep map[string]struct{}) error {
-	names, err := s.ListIndexes(ctx)
-	if err != nil {
-		return err
-	}
+	return commonPruneIndexes(ctx, keep, s)
+}
+
+// DeleteIndexes removes the named indexes from the store using a single batch request.
+func (s S3IndexStore) DeleteIndexes(ctx context.Context, names []string) error {
+	objectsCh := make(chan string, len(names))
 	for _, name := range names {
-		if _, ok := keep[name]; ok {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return Interrupted{}
-		default:
-		}
-		if err := s.client.RemoveObject(s.bucket, s.prefix+name); err != nil {
-			return err
+		objectsCh <- s.prefix + name
+	}
+	close(objectsCh)
+	var firstErr error
+	for rmErr := range s.client.RemoveObjectsWithContext(ctx, s.bucket, objectsCh) {
+		if firstErr == nil {
+			firstErr = rmErr.Err
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // ListIndexes returns the names of all indexes in the store, relative to the store root.

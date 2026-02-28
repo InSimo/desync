@@ -71,14 +71,12 @@ func (s *SFTPIndexStore) pathFromName(name string) string {
 
 // PruneIndexes removes all indexes from the store that are not in the keep set.
 func (s *SFTPIndexStore) PruneIndexes(ctx context.Context, keep map[string]struct{}) error {
-	names, err := s.ListIndexes(ctx)
-	if err != nil {
-		return err
-	}
+	return commonPruneIndexes(ctx, keep, s)
+}
+
+// DeleteIndexes removes the named indexes from the store.
+func (s *SFTPIndexStore) DeleteIndexes(ctx context.Context, names []string) error {
 	for _, name := range names {
-		if _, ok := keep[name]; ok {
-			continue
-		}
 		select {
 		case <-ctx.Done():
 			return Interrupted{}
