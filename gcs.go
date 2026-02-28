@@ -392,6 +392,9 @@ func (s GCStore) Restore(id ChunkID) error {
 	return s.client.Object(pruning).Delete(context.Background())
 }
 
+// SafePruningEnabled reports whether the store was opened with safe pruning enabled.
+func (s GCStore) SafePruningEnabled() bool { return s.opt.SafePruning }
+
 // SafePrune implements the two-run safe pruning protocol for a GCStore.
 func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
 	return commonSafePrune(ctx, ids, s)

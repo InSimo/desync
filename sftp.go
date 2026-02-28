@@ -31,10 +31,11 @@ type SFTPStoreBase struct {
 
 // SFTPStore is a chunk store that uses SFTP over SSH.
 type SFTPStore struct {
-	pool       chan *SFTPStoreBase
-	location   *url.URL
-	n          int
-	converters Converters
+	pool        chan *SFTPStoreBase
+	location    *url.URL
+	n           int
+	converters  Converters
+	safePruning bool
 }
 
 // Creates a base sftp client
@@ -142,7 +143,7 @@ func (s *SFTPStoreBase) nameFromID(id ChunkID) string {
 
 // NewSFTPStore initializes a chunk store using SFTP over SSH.
 func NewSFTPStore(location *url.URL, opt StoreOptions) (*SFTPStore, error) {
-	s := &SFTPStore{make(chan *SFTPStoreBase, opt.N), location, opt.N, opt.converters()}
+	s := &SFTPStore{make(chan *SFTPStoreBase, opt.N), location, opt.N, opt.converters(), opt.SafePruning}
 	for i := 0; i < opt.N; i++ {
 		c, err := newSFTPStoreBase(location, opt)
 		if err != nil {
@@ -417,6 +418,9 @@ func (s *SFTPStore) Restore(id ChunkID) error {
 	}
 	return c.client.PosixRename(pruning, cacnk)
 }
+
+// SafePruningEnabled reports whether the store was opened with safe pruning enabled.
+func (s *SFTPStore) SafePruningEnabled() bool { return s.safePruning }
 
 // SafePrune implements the two-run safe pruning protocol for an SFTPStore.
 func (s *SFTPStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {

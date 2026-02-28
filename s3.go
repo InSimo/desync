@@ -342,6 +342,9 @@ func (s S3Store) Restore(id ChunkID) error {
 	return s.client.RemoveObject(s.bucket, pruning)
 }
 
+// SafePruningEnabled reports whether the store was opened with safe pruning enabled.
+func (s S3Store) SafePruningEnabled() bool { return s.opt.SafePruning }
+
 // SafePrune implements the two-run safe pruning protocol for an S3Store.
 func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
 	return commonSafePrune(ctx, ids, s)

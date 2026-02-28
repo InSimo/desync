@@ -394,6 +394,9 @@ func (s LocalStore) Restore(id ChunkID) error {
 	return os.Rename(pruning, cacnk)
 }
 
+// SafePruningEnabled reports whether the store was opened with safe pruning enabled.
+func (s LocalStore) SafePruningEnabled() bool { return s.Opt.SafePruning }
+
 // SafePrune implements the two-run safe pruning protocol for a LocalStore.
 func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
 	return commonSafePrune(ctx, ids, s)
