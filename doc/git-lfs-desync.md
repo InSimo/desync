@@ -48,6 +48,7 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `--config-from-git` | — | Read the desync config from a git object. `%(remote)` and `%(operation)` are replaced with values from the LFS init message (e.g. `%(remote)/_desync:config.json`). Mutually exclusive with `--config`. |
 | `--digest` | config default, then `sha512-256` | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. May be set via the `defaults.digest` config key. |
 | `--indexes` | `false` | Translate LFS OIDs to desync index names and write to stdout (one per line). Reads OIDs from positional args, or from the first whitespace-delimited token of each stdin line when no args are given (blank lines are skipped). When set, no store configuration is needed and the agent exits immediately without starting the LFS transfer protocol. See [Index and Chunk Pruning](#index-and-chunk-pruning). |
+| `--safe-pruning` | `false` | Enable the safe concurrent pruning protocol on the upload path. After each successful upload, calls `RescueChunks` on the chunk store to recover any chunks that a concurrent `desync prune --safe-pruning` may have quarantined between the `StoreChunk` and `StoreIndex` steps. Must be used together with `desync prune --safe-pruning` and `desync index-prune --safe-index-pruning`. Supported by all writable backends (local, S3, SFTP, GCS). See [Index and Chunk Pruning](#index-and-chunk-pruning) and [doc/safe-pruning.md](safe-pruning.md). |
 
 ## Config defaults
 
@@ -101,6 +102,11 @@ cat ~/.config/desync/config.json
   },
   "defaults": {
     "stores": ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"]
+  },
+  "store-options": {
+    "s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/": {
+      "safe-pruning": true
+    }
   }
 }
 ```
@@ -140,6 +146,11 @@ Example config file with static credentials for a specific endpoint:
       "access-key": "AKIAIOSFODNN7EXAMPLE",
       "secret-key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
       "aws-region": "us-east-1"
+    }
+  },
+  "store-options": {
+    "s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/": {
+      "safe-pruning": true
     }
   }
 }
@@ -198,6 +209,11 @@ cat > config.json <<'EOF'
   "defaults": {
     "stores":      ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"],
     "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/"
+  },
+  "store-options": {
+    "s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/": {
+      "safe-pruning": true
+    }
   }
 }
 EOF
@@ -246,7 +262,8 @@ The transfer agent config must be set on every machine that pushes or pulls LFS 
 ```ini
 [lfs "customtransfer.desync"]
     path = /usr/local/bin/git-lfs-desync
-    args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/
+    args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ \
+           --safe-pruning
     concurrent = true
     concurrenttransfers = 5
 
@@ -265,7 +282,7 @@ To scope the agent to a single repository instead of globally:
 ```sh
 git config lfs.customtransfer.desync.path /usr/local/bin/git-lfs-desync
 git config lfs.customtransfer.desync.args \
-    "--store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"
+    "--store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ --safe-pruning"
 git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 ```
@@ -290,7 +307,7 @@ S3_ACCESS_KEY=... S3_SECRET_KEY=... git push origin main
 git clone <git-remote> myrepo
 cd myrepo
 git config lfs.customtransfer.desync.path /usr/local/bin/git-lfs-desync
-git config lfs.customtransfer.desync.args "--store s3+https://..."
+git config lfs.customtransfer.desync.args "--store s3+https://... --safe-pruning"
 git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 S3_ACCESS_KEY=... S3_SECRET_KEY=... git lfs pull
@@ -339,7 +356,9 @@ desync prune -s /path/to/chunks --index-store /path/to/indexes --yes
 
 Use this approach when uploads or downloads may be running at the same time as the pruning job. The order is reversed compared to immediate pruning: chunks are pruned first, then indexes.
 
-**Prerequisite — enable safe pruning in the upload agent.** The `safe-pruning` flag must be set for the chunk store in the desync config so that upload operations participate in the safe pruning protocol (see `StoreOptions`):
+**Prerequisite — enable safe pruning in the upload agent.** The `safe-pruning` flag must be set so that upload operations participate in the safe pruning protocol. It can be configured in two ways:
+
+- **Via the desync config file** (recommended when a config file is already in use):
 
 ```json
 {
@@ -349,6 +368,12 @@ Use this approach when uploads or downloads may be running at the same time as t
     }
   }
 }
+```
+
+- **Via the LFS agent `args`** (when no config file is used):
+
+```ini
+args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ --safe-pruning
 ```
 
 **Step 1 — prune orphaned chunks** (using *all* current indexes — including stale ones — as the keep set):
@@ -406,7 +431,8 @@ Uploads are not affected — chunks are always written directly to `--store`.
 [lfs "customtransfer.desync"]
     path = /usr/local/bin/git-lfs-desync
     args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ \
-           --cache /var/cache/lfs/chunks
+           --cache /var/cache/lfs/chunks \
+           --safe-pruning
     concurrent = true
 ```
 
@@ -421,7 +447,8 @@ mkdir -p /var/cache/lfs/chunks
 ```sh
 git config lfs.customtransfer.desync.args \
     "--store sftp://user@fileserver/lfs/chunks \
-     --cache ~/.cache/lfs/chunks"
+     --cache ~/.cache/lfs/chunks \
+     --safe-pruning"
 ```
 
 ### Cache repair
@@ -505,7 +532,8 @@ git config lfs.customtransfer.desync.path /tmp/git-lfs-desync
 git config lfs.customtransfer.desync.args \
     "--store s3+http://localhost:9000/lfs-test/chunks/ \
      --index-store s3+http://localhost:9000/lfs-test/index/ \
-     --cache /tmp/lfs-cache"
+     --cache /tmp/lfs-cache \
+     --safe-pruning"
 git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 # Standalone mode requires a dummy lfs.url (no real LFS server)
@@ -556,7 +584,8 @@ git config lfs.customtransfer.desync.path /tmp/git-lfs-desync
 git config lfs.customtransfer.desync.args \
     "--store s3+http://localhost:9000/lfs-test/chunks/ \
      --index-store s3+http://localhost:9000/lfs-test/index/ \
-     --cache /tmp/lfs-cache"
+     --cache /tmp/lfs-cache \
+     --safe-pruning"
 git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 git config lfs.url "https://localhost"
