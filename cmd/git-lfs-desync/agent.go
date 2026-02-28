@@ -86,6 +86,7 @@ type Agent struct {
 	avgChunk        uint64
 	maxChunk        uint64
 	tmpDir          string
+	safePruning     bool
 	enc             *json.Encoder
 	mu              sync.Mutex
 	// setup is called once from handleInit with remote and operation from the
@@ -266,6 +267,21 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	if err := a.indexWriteStore.StoreIndex(oidIndexName(req.OID), idx); err != nil {
 		a.sendComplete(req.OID, "", err)
 		return
+	}
+
+	// If safe pruning is enabled, rescue the chunks we just wrote so that a
+	// concurrent pruner cannot delete them between StoreChunk and StoreIndex.
+	if a.safePruning {
+		if sps, ok := a.writeStore.(desync.SafePruneStore); ok {
+			ids := make(map[desync.ChunkID]struct{}, len(idx.Chunks))
+			for _, c := range idx.Chunks {
+				ids[c.ID] = struct{}{}
+			}
+			if err := sps.RescueChunks(ctx, ids); err != nil {
+				a.sendComplete(req.OID, "", err)
+				return
+			}
+		}
 	}
 
 	a.sendComplete(req.OID, "", nil)

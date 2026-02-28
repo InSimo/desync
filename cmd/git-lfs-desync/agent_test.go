@@ -877,6 +877,78 @@ func TestAgentTerminate(t *testing.T) {
 	}
 }
 
+// trackingWriteStore wraps a SafePruneStore and records whether RescueChunks was called.
+type trackingWriteStore struct {
+	desync.SafePruneStore
+	rescueCalled bool
+}
+
+func (s *trackingWriteStore) RescueChunks(ctx context.Context, ids map[desync.ChunkID]struct{}) error {
+	s.rescueCalled = true
+	return s.SafePruneStore.RescueChunks(ctx, ids)
+}
+
+func TestAgentUploadSafePruning(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("safePruning=%v", enabled), func(t *testing.T) {
+			chunkDir := t.TempDir()
+			indexDir := t.TempDir()
+
+			rawStore, err := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rawStore.Close()
+			tracker := &trackingWriteStore{SafePruneStore: rawStore}
+
+			indexStore, err := desync.NewLocalIndexStore(indexDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer indexStore.Close()
+
+			content := bytes.Repeat([]byte("safe-pruning-test "), 5000)
+			srcFile := filepath.Join(t.TempDir(), "source.bin")
+			if err := os.WriteFile(srcFile, content, 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			var buf bytes.Buffer
+			a := &Agent{
+				writeStore:      tracker,
+				readStore:       tracker,
+				indexWriteStore: indexStore,
+				n:               4,
+				minChunk:        4 * 1024,
+				avgChunk:        16 * 1024,
+				maxChunk:        64 * 1024,
+				tmpDir:          t.TempDir(),
+				safePruning:     enabled,
+				enc:             json.NewEncoder(&buf),
+			}
+
+			uploadMsg, _ := json.Marshal(transferRequest{
+				Event: "upload",
+				OID:   "safepruning0test",
+				Size:  int64(len(content)),
+				Path:  srcFile,
+			})
+			a.handleUpload(context.Background(), uploadMsg)
+
+			// Verify upload succeeded.
+			var evt completeEvent
+			json.NewDecoder(&buf).Decode(&evt)
+			if evt.Error != nil {
+				t.Fatalf("upload error: %v", evt.Error.Message)
+			}
+
+			if tracker.rescueCalled != enabled {
+				t.Errorf("RescueChunks called = %v, want %v", tracker.rescueCalled, enabled)
+			}
+		})
+	}
+}
+
 func TestRunIndexesFromArgs(t *testing.T) {
 	var buf bytes.Buffer
 	args := []string{"abc123def456", "dead0000cafe1234"}

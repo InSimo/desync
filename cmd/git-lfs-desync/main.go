@@ -97,6 +97,7 @@ func main() {
 		trustInsecure       bool
 		errorRetryInterval  time.Duration
 		indexes             bool
+		safePruning         bool
 	)
 
 	cmd := &cobra.Command{
@@ -241,8 +242,8 @@ Configure Git LFS to use this agent:
 				agent.minChunk = minChunk
 				agent.avgChunk = avgChunk
 				agent.maxChunk = maxChunk
-				return nil
-			}
+				agent.safePruning = safePruning
+				return nil			}
 
 			return agent.Run(ctx)
 		},
@@ -274,6 +275,9 @@ Configure Git LFS to use this agent:
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
 			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")
+	flags.BoolVar(&safePruning, "safe-pruning", false,
+		"enable safe concurrent pruning protocol: after each upload, rescue written chunks\n"+
+			"so a concurrent 'desync prune --safe-pruning' cannot delete them (see doc/safe-pruning.md)")
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)
