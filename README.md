@@ -99,6 +99,7 @@ cd desync/cmd/desync && go install
 - `tar`          - pack a catar file, optionally chunk the catar and create an index file.
 - `untar`        - unpack a catar file or an index referencing a catar. Device entries in tar files are unsupported and `--no-same-owner` and `--no-same-permissions` options are ignored on Windows.
 - `prune`        - remove unreferenced chunks from a local, S3 or GC store. Use with caution, can lead to data loss.
+- `index-prune`  - remove unreferenced indexes from an index store. Use with caution, can lead to data loss.
 - `verify-index` - verify that an index file matches a given blob
 - `chunk-server` - start an HTTP(S) chunk server/store
 - `index-server` - start an HTTP(S) index server/store
@@ -472,11 +473,36 @@ Unpack a directory tree from an index file and store the output filesystem in a 
 desync untar -i -s /some/local/store --output-format=gnu-tar archive.caidx /path/to/archive.tar
 ```
 
-Prune a store to only contain chunks that are referenced in the provided index files. Possible data loss.
+Prune a store to only contain chunks that are referenced in the provided index files. Index files can be given as positional arguments, read from an index store via `--index-store`, or both. Possible data loss.
 
 ```text
 desync prune -s /some/local/store index1.caibx index2.caibx
 ```
+
+```text
+desync prune -s /some/local/store --index-store /some/index/store
+```
+
+Prune an index store to only retain the listed index files, deleting all others. Possible data loss.
+
+```text
+desync index-prune -s /some/index/store index1.caibx index2.caibx
+```
+
+Index names can also be piped via stdin using `-` as an argument.
+
+```text
+cat keep.txt | desync index-prune -s /some/index/store -
+```
+
+To garbage-collect both an index store and its backing chunk store so that only useful data remains, run `index-prune` followed by `prune --index-store`:
+
+```text
+desync index-prune -s /some/index/store --yes index1.caibx index2.caibx
+desync prune -s /some/local/store --index-store /some/index/store --yes
+```
+
+**Warning:** Neither command is safe to run concurrently with active upload or download operations against the same stores. An upload that completes while a prune is in progress may appear to succeed but have its chunks or index removed immediately afterwards. A download may similarly lose chunks mid-flight. There is no protection mechanism against these races, so prune operations should only be performed during a maintenance window when no other clients are accessing the stores.
 
 Start a chunk server serving up a local store via port 80.
 
