@@ -5,10 +5,12 @@ import (
 	"io"
 	"net/url"
 	"path"
+	"strings"
 
 	"cloud.google.com/go/storage"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/api/iterator"
 )
 
 // GCIndexStore is a read-write index store with Google Storage backing
@@ -103,4 +105,22 @@ func (s GCIndexStore) StoreIndex(name string, idx Index) error {
 
 	log.Debug("Index written to GCS bucket")
 	return nil
+}
+
+// ListIndexes returns the names of all indexes in the store, relative to the store root.
+func (s GCIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
+	query := &storage.Query{Prefix: s.prefix}
+	it := s.client.Objects(ctx, query)
+	var names []string
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, strings.TrimPrefix(attrs.Name, s.prefix))
+	}
+	return names, nil
 }

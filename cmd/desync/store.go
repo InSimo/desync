@@ -282,6 +282,66 @@ func indexStoreFromLocation(location string, cmdOpt cmdStoreOptions) (desync.Ind
 	return s, indexName, nil
 }
 
+// openIndexStoreFromRoot opens an IndexStore treating the full provided location as the
+// store root. Unlike indexStoreFromLocation, the location is not split into a store root
+// and index name — the full location IS the store root.
+func openIndexStoreFromRoot(location string, cmdOpt cmdStoreOptions) (desync.IndexStore, error) {
+	loc, err := url.Parse(location)
+	if err != nil {
+		return nil, fmt.Errorf("Unable to parse store location %s : %s", location, err)
+	}
+
+	configOptions, err := cfg.GetStoreOptionsFor(location)
+	if err != nil {
+		return nil, err
+	}
+	opt := cmdOpt.MergedWith(configOptions)
+
+	var s desync.IndexStore
+	switch loc.Scheme {
+	case "ssh":
+		return nil, errors.New("Index storage is not supported by ssh remote stores")
+	case "sftp":
+		s, err = desync.NewSFTPIndexStore(loc, opt)
+		if err != nil {
+			return nil, err
+		}
+	case "http", "https":
+		s, err = desync.NewRemoteHTTPIndexStore(loc, opt)
+		if err != nil {
+			return nil, err
+		}
+	case "s3+http", "s3+https":
+		s3Creds, region := cfg.GetS3CredentialsFor(loc)
+		lookup := minio.BucketLookupAuto
+		ls := loc.Query().Get("lookup")
+		switch ls {
+		case "dns":
+			lookup = minio.BucketLookupDNS
+		case "path":
+			lookup = minio.BucketLookupPath
+		case "", "auto":
+		default:
+			return nil, fmt.Errorf("unknown S3 bucket lookup type: %q", ls)
+		}
+		s, err = desync.NewS3IndexStore(loc, s3Creds, region, opt, lookup)
+		if err != nil {
+			return nil, err
+		}
+	case "gs":
+		s, err = desync.NewGCIndexStore(loc, opt)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		s, err = desync.NewLocalIndexStore(location)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
 // storeFile defines the structure of a file that can be used to pass in the stores
 // not by command line arguments, but a file instead. This allows the configuration
 // to be reloaded for long-running processes on-the-fly without restarting the process.

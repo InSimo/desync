@@ -48,6 +48,12 @@ type IndexWriteStore interface {
 	StoreIndex(name string, idx Index) error
 }
 
+// ListableIndexStore is implemented by index stores that support listing all
+// stored indexes.
+type ListableIndexStore interface {
+	ListIndexes(ctx context.Context) ([]string, error)
+}
+
 // StoreOptions provide additional common settings used in chunk stores, such as compression
 // error retry or timeouts. Not all options available are applicable to all types of stores.
 type StoreOptions struct {

@@ -1,11 +1,12 @@
 package desync
 
 import (
+	"context"
+	"io"
 	"net/url"
 	"os"
 	"path"
-
-	"io"
+	"strings"
 
 	"github.com/pkg/errors"
 )
@@ -66,4 +67,26 @@ func (s *SFTPIndexStore) HasIndex(name string) (bool, error) {
 
 func (s *SFTPIndexStore) pathFromName(name string) string {
 	return path.Join(s.path, name)
+}
+
+// ListIndexes returns the names of all indexes in the store, relative to the store root.
+func (s *SFTPIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
+	walker := s.client.Walk(strings.TrimSuffix(s.path, "/"))
+	var names []string
+	for walker.Step() {
+		if err := walker.Err(); err != nil {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, Interrupted{}
+		default:
+		}
+		if walker.Stat().IsDir() {
+			continue
+		}
+		rel := strings.TrimPrefix(walker.Path(), s.path)
+		names = append(names, rel)
+	}
+	return names, nil
 }

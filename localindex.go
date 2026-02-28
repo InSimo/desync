@@ -1,8 +1,10 @@
 package desync
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,3 +86,28 @@ func (s LocalIndexStore) String() string {
 
 // Close the index store. NOP operation, needed to implement IndexStore interface
 func (s LocalIndexStore) Close() error { return nil }
+
+// ListIndexes returns the relative paths of all index files in the store.
+func (s LocalIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
+	var names []string
+	err := filepath.WalkDir(s.Path, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(s.Path, p)
+		if err != nil {
+			return err
+		}
+		names = append(names, rel)
+		return nil
+	})
+	return names, err
+}

@@ -12,21 +12,23 @@ import (
 
 type pruneOptions struct {
 	cmdStoreOptions
-	store string
-	yes   bool
+	store      string
+	indexStore string
+	yes        bool
 }
 
 func newPruneCommand(ctx context.Context) *cobra.Command {
 	var opt pruneOptions
 
 	cmd := &cobra.Command{
-		Use:   "prune <index> [<file>..]",
+		Use:   "prune [--index-store <location>] [<index>..]",
 		Short: "Remove unreferenced chunks from a store",
 		Long: `Read chunk IDs in from index files and delete any chunks from a store
 that are not referenced in the provided index files. Use '-' to read a single index
-from STDIN.`,
-		Example: `  desync prune -s /path/to/local --yes file.caibx`,
-		Args:    cobra.MinimumNArgs(1),
+from STDIN. Indexes can be provided as positional arguments, via --index-store, or both.`,
+		Example: `  desync prune -s /path/to/local --yes file.caibx
+  desync prune -s /path/to/local --index-store /path/to/indexes --yes`,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPrune(ctx, opt, args)
 		},
@@ -34,6 +36,7 @@ from STDIN.`,
 	}
 	flags := cmd.Flags()
 	flags.StringVarP(&opt.store, "store", "s", "", "target store")
+	flags.StringVar(&opt.indexStore, "index-store", "", "index store to read all indexes from")
 	flags.BoolVarP(&opt.yes, "yes", "y", false, "do not ask for confirmation")
 	addStoreOptions(&opt.cmdStoreOptions, flags)
 	return cmd
@@ -46,6 +49,9 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 	opt.store = cfg.ResolveStore(opt.store)
 	if opt.store == "" {
 		return errors.New("no store provided")
+	}
+	if opt.indexStore == "" && len(args) == 0 {
+		return errors.New("no index files or --index-store provided")
 	}
 
 	// Open the target store
@@ -76,6 +82,32 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		}
 		for _, c := range c.Chunks {
 			ids[c.ID] = struct{}{}
+		}
+	}
+
+	// If an index store was provided, list all indexes in it and collect chunk IDs
+	if opt.indexStore != "" {
+		is, err := openIndexStoreFromRoot(opt.indexStore, opt.cmdStoreOptions)
+		if err != nil {
+			return err
+		}
+		defer is.Close()
+		lis, ok := is.(desync.ListableIndexStore)
+		if !ok {
+			return fmt.Errorf("index store '%s' does not support listing indexes", opt.indexStore)
+		}
+		names, err := lis.ListIndexes(ctx)
+		if err != nil {
+			return err
+		}
+		for _, name := range names {
+			idx, err := is.GetIndex(name)
+			if err != nil {
+				return err
+			}
+			for _, c := range idx.Chunks {
+				ids[c.ID] = struct{}{}
+			}
 		}
 	}
 

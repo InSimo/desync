@@ -1,11 +1,11 @@
 package desync
 
 import (
+	"context"
 	"io"
-
-	"path"
-
 	"net/url"
+	"path"
+	"strings"
 
 	"github.com/minio/minio-go/v6"
 	"github.com/minio/minio-go/v6/pkg/credentials"
@@ -67,4 +67,23 @@ func (s S3IndexStore) StoreIndex(name string, idx Index) error {
 
 	_, err := s.client.PutObject(s.bucket, s.prefix+name, r, -1, minio.PutObjectOptions{ContentType: contentType})
 	return errors.Wrap(err, path.Base(s.Location))
+}
+
+// ListIndexes returns the names of all indexes in the store, relative to the store root.
+func (s S3IndexStore) ListIndexes(ctx context.Context) ([]string, error) {
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+	var names []string
+	for object := range s.client.ListObjectsV2(s.bucket, s.prefix, true, doneCh) {
+		if object.Err != nil {
+			return nil, object.Err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, Interrupted{}
+		default:
+		}
+		names = append(names, strings.TrimPrefix(object.Key, s.prefix))
+	}
+	return names, nil
 }
