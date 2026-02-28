@@ -54,6 +54,12 @@ type ListableIndexStore interface {
 	ListIndexes(ctx context.Context) ([]string, error)
 }
 
+// IndexPruneStore is implemented by index stores that support deleting indexes.
+type IndexPruneStore interface {
+	IndexStore
+	PruneIndexes(ctx context.Context, keep map[string]struct{}) error
+}
+
 // StoreOptions provide additional common settings used in chunk stores, such as compression
 // error retry or timeouts. Not all options available are applicable to all types of stores.
 type StoreOptions struct {

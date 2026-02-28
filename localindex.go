@@ -87,6 +87,28 @@ func (s LocalIndexStore) String() string {
 // Close the index store. NOP operation, needed to implement IndexStore interface
 func (s LocalIndexStore) Close() error { return nil }
 
+// PruneIndexes removes all indexes from the store that are not in the keep set.
+func (s LocalIndexStore) PruneIndexes(ctx context.Context, keep map[string]struct{}) error {
+	names, err := s.ListIndexes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if _, ok := keep[name]; ok {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		if err := os.Remove(s.Path + name); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // ListIndexes returns the relative paths of all index files in the store.
 func (s LocalIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
 	var names []string

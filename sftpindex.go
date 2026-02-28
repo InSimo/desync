@@ -69,6 +69,28 @@ func (s *SFTPIndexStore) pathFromName(name string) string {
 	return path.Join(s.path, name)
 }
 
+// PruneIndexes removes all indexes from the store that are not in the keep set.
+func (s *SFTPIndexStore) PruneIndexes(ctx context.Context, keep map[string]struct{}) error {
+	names, err := s.ListIndexes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if _, ok := keep[name]; ok {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		if err := s.client.Remove(s.pathFromName(name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // ListIndexes returns the names of all indexes in the store, relative to the store root.
 func (s *SFTPIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
 	walker := s.client.Walk(strings.TrimSuffix(s.path, "/"))

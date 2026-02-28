@@ -107,6 +107,28 @@ func (s GCIndexStore) StoreIndex(name string, idx Index) error {
 	return nil
 }
 
+// PruneIndexes removes all indexes from the store that are not in the keep set.
+func (s GCIndexStore) PruneIndexes(ctx context.Context, keep map[string]struct{}) error {
+	names, err := s.ListIndexes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if _, ok := keep[name]; ok {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return Interrupted{}
+		default:
+		}
+		if err := s.client.Object(s.prefix + name).Delete(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ListIndexes returns the names of all indexes in the store, relative to the store root.
 func (s GCIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
 	query := &storage.Query{Prefix: s.prefix}
