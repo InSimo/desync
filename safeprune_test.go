@@ -39,6 +39,40 @@ func (d *propagationDelays) sleepAfterAdd()     { if d != nil { d.sleep(d.afterA
 func (d *propagationDelays) sleepBeforeWrite()  { if d != nil { d.sleep(d.beforeWrite) } }
 func (d *propagationDelays) sleepBeforeDelete() { if d != nil { d.sleep(d.beforeDelete) } }
 
+// chunkPool is a bounded, thread-safe pool of chunks shared across writer
+// goroutines. It enables reuse of chunks across index iterations.
+type chunkPool struct {
+	mu     sync.Mutex
+	chunks []*Chunk
+	cap    int
+}
+
+func newChunkPool(cap int) *chunkPool {
+	return &chunkPool{cap: cap, chunks: make([]*Chunk, 0, cap)}
+}
+
+// add inserts c into the pool. When the pool is full, a random slot is
+// replaced so the pool stays fresh and older chunks cycle out over time.
+func (p *chunkPool) add(c *Chunk) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.chunks) < p.cap {
+		p.chunks = append(p.chunks, c)
+	} else {
+		p.chunks[rand.Intn(p.cap)] = c
+	}
+}
+
+// pick returns a random chunk from the pool, or nil if the pool is empty.
+func (p *chunkPool) pick() *Chunk {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.chunks) == 0 {
+		return nil
+	}
+	return p.chunks[rand.Intn(len(p.chunks))]
+}
+
 // ---------------------------------------------------------------------------
 // mockStore — in-memory SafePruneStore for algorithm verification
 // ---------------------------------------------------------------------------
@@ -822,6 +856,30 @@ func (s *mockIndexStore) CheckInvariant(cs stressChunkStore) error {
 	return nil
 }
 
+// RandomIndex atomically captures a randomly selected live index. Returns
+// ok=false if the store is currently empty.
+func (s *mockIndexStore) RandomIndex() (name string, idx Index, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.indexes) == 0 {
+		return "", Index{}, false
+	}
+	names := make([]string, 0, len(s.indexes))
+	for n := range s.indexes {
+		names = append(names, n)
+	}
+	name = names[rand.Intn(len(names))]
+	return name, s.indexes[name], true
+}
+
+// HasIndex reports whether a named index is currently live.
+func (s *mockIndexStore) HasIndex(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.indexes[name]
+	return ok
+}
+
 // TestMockSafePruneMultipleChunkStates exercises all four ChunkStatus values
 // simultaneously and verifies each chunk ends up in the correct state after a
 // single SafePrune call.
@@ -902,11 +960,14 @@ func runSafePruneStress(
 	t.Helper()
 	const (
 		stressNumWriters   = 6
-		stressChunksPerIdx = 3 // chunks per index, exercises multi-chunk keep sets
+		stressChunksPerIdx = 3  // chunks per index, exercises multi-chunk keep sets
 		stressDuration     = 3 * time.Second
+		stressChunkPoolCap = 30 // shared pool cap; ~5 chunks per writer
+		stressNumReaders   = 3
 	)
 
 	sharedIndexStore := newMockIndexStore()
+	pool := newChunkPool(stressChunkPoolCap)
 
 	ctx, cancel := context.WithTimeout(context.Background(), stressDuration)
 	defer cancel()
@@ -951,21 +1012,42 @@ func runSafePruneStress(
 				default:
 				}
 
-				// 1. Create stressChunksPerIdx brand-new unique chunks.
-				// Uniqueness (via crypto/rand) ensures each chunk starts in
-				// ChunkStatusNormal and has never been through a prune cycle.
+				// 1. Build stressChunksPerIdx chunks, alternating between fresh
+				// chunks (even slots) and pool chunks (odd slots). Pool reuse
+				// exercises the scenario where a chunk that has been through one
+				// or more prune cycles is re-referenced by a new index.
 				chunkIDs := make(map[ChunkID]struct{}, stressChunksPerIdx)
 				idxChunks := make([]IndexChunk, 0, stressChunksPerIdx)
 				offset := uint64(0)
 				for j := 0; j < stressChunksPerIdx; j++ {
-					data := make([]byte, 32)
-					if _, err := cryptorand.Read(data); err != nil {
-						return fmt.Errorf("worker %d iter %d: rand.Read: %w", workerID, iteration, err)
+					var chunk *Chunk
+
+					// Odd slots: try to reuse a chunk that may have been through prune cycles.
+					if j%2 == 1 {
+						if reused := pool.pick(); reused != nil {
+							chunk = reused
+							// Re-store: ensures the chunk is in the live map even if it was
+							// quarantined between its last reference and now.
+							if err := cs.StoreChunk(chunk); err != nil {
+								return fmt.Errorf("worker %d iter %d: StoreChunk (reuse): %w",
+									workerID, iteration, err)
+							}
+						}
 					}
-					chunk := NewChunk(data)
-					if err := cs.StoreChunk(chunk); err != nil {
-						return fmt.Errorf("worker %d iter %d: StoreChunk: %w", workerID, iteration, err)
+
+					// Even slots (or fallback when pool is empty): generate a fresh chunk.
+					if chunk == nil {
+						data := make([]byte, 32)
+						if _, err := cryptorand.Read(data); err != nil {
+							return fmt.Errorf("worker %d iter %d: rand.Read: %w", workerID, iteration, err)
+						}
+						chunk = NewChunk(data)
+						if err := cs.StoreChunk(chunk); err != nil {
+							return fmt.Errorf("worker %d iter %d: StoreChunk: %w", workerID, iteration, err)
+						}
+						pool.add(chunk)
 					}
+
 					chunkIDs[chunk.ID()] = struct{}{}
 					idxChunks = append(idxChunks, IndexChunk{ID: chunk.ID(), Start: offset, Size: 32})
 					offset += 32
@@ -989,9 +1071,18 @@ func runSafePruneStress(
 					return fmt.Errorf("worker %d iter %d: rescue: %w", workerID, iteration, err)
 				}
 
-				// 3. Inline invariant check.
-				if err := sharedIndexStore.CheckInvariant(cs); err != nil {
-					return fmt.Errorf("worker %d iter %d: %w", workerID, iteration, err)
+				// 3. Inline invariant check — verify only this worker's own chunks
+				// to avoid observing other workers' transient StoreIndex→RescueChunks
+				// windows. Readers provide continuous global coverage.
+				for _, ic := range idxChunks {
+					ok, err := cs.HasChunk(ic.ID)
+					if err != nil {
+						return fmt.Errorf("worker %d iter %d: HasChunk: %w", workerID, iteration, err)
+					}
+					if !ok {
+						return fmt.Errorf("worker %d iter %d: own chunk %s missing after rescue",
+							workerID, iteration, ic.ID)
+					}
 				}
 
 				// 4. Expire the previous iteration's index so its chunks become
@@ -1001,6 +1092,76 @@ func runSafePruneStress(
 						delay.sleep(delay.beforeDelete)
 					}
 					sharedIndexStore.DeleteIndex(fmt.Sprintf("w%d-i%d", workerID, iteration-1))
+				}
+			}
+		})
+	}
+
+	// Reader goroutines: simulate concurrent clients fetching an index and then
+	// downloading each of its chunks, with propagation delays between operations.
+	for range stressNumReaders {
+		g.Go(func() error {
+			for {
+				select {
+				case <-gCtx.Done():
+					return nil
+				default:
+				}
+
+				// Atomically snapshot a random live index.
+				name, idx, ok := sharedIndexStore.RandomIndex()
+				if !ok {
+					continue // no indexes yet; retry immediately
+				}
+
+				// Simulate propagation delay for the index fetch.
+				if delay != nil {
+					delay.sleep(delay.afterRead)
+				}
+
+				// Fetch each chunk referenced by the index.
+				for _, c := range idx.Chunks {
+					if delay != nil {
+						delay.sleep(delay.afterRead)
+					}
+					if gCtx.Err() != nil {
+						return nil
+					}
+
+					present, err := cs.HasChunk(c.ID)
+					if err != nil {
+						return fmt.Errorf("reader %q: HasChunk %s: %w", name, c.ID, err)
+					}
+
+					if !present {
+						// A chunk can be transiently absent in the window between a
+						// writer's StoreIndex and its RescueChunks completing. Wait
+						// for that operation to propagate before concluding the chunk
+						// is truly missing. The wait is bounded by the maximum
+						// propagation time of a Restore call (beforeWrite + afterAdd).
+						// A minimum of 1ms is always applied so the writer goroutine
+						// has a chance to run RescueChunks even when delay is nil.
+						wait := time.Millisecond
+						if delay != nil && delay.beforeWrite+delay.afterAdd > wait {
+							wait = delay.beforeWrite + delay.afterAdd
+						}
+						time.Sleep(wait)
+						present, err = cs.HasChunk(c.ID)
+						if err != nil {
+							return fmt.Errorf("reader %q: HasChunk retry %s: %w", name, c.ID, err)
+						}
+						if gCtx.Err() != nil {
+							return nil
+						}
+
+						// Only a protocol violation if the index is still live: a
+						// missing chunk belonging to a deleted index is legitimate
+						// (it has been pruned after the index was removed).
+						if !present && sharedIndexStore.HasIndex(name) {
+							return fmt.Errorf("reader: index %q chunk %s missing while index is live",
+								name, c.ID)
+						}
+					}
 				}
 			}
 		})
