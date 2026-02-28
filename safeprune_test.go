@@ -4,6 +4,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"fmt"
+	"math/rand"
 	"os"
 	"sync"
 	"testing"
@@ -13,6 +14,30 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+// propagationDelays configures random propagation latency injected into store
+// operations to simulate distributed-system eventual consistency. A nil value
+// disables all delays.
+type propagationDelays struct {
+	afterRead    time.Duration // max random sleep after read ops
+	afterAdd     time.Duration // max random sleep after add/restore ops
+	beforeWrite  time.Duration // max random sleep before write/add ops
+	beforeDelete time.Duration // max random sleep before delete/quarantine ops
+}
+
+// sleep sleeps for a uniformly random duration in [0, max). It is a no-op if d
+// is nil or max is zero.
+func (d *propagationDelays) sleep(max time.Duration) {
+	if d == nil || max <= 0 {
+		return
+	}
+	time.Sleep(time.Duration(rand.Int63n(int64(max))))
+}
+
+func (d *propagationDelays) sleepAfterRead()    { if d != nil { d.sleep(d.afterRead) } }
+func (d *propagationDelays) sleepAfterAdd()     { if d != nil { d.sleep(d.afterAdd) } }
+func (d *propagationDelays) sleepBeforeWrite()  { if d != nil { d.sleep(d.beforeWrite) } }
+func (d *propagationDelays) sleepBeforeDelete() { if d != nil { d.sleep(d.beforeDelete) } }
 
 // ---------------------------------------------------------------------------
 // mockStore — in-memory SafePruneStore for algorithm verification
@@ -31,6 +56,7 @@ type mockStore struct {
 	// chunk has been moved to quarantine and before returning. It is used by
 	// tests to inject concurrent operations into the TOCTOU race window.
 	postQuarantineHook func(id ChunkID)
+	delays             *propagationDelays // optional propagation delay simulation
 }
 
 func newMockStore() *mockStore {
@@ -45,8 +71,9 @@ func newMockStore() *mockStore {
 
 func (s *mockStore) GetChunk(id ChunkID) (*Chunk, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	c, ok := s.chunks[id]
+	s.mu.Unlock()
+	s.delays.sleepAfterRead()
 	if !ok {
 		return nil, ChunkMissing{id}
 	}
@@ -55,15 +82,18 @@ func (s *mockStore) GetChunk(id ChunkID) (*Chunk, error) {
 
 func (s *mockStore) HasChunk(id ChunkID) (bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	_, ok := s.chunks[id]
+	s.mu.Unlock()
+	s.delays.sleepAfterRead()
 	return ok, nil
 }
 
 func (s *mockStore) StoreChunk(chunk *Chunk) error {
+	s.delays.sleepBeforeWrite()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.chunks[chunk.ID()] = chunk
+	s.mu.Unlock()
+	s.delays.sleepAfterAdd()
 	return nil
 }
 
@@ -104,7 +134,6 @@ func (s *mockStore) UntagPrunable(id ChunkID) error {
 
 func (s *mockStore) ListChunks(_ context.Context) ([]ChunkEntry, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	var entries []ChunkEntry
 	for id, chunk := range s.chunks {
 		_ = chunk
@@ -124,17 +153,21 @@ func (s *mockStore) ListChunks(_ context.Context) ([]ChunkEntry, error) {
 			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
 		}
 	}
+	s.mu.Unlock()
+	s.delays.sleepAfterRead()
 	return entries, nil
 }
 
 func (s *mockStore) MarkerExists(id ChunkID) (bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	_, ok := s.markers[id]
+	s.mu.Unlock()
+	s.delays.sleepAfterRead()
 	return ok, nil
 }
 
 func (s *mockStore) DeletePruning(id ChunkID) error {
+	s.delays.sleepBeforeDelete()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.quarantine, id)
@@ -142,6 +175,7 @@ func (s *mockStore) DeletePruning(id ChunkID) error {
 }
 
 func (s *mockStore) DeleteMarker(id ChunkID) error {
+	s.delays.sleepBeforeDelete()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.markers, id)
@@ -149,13 +183,16 @@ func (s *mockStore) DeleteMarker(id ChunkID) error {
 }
 
 func (s *mockStore) CreateMarker(id ChunkID) error {
+	s.delays.sleepBeforeWrite()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.markers[id] = struct{}{}
+	s.mu.Unlock()
+	s.delays.sleepAfterAdd()
 	return nil
 }
 
 func (s *mockStore) Quarantine(id ChunkID) error {
+	s.delays.sleepBeforeDelete()
 	s.mu.Lock()
 	chunk, ok := s.chunks[id]
 	if ok {
@@ -172,13 +209,15 @@ func (s *mockStore) Quarantine(id ChunkID) error {
 }
 
 func (s *mockStore) Restore(id ChunkID) error {
+	s.delays.sleepBeforeWrite()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	chunk, ok := s.quarantine[id]
 	if ok {
 		s.chunks[id] = chunk
 		delete(s.quarantine, id)
 	}
+	s.mu.Unlock()
+	s.delays.sleepAfterAdd()
 	return nil
 }
 
@@ -848,6 +887,8 @@ func noopRescue(_ context.Context, _ map[ChunkID]struct{}) error { return nil }
 // safe and unsafe tests use time.Millisecond so that the conditions are
 // identical and any invariant violation reflects the pruning strategy, not
 // pruning frequency.
+// delay, if non-nil, injects random propagation delays around index-store
+// operations to simulate distributed-system eventual consistency.
 //
 // Returns nil if the invariant held throughout, or the first violation found.
 func runSafePruneStress(
@@ -856,6 +897,7 @@ func runSafePruneStress(
 	prune func(context.Context, map[ChunkID]struct{}) error,
 	rescue func(context.Context, map[ChunkID]struct{}) error,
 	prunerSleep time.Duration,
+	delay *propagationDelays,
 ) error {
 	t.Helper()
 	const (
@@ -883,6 +925,9 @@ func runSafePruneStress(
 			default:
 			}
 			keepSet := sharedIndexStore.AllChunkIDs()
+			if delay != nil {
+				delay.sleep(delay.afterRead)
+			}
 			if err := prune(gCtx, keepSet); err != nil {
 				if gCtx.Err() != nil {
 					return nil
@@ -930,7 +975,13 @@ func runSafePruneStress(
 				// the next AllChunkIDs call), then rescue any chunk that was
 				// transiently quarantined between StoreChunk and StoreIndex.
 				name := fmt.Sprintf("w%d-i%d", workerID, iteration)
+				if delay != nil {
+					delay.sleep(delay.beforeWrite)
+				}
 				sharedIndexStore.StoreIndex(name, Index{Chunks: idxChunks})
+				if delay != nil {
+					delay.sleep(delay.afterAdd)
+				}
 				if err := rescue(gCtx, chunkIDs); err != nil {
 					if gCtx.Err() != nil {
 						return nil
@@ -946,6 +997,9 @@ func runSafePruneStress(
 				// 4. Expire the previous iteration's index so its chunks become
 				// pruning candidates on the next prune run.
 				if iteration > 0 {
+					if delay != nil {
+						delay.sleep(delay.beforeDelete)
+					}
 					sharedIndexStore.DeleteIndex(fmt.Sprintf("w%d-i%d", workerID, iteration-1))
 				}
 			}
@@ -968,7 +1022,7 @@ func runSafePruneStress(
 //	go test -race -run TestMockSafePruneStressParallel -v -count=1 .
 func TestMockSafePruneStressParallel(t *testing.T) {
 	cs := newMockStore()
-	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, cs.RescueChunks, time.Millisecond))
+	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, cs.RescueChunks, time.Millisecond, nil))
 }
 
 // TestMockUnsafePruneStressParallel confirms that the stress harness detects
@@ -980,6 +1034,42 @@ func TestMockSafePruneStressParallel(t *testing.T) {
 // can distinguish safe from unsafe implementations.
 func TestMockUnsafePruneStressParallel(t *testing.T) {
 	cs := newMockStore()
-	err := runSafePruneStress(t, cs, cs.Prune, noopRescue, time.Millisecond)
+	err := runSafePruneStress(t, cs, cs.Prune, noopRescue, time.Millisecond, nil)
 	require.Error(t, err, "unsafe Prune must trigger an invariant violation")
+}
+
+// TestMockSafePruneStressWithPropagationDelay verifies that the safe-prune
+// protocol (SafePrune + RescueChunks) upholds the invariant even when store
+// operations have random propagation delays simulating distributed-system
+// eventual consistency.
+//
+// Run with -race to surface concurrent access bugs:
+//
+//	go test -race -run TestMockSafePruneStressWithPropagationDelay -v -count=1 .
+func TestMockSafePruneStressWithPropagationDelay(t *testing.T) {
+	delay := &propagationDelays{
+		afterRead:    2 * time.Millisecond,
+		afterAdd:     2 * time.Millisecond,
+		beforeWrite:  1 * time.Millisecond,
+		beforeDelete: 1 * time.Millisecond,
+	}
+	cs := newMockStore()
+	cs.delays = delay
+	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, cs.RescueChunks, time.Millisecond, delay))
+}
+
+// TestMockUnsafePruneStressWithPropagationDelay confirms that propagation
+// delays make invariant violations more likely with an unsafe prune
+// implementation, not less. The harness must still detect a violation.
+func TestMockUnsafePruneStressWithPropagationDelay(t *testing.T) {
+	delay := &propagationDelays{
+		afterRead:    2 * time.Millisecond,
+		afterAdd:     2 * time.Millisecond,
+		beforeWrite:  1 * time.Millisecond,
+		beforeDelete: 1 * time.Millisecond,
+	}
+	cs := newMockStore()
+	cs.delays = delay
+	err := runSafePruneStress(t, cs, cs.Prune, noopRescue, time.Millisecond, delay)
+	require.Error(t, err, "unsafe Prune must trigger an invariant violation even with propagation delays")
 }
