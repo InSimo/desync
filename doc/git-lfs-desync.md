@@ -47,6 +47,7 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `--config` | `$HOME/.config/desync/config.json` | desync config file for S3 credentials and store options. Mutually exclusive with `--config-from-git`. |
 | `--config-from-git` | — | Read the desync config from a git object. `%(remote)` and `%(operation)` are replaced with values from the LFS init message (e.g. `%(remote)/_desync:config.json`). Mutually exclusive with `--config`. |
 | `--digest` | config default, then `sha512-256` | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. May be set via the `defaults.digest` config key. |
+| `--indexes` | `false` | Translate LFS OIDs to desync index names and write to stdout (one per line). Reads OIDs from positional args, or from the first whitespace-delimited token of each stdin line when no args are given (blank lines are skipped). When set, no store configuration is needed and the agent exits immediately without starting the LFS transfer protocol. See [Index and Chunk Pruning](#index-and-chunk-pruning). |
 
 ## Config defaults
 
@@ -305,6 +306,87 @@ s3://bucket/lfs/index/<lfs-oid>.caibx              # index per LFS object
 ```
 
 The index store defaults to `s3+https://host/bucket/lfs/index/` (last path segment of `--store` replaced with `index`). For local paths, e.g. `--store /data/lfs/chunks`, the index defaults to `/data/lfs/index`. Override with `--index-store` if needed.
+
+---
+
+## Index and Chunk Pruning
+
+Over time, LFS objects may be removed from a repository (e.g. by deleting or force-pushing branches, or by rewriting history). The corresponding `.caibx` index files and the chunks they reference remain in the stores and accumulate as stale entries. The full cleanup is a two-step process involving both `desync index-prune` and `desync prune`.
+
+`git-lfs-desync --indexes` translates the live LFS OID set (from `git lfs ls-files --all --long`) into the corresponding index names for use with `desync index-prune`.
+
+Depending on whether concurrent uploads or downloads may be in progress, two approaches are available.
+
+### Immediate pruning (no concurrent operations)
+
+Use this approach only when it is guaranteed that no upload or download is running concurrently. If that guarantee cannot be made, data loss can occur.
+
+**Step 1 — prune stale indexes:**
+
+```sh
+git lfs ls-files --all --long \
+  | git-lfs-desync --indexes \
+  | desync index-prune --index-store /path/to/indexes --yes -
+```
+
+**Step 2 — prune orphaned chunks** (using the indexes that remain after Step 1 as the keep set):
+
+```sh
+desync prune -s /path/to/chunks --index-store /path/to/indexes --yes
+```
+
+### Safe pruning (concurrent operations possible)
+
+Use this approach when uploads or downloads may be running at the same time as the pruning job. The order is reversed compared to immediate pruning: chunks are pruned first, then indexes.
+
+**Prerequisite — enable safe pruning in the upload agent.** The `safe-pruning` flag must be set for the chunk store in the desync config so that upload operations participate in the safe pruning protocol (see `StoreOptions`):
+
+```json
+{
+  "store-options": {
+    "s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/": {
+      "safe-pruning": true
+    }
+  }
+}
+```
+
+**Step 1 — prune orphaned chunks** (using *all* current indexes — including stale ones — as the keep set):
+
+```sh
+desync prune -s /path/to/chunks --index-store /path/to/indexes --safe-pruning --yes
+```
+
+Because stale indexes are still present, the chunks they reference are included in the keep set and are not deleted yet. Only chunks not referenced by *any* index are removed. `--safe-pruning` additionally uses the two-run protocol to avoid deleting chunks that a concurrent upload is in the process of writing (see [doc/safe-pruning.md](safe-pruning.md)).
+
+**Step 2 — prune stale indexes:**
+
+```sh
+git lfs ls-files --all --long \
+  | git-lfs-desync --indexes \
+  | desync index-prune --index-store /path/to/indexes --safe-index-pruning --yes -
+```
+
+`--safe-index-pruning` uses the two-run protocol to avoid racing with concurrent uploads (see [doc/safe-pruning-index.md](safe-pruning-index.md)). After this step, the indexes for removed LFS objects are gone, but the chunks they referenced are still present in the store. They will be collected the next time Step 1 is run.
+
+This order ensures that a concurrent download that started before Step 2 can still retrieve all its chunks, since those chunks are only removed in a future pruning cycle.
+
+**Concurrency constraints.** Concurrent uploads and downloads are allowed while a safe pruning operation is in progress. However, only a single pruning operation should run at any given time. Additionally, there must be a sufficient time interval between two consecutive pruning runs: any upload or download that was in progress during the first run must have fully completed before the second run starts. Running the two steps back-to-back without waiting would defeat the safety guarantees of the two-run protocol.
+
+### Passing OIDs as arguments
+
+OIDs can also be supplied as positional arguments instead of via stdin:
+
+```sh
+git-lfs-desync --indexes \
+    abc123def4560000cafe1234dead5678 \
+    0011223344556677aabbccddeeff0011
+```
+
+### Notes
+
+- `--indexes` mode does not read any store configuration. `--store`, `--config`, and all other store-related flags are ignored.
+- The index name format is `<first-4-chars-of-oid>/<oid>.caibx`, matching how `git-lfs-desync` stores indexes during upload.
 
 ---
 
