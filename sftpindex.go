@@ -1,7 +1,9 @@
 package desync
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/url"
 	"os"
@@ -106,7 +108,58 @@ func (s *SFTPIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
 			continue
 		}
 		rel := strings.TrimPrefix(walker.Path(), s.path)
+		if rel == PrunableIndexSetFile {
+			continue // reserved system file; not a real index
+		}
 		names = append(names, rel)
 	}
 	return names, nil
+}
+
+// SafePruneIndexes removes indexes from the store using the two-run safe protocol.
+func (s *SFTPIndexStore) SafePruneIndexes(ctx context.Context, keep map[string]struct{}) error {
+	return commonSafePruneIndexes(ctx, keep, s)
+}
+
+// ReadPrunableIndexSet reads the prunable set written by the previous run.
+// Returns an empty set if no prior state exists.
+func (s *SFTPIndexStore) ReadPrunableIndexSet(_ context.Context) (map[string]struct{}, error) {
+	f, err := s.client.Open(s.pathFromName(PrunableIndexSetFile))
+	if os.IsNotExist(err) {
+		return make(map[string]struct{}), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var names []string
+	if err := json.NewDecoder(f).Decode(&names); err != nil {
+		if err == io.EOF {
+			return make(map[string]struct{}), nil // empty file from interrupted write
+		}
+		return nil, err
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set, nil
+}
+
+// WritePrunableIndexSet persists the current deletion candidates for the next run.
+// Removes the file when names is empty (no candidates remain). Uses an atomic
+// PosixRename via StoreObject to avoid leaving a partially-written file.
+func (s *SFTPIndexStore) WritePrunableIndexSet(_ context.Context, names []string) error {
+	if len(names) == 0 {
+		err := s.client.Remove(s.pathFromName(PrunableIndexSetFile))
+		if err != nil && os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(names); err != nil {
+		return err
+	}
+	return s.StoreObject(s.pathFromName(PrunableIndexSetFile), &buf)
 }

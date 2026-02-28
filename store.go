@@ -132,6 +132,33 @@ type IndexPruneStore interface {
 	DeleteIndexes(ctx context.Context, names []string) error
 }
 
+// SafePruneIndexStore extends IndexPruneStore with the two-run safe pruning
+// protocol for indexes. Unlike the chunk safe-pruning protocol, no writer
+// cooperation is required: StoreIndex is atomic, so there is no window between
+// writing an index and it being fully committed. The race this protocol guards
+// against is at the operational level — between the moment the caller assembles
+// the keep set and the moment ListIndexes runs inside a single prune operation.
+// See doc/safe-pruning-index.md for the full protocol description.
+type SafePruneIndexStore interface {
+	IndexPruneStore
+
+	// SafePruneIndexes runs one iteration of the safe index pruning algorithm.
+	// An index is only deleted when it has been absent from the keep set in two
+	// consecutive calls, ensuring that an index written after the keep set was
+	// assembled cannot be deleted in the same operation.
+	SafePruneIndexes(ctx context.Context, keep map[string]struct{}) error
+
+	// ReadPrunableIndexSet returns the set of index names recorded as deletion
+	// candidates by the previous SafePruneIndexes call. Returns an empty set if
+	// no prior state exists (first run).
+	ReadPrunableIndexSet(ctx context.Context) (map[string]struct{}, error)
+
+	// WritePrunableIndexSet persists the current set of deletion candidates so
+	// that the next SafePruneIndexes call can consult it. An empty slice removes
+	// any previously written state.
+	WritePrunableIndexSet(ctx context.Context, names []string) error
+}
+
 // StoreOptions provide additional common settings used in chunk stores, such as compression
 // error retry or timeouts. Not all options available are applicable to all types of stores.
 type StoreOptions struct {

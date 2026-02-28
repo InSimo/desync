@@ -13,8 +13,9 @@ import (
 
 type indexPruneOptions struct {
 	cmdStoreOptions
-	indexStore string
-	yes        bool
+	indexStore       string
+	yes              bool
+	safeIndexPruning bool
 }
 
 func newIndexPruneCommand(ctx context.Context) *cobra.Command {
@@ -37,6 +38,7 @@ STDIN (one per line).`,
 	flags := cmd.Flags()
 	flags.StringVarP(&opt.indexStore, "store", "s", "", "target index store")
 	flags.BoolVarP(&opt.yes, "yes", "y", false, "do not ask for confirmation")
+	flags.BoolVar(&opt.safeIndexPruning, "safe-index-pruning", false, "enable safe concurrent index pruning protocol (see doc/safe-pruning-index.md)")
 	addStoreOptions(&opt.cmdStoreOptions, flags)
 	return cmd
 }
@@ -99,5 +101,12 @@ func runIndexPrune(ctx context.Context, opt indexPruneOptions, args []string) er
 		}
 	}
 
+	if opt.safeIndexPruning {
+		ss, ok := ps.(desync.SafePruneIndexStore)
+		if !ok {
+			return fmt.Errorf("index store '%s' does not support safe index pruning", ps)
+		}
+		return ss.SafePruneIndexes(ctx, keep)
+	}
 	return ps.PruneIndexes(ctx, keep)
 }

@@ -2,6 +2,7 @@ package desync
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -126,8 +127,59 @@ func (s LocalIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		if rel == PrunableIndexSetFile {
+			return nil // reserved system file; not a real index
+		}
 		names = append(names, rel)
 		return nil
 	})
 	return names, err
+}
+
+// SafePruneIndexes removes indexes from the store using the two-run safe protocol.
+func (s LocalIndexStore) SafePruneIndexes(ctx context.Context, keep map[string]struct{}) error {
+	return commonSafePruneIndexes(ctx, keep, s)
+}
+
+// ReadPrunableIndexSet reads the prunable set written by the previous run.
+// Returns an empty set if no prior state exists.
+func (s LocalIndexStore) ReadPrunableIndexSet(_ context.Context) (map[string]struct{}, error) {
+	f, err := os.Open(s.Path + PrunableIndexSetFile)
+	if os.IsNotExist(err) {
+		return make(map[string]struct{}), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var names []string
+	if err := json.NewDecoder(f).Decode(&names); err != nil {
+		if err == io.EOF {
+			return make(map[string]struct{}), nil // empty file from interrupted write
+		}
+		return nil, err
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set, nil
+}
+
+// WritePrunableIndexSet persists the current deletion candidates for the next run.
+// Removes the file when names is empty (no candidates remain).
+func (s LocalIndexStore) WritePrunableIndexSet(_ context.Context, names []string) error {
+	p := s.Path + PrunableIndexSetFile
+	if len(names) == 0 {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	f, err := os.Create(p)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return json.NewEncoder(f).Encode(names)
 }

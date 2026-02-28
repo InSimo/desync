@@ -151,3 +151,8 @@ const PrunableExt = ".prunable"
 // PruningExt is the suffix appended to a chunk's filename when it has been
 // quarantined by the safe pruning protocol.
 const PruningExt = ".pruning"
+
+// PrunableIndexSetFile is the name of the file written into an index store by
+// SafePruneIndexes to remember which indexes were candidates for deletion in
+// the previous run. The name is reserved and must not be used for real indexes.
+const PrunableIndexSetFile = "prunable-indexes"

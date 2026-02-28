@@ -1,7 +1,9 @@
 package desync
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/url"
 	"path"
@@ -104,7 +106,61 @@ func (s S3IndexStore) ListIndexes(ctx context.Context) ([]string, error) {
 			return nil, Interrupted{}
 		default:
 		}
-		names = append(names, strings.TrimPrefix(object.Key, s.prefix))
+		name := strings.TrimPrefix(object.Key, s.prefix)
+		if name == PrunableIndexSetFile {
+			continue // reserved system file; not a real index
+		}
+		names = append(names, name)
 	}
 	return names, nil
+}
+
+// SafePruneIndexes removes indexes from the store using the two-run safe protocol.
+func (s S3IndexStore) SafePruneIndexes(ctx context.Context, keep map[string]struct{}) error {
+	return commonSafePruneIndexes(ctx, keep, s)
+}
+
+// ReadPrunableIndexSet reads the prunable set written by the previous run.
+// Returns an empty set if no prior state exists.
+func (s S3IndexStore) ReadPrunableIndexSet(_ context.Context) (map[string]struct{}, error) {
+	obj, err := s.client.GetObject(s.bucket, s.prefix+PrunableIndexSetFile, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer obj.Close()
+	var names []string
+	if err := json.NewDecoder(obj).Decode(&names); err != nil {
+		if err == io.EOF {
+			return make(map[string]struct{}), nil // empty object
+		}
+		if minio.ToErrorResponse(err).StatusCode == 404 {
+			return make(map[string]struct{}), nil // object does not exist
+		}
+		return nil, err
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set, nil
+}
+
+// WritePrunableIndexSet persists the current deletion candidates for the next run.
+// Removes the object when names is empty (no candidates remain).
+func (s S3IndexStore) WritePrunableIndexSet(_ context.Context, names []string) error {
+	if len(names) == 0 {
+		return s.client.RemoveObject(s.bucket, s.prefix+PrunableIndexSetFile)
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(names); err != nil {
+		return err
+	}
+	_, err := s.client.PutObject(
+		s.bucket,
+		s.prefix+PrunableIndexSetFile,
+		&buf,
+		int64(buf.Len()),
+		minio.PutObjectOptions{ContentType: "application/json"},
+	)
+	return err
 }
