@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -89,6 +91,7 @@ func main() {
 		caCert              string
 		trustInsecure       bool
 		errorRetryInterval  time.Duration
+		indexes             bool
 	)
 
 	cmd := &cobra.Command{
@@ -112,12 +115,18 @@ Configure Git LFS to use this agent:
     standalonetransferagent = desync`,
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if indexes {
+				return nil
+			}
 			if err := initConfig(); err != nil {
 				return err
 			}
 			return desyncconfig.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm))
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if indexes {
+				return runIndexes(args, os.Stdin, os.Stdout)
+			}
 			storeURL = cfg.ResolveStore(storeURL)
 			indexURL = cfg.ResolveIndexStore(indexURL)
 			chunkSize = cfg.ResolveChunkSize(chunkSize)
@@ -240,10 +249,40 @@ Configure Git LFS to use this agent:
 	flags.StringVar(&cfgFromGit, "config-from-git", "",
 		"read desync config from a git object (e.g. origin/_desync:config.json)")
 	flags.StringVar(&digestAlgorithm, "digest", "", "digest algorithm, sha512-256 or sha256 (default sha512-256)")
+	flags.BoolVar(&indexes, "indexes", false,
+		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
+			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func runIndexes(args []string, r io.Reader, w io.Writer) error {
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+	if len(args) > 0 {
+		for _, oid := range args {
+			if len(oid) < 4 {
+				return fmt.Errorf("OID %q is too short (minimum 4 characters)", oid)
+			}
+			fmt.Fprintln(bw, oidIndexName(oid))
+		}
+		return nil
+	}
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 0 {
+			continue
+		}
+		oid := fields[0]
+		if len(oid) < 4 {
+			return fmt.Errorf("OID %q is too short (minimum 4 characters)", oid)
+		}
+		fmt.Fprintln(bw, oidIndexName(oid))
+	}
+	return scanner.Err()
 }
 
 func parseChunkSizeParam(s string) (min, avg, max uint64, err error) {

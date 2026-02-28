@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -753,5 +754,36 @@ func TestAgentTerminate(t *testing.T) {
 
 	if err := a.run(context.Background(), &input); err != nil {
 		t.Errorf("run returned error: %v", err)
+	}
+}
+
+func TestRunIndexesFromArgs(t *testing.T) {
+	var buf bytes.Buffer
+	args := []string{"abc123def456", "dead0000cafe1234"}
+	if err := runIndexes(args, nil, &buf); err != nil {
+		t.Fatalf("runIndexes: %v", err)
+	}
+	got := buf.String()
+	want := "abc1/abc123def456.caibx\ndead/dead0000cafe1234.caibx\n"
+	if got != want {
+		t.Errorf("runIndexes output = %q, want %q", got, want)
+	}
+}
+
+func TestRunIndexesFromStdin(t *testing.T) {
+	input := strings.NewReader(
+		"abc123def4560000 * big-file.bin\n" +
+			"deadbeef00001234 - other.bin\n" +
+			"\n" + // blank line — should be skipped
+			"cafe00001111abcd * third.bin\n",
+	)
+	var buf bytes.Buffer
+	if err := runIndexes(nil, input, &buf); err != nil {
+		t.Fatalf("runIndexes: %v", err)
+	}
+	got := buf.String()
+	want := "abc1/abc123def4560000.caibx\ndead/deadbeef00001234.caibx\ncafe/cafe00001111abcd.caibx\n"
+	if got != want {
+		t.Errorf("runIndexes output = %q, want %q", got, want)
 	}
 }
