@@ -22,7 +22,7 @@ func TestIndexPruneCommand(t *testing.T) {
 
 	// Prune: keep only blob2.caibx
 	cmd := newIndexPruneCommand(context.Background())
-	cmd.SetArgs([]string{"-s", indexStoreDir, "blob2.caibx", "--yes"})
+	cmd.SetArgs([]string{"--index-store", indexStoreDir, "blob2.caibx", "--yes"})
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
 

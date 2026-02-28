@@ -486,19 +486,19 @@ desync prune -s /some/local/store --index-store /some/index/store
 Prune an index store to only retain the listed index files, deleting all others. Possible data loss.
 
 ```text
-desync index-prune -s /some/index/store index1.caibx index2.caibx
+desync index-prune --index-store /some/index/store index1.caibx index2.caibx
 ```
 
 Index names can also be piped via stdin using `-` as an argument.
 
 ```text
-cat keep.txt | desync index-prune -s /some/index/store -
+cat keep.txt | desync index-prune --index-store /some/index/store -
 ```
 
 To garbage-collect both an index store and its backing chunk store so that only useful data remains, run `index-prune` followed by `prune --index-store`:
 
 ```text
-desync index-prune -s /some/index/store --yes index1.caibx index2.caibx
+desync index-prune --index-store /some/index/store --yes index1.caibx index2.caibx
 desync prune -s /some/local/store --index-store /some/index/store --yes
 ```
 

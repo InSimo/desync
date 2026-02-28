@@ -103,7 +103,7 @@ This is the safe outcome: no index is lost, and at most one extra run is needed.
 ## Enabling
 
 ```
-desync index-prune --safe-index-pruning -s /path/to/indexes --yes blob.caibx
+desync index-prune --index-store /path/to/indexes --safe-index-pruning --yes blob.caibx
 ```
 
 No changes are needed for writers (`make`, `tar`, `chop`, or any other command

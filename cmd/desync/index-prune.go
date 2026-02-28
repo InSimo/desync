@@ -27,8 +27,8 @@ func newIndexPruneCommand(ctx context.Context) *cobra.Command {
 		Long: `Delete all indexes from an index store that are not listed in the provided
 names. Pass index names as positional arguments or use '-' to read names from
 STDIN (one per line).`,
-		Example: `  desync index-prune -s /path/to/indexes --yes blob1.caibx blob2.caibx
-  cat keep.txt | desync index-prune -s /path/to/indexes - --yes`,
+		Example: `  desync index-prune --index-store /path/to/indexes --yes blob1.caibx blob2.caibx
+  cat keep.txt | desync index-prune --index-store /path/to/indexes - --yes`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runIndexPrune(ctx, opt, args)
@@ -36,7 +36,7 @@ STDIN (one per line).`,
 		SilenceUsage: true,
 	}
 	flags := cmd.Flags()
-	flags.StringVarP(&opt.indexStore, "store", "s", "", "target index store")
+	flags.StringVar(&opt.indexStore, "index-store", "", "target index store")
 	flags.BoolVarP(&opt.yes, "yes", "y", false, "do not ask for confirmation")
 	flags.BoolVar(&opt.safeIndexPruning, "safe-index-pruning", false, "enable safe concurrent index pruning protocol (see doc/safe-pruning-index.md)")
 	addStoreOptions(&opt.cmdStoreOptions, flags)
