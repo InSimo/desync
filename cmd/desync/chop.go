@@ -117,12 +117,14 @@ func runChop(ctx context.Context, opt chopOptions, args []string) error {
 	if err := desync.ChopFile(ctx, dataFile, chunks, s, opt.n, pb); err != nil {
 		return err
 	}
-	if sps, ok := s.(desync.SafePruneStore); ok {
-		ids := make(map[desync.ChunkID]struct{}, len(c.Chunks))
-		for _, chunk := range c.Chunks {
-			ids[chunk.ID] = struct{}{}
+	if opt.cmdStoreOptions.safePruning {
+		if sps, ok := s.(desync.SafePruneStore); ok {
+			ids := make(map[desync.ChunkID]struct{}, len(c.Chunks))
+			for _, chunk := range c.Chunks {
+				ids[chunk.ID] = struct{}{}
+			}
+			return sps.RescueChunks(ctx, ids)
 		}
-		return sps.RescueChunks(ctx, ids)
 	}
 	return nil
 }

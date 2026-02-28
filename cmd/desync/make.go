@@ -89,7 +89,7 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 	if err := storeCaibxFile(index, indexFile, opt.cmdStoreOptions); err != nil {
 		return err
 	}
-	if s != nil {
+	if s != nil && opt.cmdStoreOptions.safePruning {
 		if sps, ok := s.(desync.SafePruneStore); ok {
 			ids := make(map[desync.ChunkID]struct{}, len(index.Chunks))
 			for _, c := range index.Chunks {
