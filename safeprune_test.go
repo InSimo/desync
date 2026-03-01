@@ -39,40 +39,6 @@ func (d *propagationDelays) sleepAfterAdd()     { if d != nil { d.sleep(d.afterA
 func (d *propagationDelays) sleepBeforeWrite()  { if d != nil { d.sleep(d.beforeWrite) } }
 func (d *propagationDelays) sleepBeforeDelete() { if d != nil { d.sleep(d.beforeDelete) } }
 
-// chunkPool is a bounded, thread-safe pool of chunks shared across writer
-// goroutines. It enables reuse of chunks across index iterations.
-type chunkPool struct {
-	mu     sync.Mutex
-	chunks []*Chunk
-	cap    int
-}
-
-func newChunkPool(cap int) *chunkPool {
-	return &chunkPool{cap: cap, chunks: make([]*Chunk, 0, cap)}
-}
-
-// add inserts c into the pool. When the pool is full, a random slot is
-// replaced so the pool stays fresh and older chunks cycle out over time.
-func (p *chunkPool) add(c *Chunk) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.chunks) < p.cap {
-		p.chunks = append(p.chunks, c)
-	} else {
-		p.chunks[rand.Intn(p.cap)] = c
-	}
-}
-
-// pick returns a random chunk from the pool, or nil if the pool is empty.
-func (p *chunkPool) pick() *Chunk {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.chunks) == 0 {
-		return nil
-	}
-	return p.chunks[rand.Intn(len(p.chunks))]
-}
-
 // ---------------------------------------------------------------------------
 // mockStore — in-memory SafePruneStore for algorithm verification
 // ---------------------------------------------------------------------------
@@ -129,6 +95,28 @@ func (s *mockStore) StoreChunk(chunk *Chunk) error {
 	s.mu.Unlock()
 	s.delays.sleepAfterAdd()
 	return nil
+}
+
+// GetRandomChunk returns a random Normal (unmarked) chunk from the live map,
+// or nil if no such chunk exists. Only Normal chunks are eligible: a Prunable
+// chunk can be quarantined in a single pruner cycle, leaving a window where
+// Phase 1 of the following cycle deletes the quarantine entry between
+// RescueChunks's HasChunk(false) and Restore. Normal chunks require three
+// full cycles (mark → quarantine → Phase-1 delete) before they can disappear,
+// providing the same safety margin as freshly-stored chunks.
+func (s *mockStore) GetRandomChunk() *Chunk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var normal []*Chunk
+	for id, c := range s.chunks {
+		if _, marked := s.markers[id]; !marked {
+			normal = append(normal, c)
+		}
+	}
+	if len(normal) == 0 {
+		return nil
+	}
+	return normal[rand.Intn(len(normal))]
 }
 
 func (s *mockStore) Close() error  { return nil }
@@ -792,6 +780,7 @@ func TestMockSafePruneContextCancellationPhase2(t *testing.T) {
 type stressChunkStore interface {
 	StoreChunk(*Chunk) error
 	HasChunk(ChunkID) (bool, error)
+	GetRandomChunk() *Chunk
 }
 
 // mockIndexStore is a thread-safe, in-memory index store used by the
@@ -960,14 +949,12 @@ func runSafePruneStress(
 	t.Helper()
 	const (
 		stressNumWriters   = 6
-		stressChunksPerIdx = 3  // chunks per index, exercises multi-chunk keep sets
+		stressChunksPerIdx = 3 // chunks per index, exercises multi-chunk keep sets
 		stressDuration     = 3 * time.Second
-		stressChunkPoolCap = 30 // shared pool cap; ~5 chunks per writer
 		stressNumReaders   = 3
 	)
 
 	sharedIndexStore := newMockIndexStore()
-	pool := newChunkPool(stressChunkPoolCap)
 
 	ctx, cancel := context.WithTimeout(context.Background(), stressDuration)
 	defer cancel()
@@ -1013,7 +1000,7 @@ func runSafePruneStress(
 				}
 
 				// 1. Build stressChunksPerIdx chunks, alternating between fresh
-				// chunks (even slots) and pool chunks (odd slots). Pool reuse
+				// chunks (even slots) and store chunks (odd slots). Store reuse
 				// exercises the scenario where a chunk that has been through one
 				// or more prune cycles is re-referenced by a new index.
 				chunkIDs := make(map[ChunkID]struct{}, stressChunksPerIdx)
@@ -1024,7 +1011,7 @@ func runSafePruneStress(
 
 					// Odd slots: try to reuse a chunk that may have been through prune cycles.
 					if j%2 == 1 {
-						if reused := pool.pick(); reused != nil {
+						if reused := cs.GetRandomChunk(); reused != nil {
 							chunk = reused
 							// Re-store: ensures the chunk is in the live map even if it was
 							// quarantined between its last reference and now.
@@ -1035,7 +1022,7 @@ func runSafePruneStress(
 						}
 					}
 
-					// Even slots (or fallback when pool is empty): generate a fresh chunk.
+					// Even slots (or fallback when store is empty): generate a fresh chunk.
 					if chunk == nil {
 						data := make([]byte, 32)
 						if _, err := cryptorand.Read(data); err != nil {
@@ -1045,7 +1032,6 @@ func runSafePruneStress(
 						if err := cs.StoreChunk(chunk); err != nil {
 							return fmt.Errorf("worker %d iter %d: StoreChunk: %w", workerID, iteration, err)
 						}
-						pool.add(chunk)
 					}
 
 					chunkIDs[chunk.ID()] = struct{}{}
