@@ -97,13 +97,12 @@ func (s *mockStore) StoreChunk(chunk *Chunk) error {
 	return nil
 }
 
-// GetRandomChunk returns a random Normal (unmarked) chunk from the live map,
-// or nil if no such chunk exists. Only Normal chunks are eligible: a Prunable
-// chunk can be quarantined in a single pruner cycle, leaving a window where
-// Phase 1 of the following cycle deletes the quarantine entry between
-// RescueChunks's HasChunk(false) and Restore. Normal chunks require three
-// full cycles (mark → quarantine → Phase-1 delete) before they can disappear,
-// providing the same safety margin as freshly-stored chunks.
+// GetRandomChunk returns a random Normal (unmarked) live chunk, or nil if no
+// such chunk exists. Only Normal chunks are eligible: a Prunable chunk can be
+// quarantined in a single pruner cycle, which does not give UntagPrunable
+// enough time to fall in the TOCTOU window and trigger the pruner's own
+// Restore. Normal chunks need two cycles to reach quarantine, matching the
+// three-cycle-to-deletion margin of freshly stored chunks.
 func (s *mockStore) GetRandomChunk() *Chunk {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -781,6 +780,7 @@ type stressChunkStore interface {
 	StoreChunk(*Chunk) error
 	HasChunk(ChunkID) (bool, error)
 	GetRandomChunk() *Chunk
+	UntagPrunable(ChunkID) error
 }
 
 // mockIndexStore is a thread-safe, in-memory index store used by the
@@ -1009,20 +1009,31 @@ func runSafePruneStress(
 				for j := 0; j < stressChunksPerIdx; j++ {
 					var chunk *Chunk
 
-					// Odd slots: try to reuse a chunk that may have been through prune cycles.
+					// Odd slots: simulate deduplication — the writer already has the chunk
+					// data, so it verifies the chunk is accessible and untags any prunable
+					// marker rather than re-uploading. UntagPrunable puts the chunk into
+					// Normal state, and if the pruner quarantines between HasChunk and
+					// UntagPrunable, the marker removal falls in the pruner's TOCTOU window
+					// (between Quarantine and MarkerExists), triggering its own Restore.
 					if j%2 == 1 {
 						if reused := cs.GetRandomChunk(); reused != nil {
-							chunk = reused
-							// Re-store: ensures the chunk is in the live map even if it was
-							// quarantined between its last reference and now.
-							if err := cs.StoreChunk(chunk); err != nil {
-								return fmt.Errorf("worker %d iter %d: StoreChunk (reuse): %w",
+							present, err := cs.HasChunk(reused.ID())
+							if err != nil {
+								return fmt.Errorf("worker %d iter %d: HasChunk (reuse): %w",
 									workerID, iteration, err)
 							}
+							if present {
+								if err := cs.UntagPrunable(reused.ID()); err != nil {
+									return fmt.Errorf("worker %d iter %d: UntagPrunable: %w",
+										workerID, iteration, err)
+								}
+								chunk = reused
+							}
+							// If not present (transiently quarantined), fall through to fresh.
 						}
 					}
 
-					// Even slots (or fallback when store is empty): generate a fresh chunk.
+					// Even slots (or fallback when no reusable chunk is available): generate a fresh chunk.
 					if chunk == nil {
 						data := make([]byte, 32)
 						if _, err := cryptorand.Read(data); err != nil {
