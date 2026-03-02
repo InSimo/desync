@@ -20,29 +20,11 @@ type Store interface {
 	fmt.Stringer
 }
 
-// ReuseStatus describes the result of a ReuseChunk call.
-type ReuseStatus int
-
-const (
-	ReuseOK              ReuseStatus = iota // chunk present, skip processing
-	ReuseAbsent                             // chunk not in store, must be stored
-	ReuseProtectRequired                    // chunk present but prunable; protect set,
-	                                        // caller must store/capture chunk data
-)
-
 // WriteStore is implemented by stores supporting both read and write operations
 // such as a local store or an S3 store.
 type WriteStore interface {
 	Store
 	StoreChunk(c *Chunk) error
-	// ReuseChunk checks whether a chunk with the given ID is already present
-	// in the store. Returns ReuseOK if the chunk exists and no further action
-	// is needed, ReuseAbsent if the chunk must be stored, or
-	// ReuseProtectRequired if the chunk exists but carries a .prunable marker
-	// (protect has been set, caller must still store/capture the chunk data).
-	// Wrappers may override this to intercept the reuse path
-	// (e.g. CapturingWriteStore).
-	ReuseChunk(id ChunkID) (ReuseStatus, error)
 }
 
 // PruneStore is a store that supports read, write and pruning of chunks

@@ -10,8 +10,10 @@ import (
 )
 
 // ChopFile split a file according to a list of chunks obtained from an Index
-// and stores them in the provided store
-func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar) error {
+// and stores them in the provided store. When sps is non-nil, ChopFile
+// participates in the safe-pruning protocol: prunable chunks get .protect
+// markers and SafePrunePreCommit is called before returning.
+func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar, sps SafePruneStore) error {
 	in := make(chan IndexChunk)
 	g, ctx := errgroup.WithContext(ctx)
 
@@ -20,7 +22,12 @@ func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteSto
 	pb.Start()
 	defer pb.Finish()
 
-	s := NewChunkStorage(ws)
+	var s *ChunkStorage
+	if sps != nil {
+		s = NewChunkStorageWithPruning(ws, sps)
+	} else {
+		s = NewChunkStorage(ws)
+	}
 
 	// Start the workers, each having its own filehandle to read concurrently
 	for range n {
@@ -60,7 +67,13 @@ loop:
 
 	close(in)
 
-	return g.Wait()
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	if sps != nil {
+		return SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, 0)
+	}
+	return nil
 }
 
 // Helper function to read chunk contents from file

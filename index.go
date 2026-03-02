@@ -135,7 +135,9 @@ func (i *Index) Length() int64 {
 // ChunkStream splits up a blob into chunks using the provided chunker (single stream),
 // populates a store with the chunks and returns an index. Hashing and compression
 // is performed in n goroutines while the hashing algorithm is performed serially.
-func ChunkStream(ctx context.Context, c Chunker, ws WriteStore, n int) (Index, error) {
+// When sps is non-nil, ChunkStream participates in the safe-pruning protocol:
+// prunable chunks get .protect markers and SafePrunePreCommit is called before returning.
+func ChunkStream(ctx context.Context, c Chunker, ws WriteStore, n int, sps SafePruneStore) (Index, error) {
 	type chunkJob struct {
 		num   int
 		start uint64
@@ -148,7 +150,12 @@ func ChunkStream(ctx context.Context, c Chunker, ws WriteStore, n int) (Index, e
 	)
 
 	g, ctx := errgroup.WithContext(ctx)
-	s := NewChunkStorage(ws)
+	var s *ChunkStorage
+	if sps != nil {
+		s = NewChunkStorageWithPruning(ws, sps)
+	} else {
+		s = NewChunkStorage(ws)
+	}
 
 	// All the chunks are processed in parallel, but we need to preserve the
 	// order for later. So add the chunking results to a map, indexed by
@@ -220,7 +227,7 @@ loop:
 		chunks[i] = results[i]
 	}
 
-	// Build and return the index
+	// Build the index
 	index := Index{
 		Index: FormatIndex{
 			FeatureFlags: CaFormatExcludeNoDump | CaFormatSHA512256,
@@ -229,6 +236,12 @@ loop:
 			ChunkSizeMax: c.Max(),
 		},
 		Chunks: chunks,
+	}
+
+	if sps != nil {
+		if err := SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, 0); err != nil {
+			return Index{}, err
+		}
 	}
 	return index, nil
 }

@@ -169,45 +169,31 @@ The protocol is correct under these conditions (all satisfied by the implementat
 
 ## Writer Obligations
 
-Writers using `make`, `tar -i`, `chop`, or the git-lfs agent must perform one pre-commit
-operation using `CapturingWriteStore` and `SafePrunePreCommit`.
+Writers using `make`, `tar -i`, `chop`, or the git-lfs agent benefit from built-in
+safe-pruning support in `ChopFile` and `ChunkStream`. When a non-nil `SafePruneStore`
+is passed, these functions handle the entire writer-side protocol automatically.
 
-### `CapturingWriteStore` (automatic during chunking)
+### `ChunkStorage` with safe pruning (automatic during chunking)
 
-Wrap the target `WriteStore` with `NewCapturingWriteStore(ws, sps)` before passing it to
-`ChopFile` or `ChunkStream`. `CapturingWriteStore` overrides the two-step `ReuseChunk` /
-`StoreChunk` protocol used by `ChunkStorage`:
+`ChopFile` and `ChunkStream` accept an optional `SafePruneStore` parameter. When non-nil,
+they construct a `ChunkStorage` via `NewChunkStorageWithPruning(ws, sps)` which inlines
+the safe-pruning logic directly into `StoreChunk`:
 
-**`ReuseChunk(id)`** — called by `ChunkStorage` before constructing the full chunk:
+**`StoreChunk(chunk)`** — for each chunk:
 
-- `ReuseAbsent` — chunk not in store; `ChunkStorage` proceeds to build and store it.
-- `ReuseOK` — chunk present and not prunable; `ChunkStorage` skips all processing.
-- `ReuseProtectRequired` — chunk present but carries a `.prunable` marker;
-  `CreateProtect` has been called and the chunk ID is recorded in `protectPending`.
-  `ChunkStorage` proceeds to call `StoreChunk` so the chunk data can be captured.
-
-**`StoreChunk(chunk)`** — if the chunk ID is in `protectPending` (set by `ReuseChunk`),
-the chunk data is captured in memory for pre-commit rechecking and `LastProtectTime` is
-updated. The chunk is **not** re-stored (it is already present). If the chunk is not
-pending, it is forwarded to the underlying `WriteStore.StoreChunk` (fresh chunk path).
-
-This two-step design restores the early-exit optimisation in `ChunkStorage`: `ReuseOK`
-chunks skip compression, converter pipelines, and the `StoreChunk` call entirely. Only
-prunable chunks (which need their data captured for re-upload) and absent chunks proceed
-through the full pipeline.
+1. If the chunk is **absent** from the store: store it normally (fresh chunk path).
+2. If the chunk is **present and not prunable**: skip it (deduplication).
+3. If the chunk is **present and prunable** (`.prunable` marker exists):
+   call `CreateProtect`, capture the chunk data in memory for pre-commit rechecking,
+   and update `LastProtectTime`.
 
 Only prunable chunks are captured; memory overhead is proportional to the deduplication
 hit rate, not to the total file size.
 
-### `SafePrunePreCommit` (called after chunking, before index commit)
+### `SafePrunePreCommit` (called internally by `ChopFile` / `ChunkStream`)
 
-After `ChopFile` or `ChunkStream` completes, call:
-
-```go
-SafePrunePreCommit(ctx, cap.Chunks(), cap.LastProtectTime(), sps, propTime)
-```
-
-This performs the recheck phase:
+After chunking completes, `ChopFile` and `ChunkStream` call `SafePrunePreCommit`
+internally before returning. This performs the recheck phase:
 
 1. Waits until `LastProtectTime + 2×propTime` for protect markers to propagate.
 2. For each captured chunk, calls `HasChunk`. If missing (pruner won the race):
@@ -228,8 +214,8 @@ propagation latency — see [Operational Guidance](#operational-guidance).
   the operator's responsibility. Set `safe-propagation-time` to no more than half the
   minimum expected pruner cycle interval.
 - **Enabling**: Pass `--safe-pruning` to `desync prune`. No extra flags are needed for
-  `make`, `tar`, or `chop`; they use `CapturingWriteStore` and `SafePrunePreCommit`
-  automatically when the store implements `SafePruneStore`.
+  `make`, `tar`, or `chop`; they handle safe pruning automatically when the store
+  implements `SafePruneStore`.
 - **Idempotent**: Re-running prune with `--safe-pruning` is always safe. If a run is
   interrupted, the next run cleans up any orphaned markers in Phase 1.
 - **`safe-propagation-time`**: For object stores, set this to the store's write-to-read

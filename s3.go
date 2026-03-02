@@ -121,9 +121,6 @@ retry:
 	return NewChunkFromStorage(id, b, s.converters, s.opt.SkipVerify)
 }
 
-// ReuseChunk checks whether a chunk is already present.
-func (s S3Store) ReuseChunk(id ChunkID) (ReuseStatus, error) { return DefaultReuseChunk(s, id) }
-
 // StoreChunk adds a new chunk to the store
 func (s S3Store) StoreChunk(chunk *Chunk) error {
 	contentType := "application/zstd"

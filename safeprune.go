@@ -2,7 +2,6 @@ package desync
 
 import (
 	"context"
-	"sync"
 	"time"
 )
 
@@ -98,109 +97,12 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 	return nil
 }
 
-// CapturingWriteStore wraps a WriteStore and intercepts the ReuseChunk /
-// StoreChunk two-step protocol. When ReuseChunk detects a prunable chunk, it
-// sets a protect marker and records the chunk ID in protectPending. The
-// subsequent StoreChunk call (driven by ChunkStorage) captures the chunk data
-// in memory without re-storing it. Fresh chunks and non-prunable reused chunks
-// pass through unmodified.
-//
-// After chunking, pass [CapturingWriteStore.Chunks] and
-// [CapturingWriteStore.LastProtectTime] to [SafePrunePreCommit].
-type CapturingWriteStore struct {
-	WriteStore
-	sps             SafePruneStore
-	mu              sync.Mutex
-	chunks          map[ChunkID]*Chunk
-	lastProtectTime time.Time
-	protectPending  map[ChunkID]struct{} // set by ReuseChunk, consumed by StoreChunk
-}
-
-// NewCapturingWriteStore wraps ws and, for each chunk reused through it,
-// calls HasPrunable on sps. Prunable chunks are captured and protected in-line.
-func NewCapturingWriteStore(ws WriteStore, sps SafePruneStore) *CapturingWriteStore {
-	return &CapturingWriteStore{
-		WriteStore:     ws,
-		sps:            sps,
-		chunks:         make(map[ChunkID]*Chunk),
-		protectPending: make(map[ChunkID]struct{}),
-	}
-}
-
-// ReuseChunk checks whether the chunk is already present in the underlying
-// store. If absent → ReuseAbsent. If present and not prunable → ReuseOK. If
-// present and prunable → CreateProtect, mark protectPending, return
-// ReuseProtectRequired so that ChunkStorage forwards the chunk to StoreChunk
-// for capture.
-func (c *CapturingWriteStore) ReuseChunk(id ChunkID) (ReuseStatus, error) {
-	present, err := c.WriteStore.HasChunk(id)
-	if err != nil {
-		return 0, err
-	}
-	if !present {
-		return ReuseAbsent, nil
-	}
-	prunable, err := c.sps.HasPrunable(id)
-	if err != nil {
-		return 0, err
-	}
-	if !prunable {
-		return ReuseOK, nil
-	}
-	if err := c.sps.CreateProtect(id); err != nil {
-		return 0, err
-	}
-	c.mu.Lock()
-	c.protectPending[id] = struct{}{}
-	c.mu.Unlock()
-	return ReuseProtectRequired, nil
-}
-
-// StoreChunk checks whether the chunk was flagged by ReuseChunk as needing
-// capture (protectPending). If so, it captures the chunk data in memory
-// without re-storing it. Otherwise it forwards to the underlying WriteStore.
-func (c *CapturingWriteStore) StoreChunk(chunk *Chunk) error {
-	id := chunk.ID()
-	c.mu.Lock()
-	_, pending := c.protectPending[id]
-	if pending {
-		delete(c.protectPending, id)
-		c.chunks[id] = chunk
-		c.lastProtectTime = time.Now()
-	}
-	c.mu.Unlock()
-	if pending {
-		return nil
-	}
-	return c.WriteStore.StoreChunk(chunk)
-}
-
-// Chunks returns a snapshot of the prunable chunks captured so far.
-// Every chunk in the returned map has already had CreateProtect called.
-func (c *CapturingWriteStore) Chunks() map[ChunkID]*Chunk {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make(map[ChunkID]*Chunk, len(c.chunks))
-	for id, ch := range c.chunks {
-		out[id] = ch
-	}
-	return out
-}
-
-// LastProtectTime returns the time of the most recent CreateProtect call,
-// or the zero time if no chunks were protected.
-func (c *CapturingWriteStore) LastProtectTime() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.lastProtectTime
-}
-
 // SafePrunePreCommit is the recheck phase of the writer-side protect-marker
 // protocol. Call it BEFORE committing an index, passing the result of
-// [CapturingWriteStore.Chunks] and [CapturingWriteStore.LastProtectTime].
+// [ChunkStorage.Chunks] and [ChunkStorage.LastProtectTime].
 //
 // Every chunk in chunks has already had CreateProtect called by
-// CapturingWriteStore.StoreChunk. SafePrunePreCommit waits 2×propTime from
+// ChunkStorage.StoreChunk. SafePrunePreCommit waits 2×propTime from
 // lastProtect for the protect markers to propagate (use 0 for local/SFTP
 // stores), then verifies each chunk is still present. Any chunk deleted by a
 // concurrent pruner during the race window is re-uploaded and re-protected,

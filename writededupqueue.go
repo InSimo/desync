@@ -50,9 +50,6 @@ func (q *WriteDedupQueue) HasChunk(id ChunkID) (bool, error) {
 	return q.DedupQueue.HasChunk(id)
 }
 
-// ReuseChunk checks whether a chunk is already present.
-func (q *WriteDedupQueue) ReuseChunk(id ChunkID) (ReuseStatus, error) { return DefaultReuseChunk(q, id) }
-
 func (q *WriteDedupQueue) StoreChunk(chunk *Chunk) error {
 	id := chunk.ID()
 	req, isInFlight := q.storeChunkQueue.loadOrStore(id)

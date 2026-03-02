@@ -55,7 +55,7 @@ func TestExtract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ChopFile(context.Background(), in.Name(), index.Chunks, s, 10, NewProgressBar("")); err != nil {
+	if err := ChopFile(context.Background(), in.Name(), index.Chunks, s, 10, NewProgressBar(""), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -227,7 +227,7 @@ func TestSeed(t *testing.T) {
 			}
 
 			// Chop up the input file into the store
-			if err := ChopFile(context.Background(), dst.Name(), dstIndex.Chunks, s, 10, NewProgressBar("")); err != nil {
+			if err := ChopFile(context.Background(), dst.Name(), dstIndex.Chunks, s, 10, NewProgressBar(""), nil); err != nil {
 				t.Fatal(err)
 			}
 

@@ -42,8 +42,6 @@ func (s *TestStore) StoreChunk(chunk *Chunk) error {
 	return nil
 }
 
-func (s *TestStore) ReuseChunk(id ChunkID) (ReuseStatus, error) { return DefaultReuseChunk(s, id) }
-
 func (s *TestStore) String() string { return "TestStore" }
 
 func (s *TestStore) Close() error { return nil }

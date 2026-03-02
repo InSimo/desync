@@ -251,19 +251,10 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	// Wrap the chunk store to count bytes stored.
 	cs := &countingWriteStore{WriteStore: a.writeStore}
 
-	// When safe pruning is enabled, also capture chunk data for any prunable
-	// chunk so SafePrunePreCommit can re-upload it if the pruner deletes it
-	// during the race window.
-	var (
-		cap *desync.CapturingWriteStore
-		sps desync.SafePruneStore
-	)
-	ws := desync.WriteStore(cs)
+	var sps desync.SafePruneStore
 	if a.safePruning {
 		if ps, ok := a.writeStore.(desync.SafePruneStore); ok {
 			sps = ps
-			cap = desync.NewCapturingWriteStore(cs, sps)
-			ws = cap
 		}
 	}
 
@@ -272,22 +263,12 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
 	// Store chunks in the remote store.
-	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, ws, a.n, desync.NullProgressBar{}); err != nil {
+	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps); err != nil {
 		stopProgress()
 		a.sendComplete(req.OID, "", err)
 		return
 	}
 	stopProgress()
-
-	// If safe pruning is enabled, protect any prunable chunks before committing
-	// the index so a concurrent pruner cannot delete them in the race window.
-	// Re-upload any chunk that was deleted during the race.
-	if cap != nil {
-		if err := desync.SafePrunePreCommit(ctx, cap.Chunks(), cap.LastProtectTime(), sps, 0); err != nil {
-			a.sendComplete(req.OID, "", err)
-			return
-		}
-	}
 
 	// Store the index in the S3 index store.
 	if err := a.indexWriteStore.StoreIndex(oidIndexName(req.OID), idx); err != nil {
@@ -387,12 +368,6 @@ func (s *countingWriteStore) StoreChunk(chunk *desync.Chunk) error {
 		}
 	}
 	return err
-}
-
-// ReuseChunk checks whether a chunk is already present. Reused chunks are not
-// counted as stored bytes since no network transfer occurs.
-func (s *countingWriteStore) ReuseChunk(id desync.ChunkID) (desync.ReuseStatus, error) {
-	return desync.DefaultReuseChunk(s, id)
 }
 
 // countingReadStore wraps a Store and counts bytes retrieved, using the index
