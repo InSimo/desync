@@ -148,9 +148,10 @@ const UncompressedChunkExt = ""
 // as a candidate for deletion in the safe pruning protocol.
 const PrunableExt = ".prunable"
 
-// PruningExt is the suffix appended to a chunk's filename when it has been
-// quarantined by the safe pruning protocol.
-const PruningExt = ".pruning"
+// ProtectExt is the suffix of the empty companion file written by a writer to
+// prevent the pruner from deleting a prunable chunk before the index referencing
+// it is committed.
+const ProtectExt = ".protect"
 
 // PrunableIndexSetFile is the name of the file written into an index store by
 // SafePruneIndexes to remember which indexes were candidates for deletion in

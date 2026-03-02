@@ -4,32 +4,19 @@ import (
 	"sync"
 )
 
-// safePruningEnabler is an optional interface implemented by stores that expose
-// their safe-pruning setting. ChunkStorage uses it to decide whether to call
-// UntagPrunable when it finds a chunk already present in the store.
-type safePruningEnabler interface {
-	SafePruningEnabled() bool
-}
-
 // ChunkStorage stores chunks in a writable store. It can be safely used by multiple goroutines and
 // contains an internal cache of what chunks have been stored previously.
 type ChunkStorage struct {
 	sync.Mutex
-	ws          WriteStore
-	processed   map[ChunkID]struct{}
-	safePruning bool
+	ws        WriteStore
+	processed map[ChunkID]struct{}
 }
 
 // NewChunkStorage initializes a ChunkStorage object.
 func NewChunkStorage(ws WriteStore) *ChunkStorage {
-	var safePruning bool
-	if spe, ok := ws.(safePruningEnabler); ok {
-		safePruning = spe.SafePruningEnabled()
-	}
 	s := &ChunkStorage{
-		ws:          ws,
-		processed:   make(map[ChunkID]struct{}),
-		safePruning: safePruning,
+		ws:        ws,
+		processed: make(map[ChunkID]struct{}),
 	}
 	return s
 }
@@ -65,11 +52,6 @@ func (s *ChunkStorage) StoreChunk(chunk *Chunk) (err error) {
 
 	// Skip this chunk if the store already has it
 	if hasChunk, err := s.ws.HasChunk(chunk.ID()); err != nil || hasChunk {
-		if hasChunk && s.safePruning {
-			if sps, ok := s.ws.(SafePruneStore); ok {
-				_ = sps.UntagPrunable(chunk.ID())
-			}
-		}
 		return err
 	}
 

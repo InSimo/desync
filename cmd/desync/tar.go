@@ -152,8 +152,23 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 	}()
 
 	// Read from the pipe, split the stream and store the chunks. This should
-	// complete when Tar is done and closes the pipe writer
-	index, err := desync.ChunkStream(ctx, c, s, opt.n)
+	// complete when Tar is done and closes the pipe writer.
+	// When safe pruning is enabled, wrap the store to capture chunk data for
+	// any prunable chunk so SafePrunePreCommit can re-upload it if the pruner
+	// deletes it during the race window.
+	var (
+		cap *desync.CapturingWriteStore
+		sps desync.SafePruneStore
+	)
+	ws := desync.WriteStore(s)
+	if opt.cmdStoreOptions.safePruning {
+		if ps, ok := s.(desync.SafePruneStore); ok {
+			sps = ps
+			cap = desync.NewCapturingWriteStore(s, sps)
+			ws = cap
+		}
+	}
+	index, err := desync.ChunkStream(ctx, c, ws, opt.n)
 	if err != nil {
 		return err
 	}
@@ -165,18 +180,15 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 		return tarErr
 	}
 
+	// Pre-commit: protect any prunable chunks before writing the index.
+	if cap != nil {
+		if err := desync.SafePrunePreCommit(ctx, cap.Chunks(), cap.LastProtectTime(), sps, 0); err != nil {
+			return err
+		}
+	}
 	// Write the index
 	if err := storeCaibxFile(index, output, opt.cmdStoreOptions); err != nil {
 		return err
-	}
-	if opt.cmdStoreOptions.safePruning {
-		if sps, ok := s.(desync.SafePruneStore); ok {
-			ids := make(map[desync.ChunkID]struct{}, len(index.Chunks))
-			for _, c := range index.Chunks {
-				ids[c.ID] = struct{}{}
-			}
-			return sps.RescueChunks(ctx, ids)
-		}
 	}
 	return nil
 }

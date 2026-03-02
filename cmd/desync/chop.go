@@ -113,17 +113,28 @@ func runChop(ctx context.Context, opt chopOptions, args []string) error {
 	// If this is a terminal, we want a progress bar
 	pb := desync.NewProgressBar("")
 
-	// Chop up the file into chunks and store them in the target store
-	if err := desync.ChopFile(ctx, dataFile, chunks, s, opt.n, pb); err != nil {
+	// Chop up the file into chunks and store them in the target store.
+	// When safe pruning is enabled, wrap the store to capture chunk data for
+	// any prunable chunk so SafePrunePreCommit can re-upload it if the pruner
+	// deletes it during the race window.
+	var (
+		cap *desync.CapturingWriteStore
+		sps desync.SafePruneStore
+	)
+	ws := desync.WriteStore(s)
+	if opt.cmdStoreOptions.safePruning {
+		if ps, ok := s.(desync.SafePruneStore); ok {
+			sps = ps
+			cap = desync.NewCapturingWriteStore(s, sps)
+			ws = cap
+		}
+	}
+	if err := desync.ChopFile(ctx, dataFile, chunks, ws, opt.n, pb); err != nil {
 		return err
 	}
-	if opt.cmdStoreOptions.safePruning {
-		if sps, ok := s.(desync.SafePruneStore); ok {
-			ids := make(map[desync.ChunkID]struct{}, len(c.Chunks))
-			for _, chunk := range c.Chunks {
-				ids[chunk.ID] = struct{}{}
-			}
-			return sps.RescueChunks(ctx, ids)
+	if cap != nil {
+		if err := desync.SafePrunePreCommit(ctx, cap.Chunks(), cap.LastProtectTime(), sps, 0); err != nil {
+			return err
 		}
 	}
 	return nil

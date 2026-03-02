@@ -76,29 +76,38 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 		return err
 	}
 
-	// Chop up the file into chunks and store them in the target store if a store was given
+	// Chop up the file into chunks and store them in the target store if a store was given.
+	// When safe pruning is enabled, wrap the store to capture chunk data for
+	// any prunable chunk so SafePrunePreCommit can re-upload it if the pruner
+	// deletes it during the race window.
+	var (
+		cap *desync.CapturingWriteStore
+		sps desync.SafePruneStore
+	)
 	if s != nil {
+		ws := desync.WriteStore(s)
+		if opt.cmdStoreOptions.safePruning {
+			if ps, ok := s.(desync.SafePruneStore); ok {
+				sps = ps
+				cap = desync.NewCapturingWriteStore(s, sps)
+				ws = cap
+			}
+		}
 		pb := desync.NewProgressBar("Storing ")
-		if err := desync.ChopFile(ctx, dataFile, index.Chunks, s, opt.n, pb); err != nil {
+		if err := desync.ChopFile(ctx, dataFile, index.Chunks, ws, opt.n, pb); err != nil {
 			return err
 		}
 	}
 	if opt.printStats {
 		printJSON(stderr, stats) // write to stderr since stdout could be used for index data
 	}
+	if cap != nil {
+		if err := desync.SafePrunePreCommit(ctx, cap.Chunks(), cap.LastProtectTime(), sps, 0); err != nil {
+			return err
+		}
+	}
 	if err := storeCaibxFile(index, indexFile, opt.cmdStoreOptions); err != nil {
 		return err
-	}
-	if s != nil && opt.cmdStoreOptions.safePruning {
-		if sps, ok := s.(desync.SafePruneStore); ok {
-			ids := make(map[desync.ChunkID]struct{}, len(index.Chunks))
-			for _, c := range index.Chunks {
-				ids[c.ID] = struct{}{}
-			}
-			if err := sps.RescueChunks(ctx, ids); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }

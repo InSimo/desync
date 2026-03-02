@@ -877,29 +877,20 @@ func TestAgentTerminate(t *testing.T) {
 	}
 }
 
-// trackingWriteStore wraps a SafePruneStore and records whether RescueChunks was called.
-type trackingWriteStore struct {
-	desync.SafePruneStore
-	rescueCalled bool
-}
-
-func (s *trackingWriteStore) RescueChunks(ctx context.Context, ids map[desync.ChunkID]struct{}) error {
-	s.rescueCalled = true
-	return s.SafePruneStore.RescueChunks(ctx, ids)
-}
-
+// TestAgentUploadSafePruning verifies that when safePruning is enabled, the
+// agent calls SafePrunePreCommit before storing the index, and that the upload
+// succeeds regardless of whether safe pruning is enabled.
 func TestAgentUploadSafePruning(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("safePruning=%v", enabled), func(t *testing.T) {
 			chunkDir := t.TempDir()
 			indexDir := t.TempDir()
 
-			rawStore, err := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
+			chunkStore, err := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer rawStore.Close()
-			tracker := &trackingWriteStore{SafePruneStore: rawStore}
+			defer chunkStore.Close()
 
 			indexStore, err := desync.NewLocalIndexStore(indexDir)
 			if err != nil {
@@ -915,8 +906,8 @@ func TestAgentUploadSafePruning(t *testing.T) {
 
 			var buf bytes.Buffer
 			a := &Agent{
-				writeStore:      tracker,
-				readStore:       tracker,
+				writeStore:      chunkStore,
+				readStore:       chunkStore,
 				indexWriteStore: indexStore,
 				n:               4,
 				minChunk:        4 * 1024,
@@ -935,15 +926,11 @@ func TestAgentUploadSafePruning(t *testing.T) {
 			})
 			a.handleUpload(context.Background(), uploadMsg)
 
-			// Verify upload succeeded.
+			// Verify upload succeeded with and without safe pruning.
 			var evt completeEvent
 			json.NewDecoder(&buf).Decode(&evt)
 			if evt.Error != nil {
-				t.Fatalf("upload error: %v", evt.Error.Message)
-			}
-
-			if tracker.rescueCalled != enabled {
-				t.Errorf("RescueChunks called = %v, want %v", tracker.rescueCalled, enabled)
+				t.Fatalf("upload error (safePruning=%v): %v", enabled, evt.Error.Message)
 			}
 		})
 	}

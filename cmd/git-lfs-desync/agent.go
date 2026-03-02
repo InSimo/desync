@@ -251,37 +251,48 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	// Wrap the chunk store to count bytes stored.
 	cs := &countingWriteStore{WriteStore: a.writeStore}
 
+	// When safe pruning is enabled, also capture chunk data for any prunable
+	// chunk so SafePrunePreCommit can re-upload it if the pruner deletes it
+	// during the race window.
+	var (
+		cap *desync.CapturingWriteStore
+		sps desync.SafePruneStore
+	)
+	ws := desync.WriteStore(cs)
+	if a.safePruning {
+		if ps, ok := a.writeStore.(desync.SafePruneStore); ok {
+			sps = ps
+			cap = desync.NewCapturingWriteStore(cs, sps)
+			ws = cap
+		}
+	}
+
 	// Start progress reporting goroutine.
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
-	// Store chunks in S3.
-	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}); err != nil {
+	// Store chunks in the remote store.
+	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, ws, a.n, desync.NullProgressBar{}); err != nil {
 		stopProgress()
 		a.sendComplete(req.OID, "", err)
 		return
 	}
 	stopProgress()
 
+	// If safe pruning is enabled, protect any prunable chunks before committing
+	// the index so a concurrent pruner cannot delete them in the race window.
+	// Re-upload any chunk that was deleted during the race.
+	if cap != nil {
+		if err := desync.SafePrunePreCommit(ctx, cap.Chunks(), cap.LastProtectTime(), sps, 0); err != nil {
+			a.sendComplete(req.OID, "", err)
+			return
+		}
+	}
+
 	// Store the index in the S3 index store.
 	if err := a.indexWriteStore.StoreIndex(oidIndexName(req.OID), idx); err != nil {
 		a.sendComplete(req.OID, "", err)
 		return
-	}
-
-	// If safe pruning is enabled, rescue the chunks we just wrote so that a
-	// concurrent pruner cannot delete them between StoreChunk and StoreIndex.
-	if a.safePruning {
-		if sps, ok := a.writeStore.(desync.SafePruneStore); ok {
-			ids := make(map[desync.ChunkID]struct{}, len(idx.Chunks))
-			for _, c := range idx.Chunks {
-				ids[c.ID] = struct{}{}
-			}
-			if err := sps.RescueChunks(ctx, ids); err != nil {
-				a.sendComplete(req.OID, "", err)
-				return
-			}
-		}
 	}
 
 	a.sendComplete(req.OID, "", nil)

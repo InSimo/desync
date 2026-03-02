@@ -1,21 +1,25 @@
 package desync
 
-import "context"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
-// commonSafePrune implements the two-phase safe pruning algorithm using the
-// primitive operations exposed by SafePruneStore. It is called by each
+// commonSafePrune implements the protect-marker safe pruning algorithm using
+// the primitive operations exposed by SafePruneStore. It is called by each
 // backend's SafePrune method.
 //
-// Phase 1 removes any leftover .pruning files from a prior run and cleans up
-// orphaned .prunable markers. Phase 2 marks new candidates for deletion and
-// quarantines chunks that were already marked in a previous run.
+// Phase 1 cleans up orphaned markers left by previous runs. Phase 2 marks
+// new deletion candidates and deletes chunks that were already marked in a
+// prior run and have no .protect companion set by a concurrent writer.
 func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneStore) error {
 	list, err := s.ListChunks(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Phase 1: delete quarantined chunks from a prior run; delete orphaned markers.
+	// Phase 1: clean up orphaned markers from prior runs.
 	for _, e := range list {
 		select {
 		case <-ctx.Done():
@@ -23,18 +27,18 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 		default:
 		}
 		switch e.Status {
-		case ChunkStatusPruning:
-			if err := s.DeletePruning(e.ID); err != nil {
-				return err
-			}
 		case ChunkStatusOrphanedPrunable:
 			if err := s.DeleteMarker(e.ID); err != nil {
+				return err
+			}
+		case ChunkStatusOrphanedProtect:
+			if err := s.DeleteProtect(e.ID); err != nil {
 				return err
 			}
 		}
 	}
 
-	// Phase 2: mark new candidates; quarantine already-marked ones.
+	// Phase 2: mark new candidates; check-and-delete already-marked ones.
 	// A second ListChunks call reflects the post-Phase-1 state.
 	list2, err := s.ListChunks(ctx)
 	if err != nil {
@@ -46,11 +50,15 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 			return Interrupted{}
 		default:
 		}
-		if e.Status == ChunkStatusPruning || e.Status == ChunkStatusOrphanedPrunable {
+		if e.Status == ChunkStatusOrphanedPrunable || e.Status == ChunkStatusOrphanedProtect {
 			continue // cleaned up in Phase 1; skip if still appearing
 		}
 		if _, keep := ids[e.ID]; keep {
+			// Chunk is referenced: remove any pruning markers and linger protect.
 			if err := s.DeleteMarker(e.ID); err != nil {
+				return err
+			}
+			if err := s.DeleteProtect(e.ID); err != nil {
 				return err
 			}
 			continue
@@ -60,56 +68,159 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 			if err := s.CreateMarker(e.ID); err != nil {
 				return err
 			}
-		case ChunkStatusPrunable:
-			// Quarantine implementations may call a test hook internally between
-			// the rename and return to simulate race windows.
-			if err := s.Quarantine(e.ID); err != nil {
-				return err
-			}
-			// Post-quarantine TOCTOU re-check: if .prunable is gone, a writer
-			// removed it concurrently and may have committed an index referencing
-			// this chunk. Revert the quarantine so the chunk is not left invisible.
-			still, err := s.MarkerExists(e.ID)
+		case ChunkStatusPrunable, ChunkStatusProtected:
+			// Fresh HasProtect check — may differ from the listing if a writer
+			// added .protect after ListChunks ran. This is the TOCTOU guard.
+			protected, err := s.HasProtect(e.ID)
 			if err != nil {
 				return err
 			}
-			if !still {
-				_ = s.Restore(e.ID) // best-effort revert; error intentionally ignored
-				continue
-			}
-			if err := s.DeleteMarker(e.ID); err != nil {
-				return err
+			if protected {
+				// Writer is saving this chunk: remove the prunable marker and
+				// the protect marker; chunk survives in Normal state.
+				if err := s.DeleteMarker(e.ID); err != nil {
+					return err
+				}
+				if err := s.DeleteProtect(e.ID); err != nil {
+					return err
+				}
+			} else {
+				// No protect: safe to delete.
+				if err := s.DeleteChunk(e.ID); err != nil {
+					return err
+				}
+				if err := s.DeleteMarker(e.ID); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return nil
 }
 
-// commonRescueChunks implements the RescueChunks algorithm using the primitive
-// operations exposed by SafePruneStore. For each chunk in ids it removes any
-// .prunable marker, then either deletes a stale .pruning file (if the chunk
-// data is live) or restores the chunk from quarantine (if the data is in .pruning).
-func commonRescueChunks(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneStore) error {
-	for id := range ids {
+// CapturingWriteStore wraps a WriteStore and intercepts StoreChunk calls.
+// For each chunk stored, it checks HasPrunable on the SafePruneStore; if the
+// chunk carries a .prunable marker, CreateProtect is called immediately and the
+// chunk data is retained in memory. Only prunable chunks are captured, so
+// memory overhead is proportional to the deduplication hit rate, not file size.
+//
+// After chunking, pass [CapturingWriteStore.Chunks] and
+// [CapturingWriteStore.LastProtectTime] to [SafePrunePreCommit].
+type CapturingWriteStore struct {
+	WriteStore
+	sps             SafePruneStore
+	mu              sync.Mutex
+	chunks          map[ChunkID]*Chunk
+	lastProtectTime time.Time
+}
+
+// NewCapturingWriteStore wraps ws and, for each chunk stored through it,
+// calls HasPrunable on sps. Prunable chunks are captured and protected in-line.
+func NewCapturingWriteStore(ws WriteStore, sps SafePruneStore) *CapturingWriteStore {
+	return &CapturingWriteStore{WriteStore: ws, sps: sps, chunks: make(map[ChunkID]*Chunk)}
+}
+
+// StoreChunk forwards to the underlying store and, if the chunk has a
+// .prunable marker, captures its data and writes a .protect marker.
+func (c *CapturingWriteStore) StoreChunk(chunk *Chunk) error {
+	if err := c.WriteStore.StoreChunk(chunk); err != nil {
+		return err
+	}
+	id := chunk.ID()
+	prunable, err := c.sps.HasPrunable(id)
+	if err != nil {
+		return err
+	}
+	if prunable {
+		if err := c.sps.CreateProtect(id); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		c.chunks[id] = chunk
+		c.lastProtectTime = time.Now()
+		c.mu.Unlock()
+	}
+	return nil
+}
+
+// Chunks returns a snapshot of the prunable chunks captured so far.
+// Every chunk in the returned map has already had CreateProtect called.
+func (c *CapturingWriteStore) Chunks() map[ChunkID]*Chunk {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[ChunkID]*Chunk, len(c.chunks))
+	for id, ch := range c.chunks {
+		out[id] = ch
+	}
+	return out
+}
+
+// LastProtectTime returns the time of the most recent CreateProtect call,
+// or the zero time if no chunks were protected.
+func (c *CapturingWriteStore) LastProtectTime() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastProtectTime
+}
+
+// SafePrunePreCommit is the recheck phase of the writer-side protect-marker
+// protocol. Call it BEFORE committing an index, passing the result of
+// [CapturingWriteStore.Chunks] and [CapturingWriteStore.LastProtectTime].
+//
+// Every chunk in chunks has already had CreateProtect called by
+// CapturingWriteStore.StoreChunk. SafePrunePreCommit waits 2×propTime from
+// lastProtect for the protect markers to propagate (use 0 for local/SFTP
+// stores), then verifies each chunk is still present. Any chunk deleted by a
+// concurrent pruner during the race window is re-uploaded and re-protected,
+// followed by a second 2×propTime wait.
+func SafePrunePreCommit(ctx context.Context, chunks map[ChunkID]*Chunk, lastProtect time.Time, s SafePruneStore, propTime time.Duration) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	// Wait 2×propTime from when the last protect was written.
+	if propTime > 0 {
+		if remaining := time.Until(lastProtect.Add(2 * propTime)); remaining > 0 {
+			select {
+			case <-ctx.Done():
+				return Interrupted{}
+			case <-time.After(remaining):
+			}
+		}
+	}
+
+	var lastReuploadTime time.Time
+	for id, chunk := range chunks {
 		select {
 		case <-ctx.Done():
 			return Interrupted{}
 		default:
 		}
-		if err := s.DeleteMarker(id); err != nil {
-			return err
-		}
-		hasChunk, err := s.HasChunk(id)
+		ok, err := s.HasChunk(id)
 		if err != nil {
 			return err
 		}
-		if hasChunk {
-			if err := s.DeletePruning(id); err != nil {
+		if !ok {
+			// Chunk was deleted by a concurrent pruner in the race window.
+			// Re-upload it and re-add protect so the next pruner cycle keeps it.
+			if err := s.StoreChunk(chunk); err != nil {
 				return err
 			}
-		} else {
-			if err := s.Restore(id); err != nil {
+			if err := s.CreateProtect(id); err != nil {
 				return err
+			}
+			lastReuploadTime = time.Now()
+		}
+	}
+
+	// After re-uploads, wait another 2×propTime for the fresh chunk and its
+	// protect marker to propagate before the caller commits the index.
+	if !lastReuploadTime.IsZero() && propTime > 0 {
+		if remaining := time.Until(lastReuploadTime.Add(2 * propTime)); remaining > 0 {
+			select {
+			case <-ctx.Done():
+				return Interrupted{}
+			case <-time.After(remaining):
 			}
 		}
 	}

@@ -197,27 +197,23 @@ func (s S3Store) nameFromID(id ChunkID) string {
 	return name
 }
 
-func (s S3Store) pruningNamesFromID(id ChunkID) (prunable, pruning string) {
-	name := s.nameFromID(id)
-	return name + PrunableExt, name + PruningExt
-}
+func (s S3Store) markerNameFromID(id ChunkID) string { return s.nameFromID(id) + PrunableExt }
+func (s S3Store) protectNameFromID(id ChunkID) string { return s.nameFromID(id) + ProtectExt }
 
-// UntagPrunable removes the .prunable companion object for a chunk, if it exists.
-func (s S3Store) UntagPrunable(id ChunkID) error {
-	prunable, _ := s.pruningNamesFromID(id)
-	err := s.client.RemoveObject(s.bucket, prunable)
-	if err != nil {
-		if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
-			return nil
-		}
+func (s S3Store) s3NoSuchKey(err error) bool {
+	if err == nil {
+		return false
 	}
-	return err
+	e, ok := err.(minio.ErrorResponse)
+	return ok && e.Code == "NoSuchKey"
 }
 
 // ListChunks returns every chunk-related entry in the store together with its
-// pruning status. It is called by commonSafePrune and commonRescueChunks.
+// pruning status. It is called by commonSafePrune.
 func (s S3Store) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
-	var entries []ChunkEntry
+	type presence struct{ hasChunk, hasPrunable, hasProtect bool }
+	byID := make(map[ChunkID]*presence)
+
 	doneCh := make(chan struct{})
 	defer close(doneCh)
 	objectCh := s.client.ListObjectsV2(s.bucket, s.prefix, true, doneCh)
@@ -231,128 +227,125 @@ func (s S3Store) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
 		default:
 		}
 		key := object.Key
-		if strings.HasSuffix(key, PruningExt) {
-			cacnkName := strings.TrimSuffix(key, PruningExt)
-			id, err := s.idFromName(cacnkName)
+		var id ChunkID
+		var err error
+		if strings.HasSuffix(key, ProtectExt) {
+			id, err = s.idFromName(strings.TrimSuffix(key, ProtectExt))
 			if err != nil {
 				continue
 			}
-			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPruning})
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
+			}
+			byID[id].hasProtect = true
 		} else if strings.HasSuffix(key, PrunableExt) {
-			cacnkName := strings.TrimSuffix(key, PrunableExt)
-			id, err := s.idFromName(cacnkName)
+			id, err = s.idFromName(strings.TrimSuffix(key, PrunableExt))
 			if err != nil {
 				continue
 			}
-			_, serr := s.client.StatObject(s.bucket, cacnkName, minio.StatObjectOptions{})
-			if serr != nil {
-				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
-			} else {
-				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
 			}
+			byID[id].hasPrunable = true
 		} else {
-			id, err := s.idFromName(key)
+			id, err = s.idFromName(key)
 			if err != nil {
 				continue
 			}
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
+			}
+			byID[id].hasChunk = true
+		}
+	}
+
+	var entries []ChunkEntry
+	for id, p := range byID {
+		switch {
+		case p.hasChunk && p.hasPrunable && p.hasProtect:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusProtected})
+		case p.hasChunk && p.hasPrunable:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
+		case p.hasChunk:
 			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusNormal})
+		case p.hasPrunable:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
+		case p.hasProtect:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedProtect})
 		}
 	}
 	return entries, nil
 }
 
-// MarkerExists reports whether the .prunable companion for id is present.
-func (s S3Store) MarkerExists(id ChunkID) (bool, error) {
-	prunable, _ := s.pruningNamesFromID(id)
-	_, err := s.client.StatObject(s.bucket, prunable, minio.StatObjectOptions{})
+// HasPrunable reports whether the .prunable companion for id is present.
+func (s S3Store) HasPrunable(id ChunkID) (bool, error) {
+	_, err := s.client.StatObject(s.bucket, s.markerNameFromID(id), minio.StatObjectOptions{})
 	if err == nil {
 		return true, nil
 	}
-	if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
+	if s.s3NoSuchKey(err) {
 		return false, nil
 	}
 	return false, err
 }
 
-// DeletePruning removes the .pruning object for id. No-op if absent.
-func (s S3Store) DeletePruning(id ChunkID) error {
-	_, pruning := s.pruningNamesFromID(id)
-	err := s.client.RemoveObject(s.bucket, pruning)
-	if err != nil {
-		if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
 // DeleteMarker removes the .prunable companion for id. No-op if absent.
 func (s S3Store) DeleteMarker(id ChunkID) error {
-	prunable, _ := s.pruningNamesFromID(id)
-	err := s.client.RemoveObject(s.bucket, prunable)
-	if err != nil {
-		if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
-			return nil
-		}
-		return err
+	err := s.client.RemoveObject(s.bucket, s.markerNameFromID(id))
+	if s.s3NoSuchKey(err) {
+		return nil
 	}
-	return nil
+	return err
 }
 
 // CreateMarker creates an empty .prunable companion object for id.
 func (s S3Store) CreateMarker(id ChunkID) error {
-	prunable, _ := s.pruningNamesFromID(id)
-	_, err := s.client.PutObject(s.bucket, prunable, bytes.NewReader(nil), 0, minio.PutObjectOptions{})
+	_, err := s.client.PutObject(s.bucket, s.markerNameFromID(id), bytes.NewReader(nil), 0, minio.PutObjectOptions{})
 	return err
 }
 
-// Quarantine copies .cacnk to .pruning and removes .cacnk, making the chunk
-// invisible to readers.
-func (s S3Store) Quarantine(id ChunkID) error {
-	cacnk := s.nameFromID(id)
-	_, pruning := s.pruningNamesFromID(id)
-	src := minio.NewSourceInfo(s.bucket, cacnk, nil)
-	dst, err := minio.NewDestinationInfo(s.bucket, pruning, nil, nil)
-	if err != nil {
-		return err
-	}
-	if err := s.client.CopyObject(dst, src); err != nil {
-		return err
-	}
-	return s.client.RemoveObject(s.bucket, cacnk)
+// CreateProtect creates an empty .protect companion object for id.
+func (s S3Store) CreateProtect(id ChunkID) error {
+	_, err := s.client.PutObject(s.bucket, s.protectNameFromID(id), bytes.NewReader(nil), 0, minio.PutObjectOptions{})
+	return err
 }
 
-// Restore copies .pruning back to .cacnk and removes .pruning. No-op if
-// .pruning is absent.
-func (s S3Store) Restore(id ChunkID) error {
-	cacnk := s.nameFromID(id)
-	_, pruning := s.pruningNamesFromID(id)
-	src := minio.NewSourceInfo(s.bucket, pruning, nil)
-	dst, err := minio.NewDestinationInfo(s.bucket, cacnk, nil, nil)
-	if err != nil {
-		return err
+// DeleteProtect removes the .protect companion for id. No-op if absent.
+func (s S3Store) DeleteProtect(id ChunkID) error {
+	err := s.client.RemoveObject(s.bucket, s.protectNameFromID(id))
+	if s.s3NoSuchKey(err) {
+		return nil
 	}
-	if err := s.client.CopyObject(dst, src); err != nil {
-		if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
-			return nil
-		}
-		return err
+	return err
+}
+
+// HasProtect reports whether the .protect companion for id is present.
+func (s S3Store) HasProtect(id ChunkID) (bool, error) {
+	_, err := s.client.StatObject(s.bucket, s.protectNameFromID(id), minio.StatObjectOptions{})
+	if err == nil {
+		return true, nil
 	}
-	return s.client.RemoveObject(s.bucket, pruning)
+	if s.s3NoSuchKey(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// DeleteChunk removes the chunk data object for id. No-op if absent.
+func (s S3Store) DeleteChunk(id ChunkID) error {
+	err := s.client.RemoveObject(s.bucket, s.nameFromID(id))
+	if s.s3NoSuchKey(err) {
+		return nil
+	}
+	return err
 }
 
 // SafePruningEnabled reports whether the store was opened with safe pruning enabled.
 func (s S3Store) SafePruningEnabled() bool { return s.opt.SafePruning }
 
-// SafePrune implements the two-run safe pruning protocol for an S3Store.
+// SafePrune implements the protect-marker safe pruning protocol for an S3Store.
 func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
 	return commonSafePrune(ctx, ids, s)
-}
-
-// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
-func (s S3Store) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
-	return commonRescueChunks(ctx, ids, s)
 }
 
 func (s S3Store) idFromName(name string) (ChunkID, error) {

@@ -260,29 +260,27 @@ func (s LocalStore) nameFromID(id ChunkID) (dir, name string) {
 	return
 }
 
-func (s LocalStore) pruningPathsFromID(id ChunkID) (prunable, pruning string) {
+func (s LocalStore) markerPathFromID(id ChunkID) string {
 	_, p := s.nameFromID(id)
-	return p + PrunableExt, p + PruningExt
+	return p + PrunableExt
 }
 
-// UntagPrunable removes the .prunable companion file for a chunk, if it exists.
-func (s LocalStore) UntagPrunable(id ChunkID) error {
-	prunable, _ := s.pruningPathsFromID(id)
-	err := os.Remove(prunable)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
+func (s LocalStore) protectPathFromID(id ChunkID) string {
+	_, p := s.nameFromID(id)
+	return p + ProtectExt
 }
 
 // ListChunks returns every chunk-related entry in the store together with its
-// pruning status. It is called by commonSafePrune and commonRescueChunks.
+// pruning status. It is called by commonSafePrune.
 func (s LocalStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
-	var entries []ChunkEntry
+	type presence struct{ hasChunk, hasPrunable, hasProtect bool }
+	byID := make(map[ChunkID]*presence)
+
 	chunkExt := CompressedChunkExt
 	if s.Opt.Uncompressed {
 		chunkExt = UncompressedChunkExt
 	}
+
 	err := filepath.Walk(s.Base, func(path string, info os.FileInfo, err error) error {
 		select {
 		case <-ctx.Done():
@@ -296,27 +294,30 @@ func (s LocalStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
 			return nil
 		}
 		base := filepath.Base(path)
-		if strings.HasSuffix(base, PruningExt) {
-			nameWithoutPruning := strings.TrimSuffix(base, PruningExt)
-			idStr := strings.TrimSuffix(nameWithoutPruning, chunkExt)
-			id, err := ChunkIDFromString(idStr)
-			if err != nil {
+		var id ChunkID
+		var parseErr error
+		if strings.HasSuffix(base, ProtectExt) {
+			nameWithout := strings.TrimSuffix(base, ProtectExt)
+			idStr := strings.TrimSuffix(nameWithout, chunkExt)
+			id, parseErr = ChunkIDFromString(idStr)
+			if parseErr != nil {
 				return nil
 			}
-			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPruning})
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
+			}
+			byID[id].hasProtect = true
 		} else if strings.HasSuffix(base, PrunableExt) {
-			nameWithoutPrunable := strings.TrimSuffix(base, PrunableExt)
-			idStr := strings.TrimSuffix(nameWithoutPrunable, chunkExt)
-			id, err := ChunkIDFromString(idStr)
-			if err != nil {
+			nameWithout := strings.TrimSuffix(base, PrunableExt)
+			idStr := strings.TrimSuffix(nameWithout, chunkExt)
+			id, parseErr = ChunkIDFromString(idStr)
+			if parseErr != nil {
 				return nil
 			}
-			cacnk := strings.TrimSuffix(path, PrunableExt)
-			if _, serr := os.Stat(cacnk); os.IsNotExist(serr) {
-				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
-			} else if serr == nil {
-				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
 			}
+			byID[id].hasPrunable = true
 		} else {
 			var idStr string
 			if s.Opt.Uncompressed {
@@ -327,21 +328,42 @@ func (s LocalStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
 				}
 				idStr = strings.TrimSuffix(base, CompressedChunkExt)
 			}
-			id, err := ChunkIDFromString(idStr)
-			if err != nil {
+			id, parseErr = ChunkIDFromString(idStr)
+			if parseErr != nil {
 				return nil
 			}
-			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusNormal})
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
+			}
+			byID[id].hasChunk = true
 		}
 		return nil
 	})
-	return entries, err
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []ChunkEntry
+	for id, p := range byID {
+		switch {
+		case p.hasChunk && p.hasPrunable && p.hasProtect:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusProtected})
+		case p.hasChunk && p.hasPrunable:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
+		case p.hasChunk:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusNormal})
+		case p.hasPrunable:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
+		case p.hasProtect:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedProtect})
+		}
+	}
+	return entries, nil
 }
 
-// MarkerExists reports whether the .prunable companion for id is present.
-func (s LocalStore) MarkerExists(id ChunkID) (bool, error) {
-	prunable, _ := s.pruningPathsFromID(id)
-	_, err := os.Stat(prunable)
+// HasPrunable reports whether the .prunable companion for id is present.
+func (s LocalStore) HasPrunable(id ChunkID) (bool, error) {
+	_, err := os.Stat(s.markerPathFromID(id))
 	if err == nil {
 		return true, nil
 	}
@@ -351,20 +373,9 @@ func (s LocalStore) MarkerExists(id ChunkID) (bool, error) {
 	return false, err
 }
 
-// DeletePruning removes the .pruning file for id. No-op if absent.
-func (s LocalStore) DeletePruning(id ChunkID) error {
-	_, pruning := s.pruningPathsFromID(id)
-	err := os.Remove(pruning)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
-}
-
 // DeleteMarker removes the .prunable companion for id. No-op if absent.
 func (s LocalStore) DeleteMarker(id ChunkID) error {
-	prunable, _ := s.pruningPathsFromID(id)
-	err := os.Remove(prunable)
+	err := os.Remove(s.markerPathFromID(id))
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -373,38 +384,49 @@ func (s LocalStore) DeleteMarker(id ChunkID) error {
 
 // CreateMarker creates an empty .prunable companion for id.
 func (s LocalStore) CreateMarker(id ChunkID) error {
-	prunable, _ := s.pruningPathsFromID(id)
-	return os.WriteFile(prunable, nil, 0644)
+	return os.WriteFile(s.markerPathFromID(id), nil, 0644)
 }
 
-// Quarantine renames .cacnk to .pruning, making the chunk invisible to readers.
-func (s LocalStore) Quarantine(id ChunkID) error {
-	_, cacnk := s.nameFromID(id)
-	_, pruning := s.pruningPathsFromID(id)
-	return os.Rename(cacnk, pruning)
+// CreateProtect creates an empty .protect companion for id.
+func (s LocalStore) CreateProtect(id ChunkID) error {
+	return os.WriteFile(s.protectPathFromID(id), nil, 0644)
 }
 
-// Restore renames .pruning back to .cacnk. No-op if .pruning is absent.
-func (s LocalStore) Restore(id ChunkID) error {
-	_, cacnk := s.nameFromID(id)
-	_, pruning := s.pruningPathsFromID(id)
-	if _, err := os.Stat(pruning); os.IsNotExist(err) {
+// DeleteProtect removes the .protect companion for id. No-op if absent.
+func (s LocalStore) DeleteProtect(id ChunkID) error {
+	err := os.Remove(s.protectPathFromID(id))
+	if os.IsNotExist(err) {
 		return nil
 	}
-	return os.Rename(pruning, cacnk)
+	return err
+}
+
+// HasProtect reports whether the .protect companion for id is present.
+func (s LocalStore) HasProtect(id ChunkID) (bool, error) {
+	_, err := os.Stat(s.protectPathFromID(id))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// DeleteChunk removes the chunk data file for id. No-op if absent.
+func (s LocalStore) DeleteChunk(id ChunkID) error {
+	_, p := s.nameFromID(id)
+	err := os.Remove(p)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 // SafePruningEnabled reports whether the store was opened with safe pruning enabled.
 func (s LocalStore) SafePruningEnabled() bool { return s.Opt.SafePruning }
 
-// SafePrune implements the two-run safe pruning protocol for a LocalStore.
+// SafePrune implements the protect-marker safe pruning protocol for a LocalStore.
 func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
 	return commonSafePrune(ctx, ids, s)
-}
-
-// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
-// For each chunk: removes any .prunable marker; if the .cacnk is missing but
-// a .pruning file exists, renames it back.
-func (s LocalStore) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
-	return commonRescueChunks(ctx, ids, s)
 }

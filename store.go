@@ -37,10 +37,11 @@ type PruneStore interface {
 type ChunkStatus int
 
 const (
-	ChunkStatusNormal          ChunkStatus = iota // .cacnk present, no marker
-	ChunkStatusPrunable                           // .cacnk + .prunable marker present
-	ChunkStatusPruning                            // .pruning present (quarantined, invisible)
-	ChunkStatusOrphanedPrunable                   // .prunable with no .cacnk or .pruning
+	ChunkStatusNormal           ChunkStatus = iota // .cacnk only
+	ChunkStatusPrunable                            // .cacnk + .prunable (no protect)
+	ChunkStatusProtected                           // .cacnk + .prunable + .protect
+	ChunkStatusOrphanedPrunable                    // .prunable without .cacnk
+	ChunkStatusOrphanedProtect                     // .protect without .cacnk or .prunable
 )
 
 // ChunkEntry pairs a chunk ID with its current pruning state.
@@ -49,45 +50,26 @@ type ChunkEntry struct {
 	Status ChunkStatus
 }
 
-// SafePruneStore extends PruneStore with the two-run safe pruning protocol.
-// Stores that implement this interface can be pruned concurrently with
-// ongoing chunk write operations. See doc/safe-pruning.md for the full
+// SafePruneStore extends PruneStore with the protect-marker safe pruning
+// protocol. Stores that implement this interface can be pruned concurrently
+// with ongoing chunk write operations. See doc/safe-pruning.md for the full
 // protocol description.
 type SafePruneStore interface {
 	PruneStore
 
-	// SafePrune runs one iteration of the safe pruning algorithm. It must
-	// be called at least twice (on separate invocations) for any chunk to
-	// actually be deleted: the first call marks candidates with a .prunable
-	// companion file; the second call quarantines still-unreferenced marked
-	// chunks by renaming their data file to .pruning; a prior call's
-	// quarantined chunks are deleted at the start of each run.
+	// SafePrune runs one iteration of the safe pruning algorithm. The first
+	// call marks unreferenced chunks with a .prunable companion file; the
+	// second call deletes chunks that are still unreferenced and unprotected.
 	SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error
 
-	// UntagPrunable removes the .prunable companion file for a chunk when a
-	// writer finds the chunk already present in the store. This prevents the
-	// chunk from being quarantined by a concurrent prune run. It is a no-op
-	// if the companion file does not exist.
-	UntagPrunable(id ChunkID) error
-
-	// RescueChunks checks every chunk in ids: if its data has been renamed to
-	// .pruning (quarantined), it renames it back; if a stale .prunable
-	// companion exists alongside a live .cacnk, it is deleted. Called by
-	// writers after committing an index (or after ChopFile in the chop
-	// command) to recover any chunks quarantined during the write window.
-	RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error
-
 	// ListChunks returns every chunk-related entry in the store together with
-	// its pruning status. All four ChunkStatus values may appear. Called twice
-	// by commonSafePrune (once per phase) and once by commonRescueChunks.
+	// its pruning status. Called twice by commonSafePrune (once per phase).
 	ListChunks(ctx context.Context) ([]ChunkEntry, error)
 
-	// MarkerExists reports whether the .prunable companion for id is present.
-	// Called by commonSafePrune for the post-quarantine TOCTOU re-check.
-	MarkerExists(id ChunkID) (bool, error)
-
-	// DeletePruning removes the .pruning file for id. No-op if absent.
-	DeletePruning(id ChunkID) error
+	// HasPrunable reports whether the .prunable companion for id is present.
+	// Called by writers to detect chunks that need protect markers before the
+	// index is committed.
+	HasPrunable(id ChunkID) (bool, error)
 
 	// DeleteMarker removes the .prunable companion for id. No-op if absent.
 	DeleteMarker(id ChunkID) error
@@ -95,12 +77,21 @@ type SafePruneStore interface {
 	// CreateMarker creates an empty .prunable companion for id.
 	CreateMarker(id ChunkID) error
 
-	// Quarantine renames/copies the .cacnk to .pruning (making the chunk
-	// invisible to readers). Implementations may call a test hook here.
-	Quarantine(id ChunkID) error
+	// CreateProtect creates an empty .protect companion for id. Writers call
+	// this when reusing a prunable chunk to prevent the pruner from deleting it.
+	CreateProtect(id ChunkID) error
 
-	// Restore renames/copies .pruning back to .cacnk. No-op if .pruning absent.
-	Restore(id ChunkID) error
+	// DeleteProtect removes the .protect companion for id. No-op if absent.
+	// Called by the pruner to clean up protect markers.
+	DeleteProtect(id ChunkID) error
+
+	// HasProtect reports whether the .protect companion for id is present.
+	// Called by the pruner as the TOCTOU guard before deleting a prunable chunk.
+	HasProtect(id ChunkID) (bool, error)
+
+	// DeleteChunk removes the chunk data file for id. No-op if absent.
+	// Called by the pruner after confirming no protect marker is present.
+	DeleteChunk(id ChunkID) error
 }
 
 // IndexStore is implemented by stores that hold indexes.
@@ -205,10 +196,18 @@ type StoreOptions struct {
 	// Store and read chunks uncompressed, without chunk file extension
 	Uncompressed bool `json:"uncompressed"`
 
-	// SafePruning enables the two-run safe pruning protocol, which allows the
-	// prune command to run concurrently with chunk write operations without
-	// risking deletion of newly written chunks. See doc/safe-pruning.md.
+	// SafePruning enables the protect-marker safe pruning protocol, which
+	// allows the prune command to run concurrently with chunk write operations
+	// without risking deletion of newly written chunks. See doc/safe-pruning.md.
 	SafePruning bool `json:"safe-pruning,omitempty"`
+
+	// SafePropagationTime is the maximum time for a write to become visible to
+	// all readers in an eventually-consistent store (e.g. S3, GCS). Writers
+	// wait 2×SafePropagationTime after adding .protect markers before committing
+	// an index. Set to 0 (the default) for immediately-consistent stores such
+	// as local filesystems or SFTP. Must be set to at most 1/2 of the minimum
+	// expected pruner cycle time for the protocol to be correct.
+	SafePropagationTime time.Duration `json:"safe-propagation-time,omitempty"`
 }
 
 // NewStoreOptionsWithDefaults creates a new StoreOptions struct with the default values set

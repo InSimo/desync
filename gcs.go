@@ -259,26 +259,15 @@ func (s GCStore) nameFromID(id ChunkID) string {
 	return name
 }
 
-func (s GCStore) pruningNamesFromID(id ChunkID) (prunable, pruning string) {
-	name := s.nameFromID(id)
-	return name + PrunableExt, name + PruningExt
-}
-
-// UntagPrunable removes the .prunable companion object for a chunk, if it exists.
-func (s GCStore) UntagPrunable(id ChunkID) error {
-	ctx := context.TODO()
-	prunable, _ := s.pruningNamesFromID(id)
-	err := s.client.Object(prunable).Delete(ctx)
-	if err == storage.ErrObjectNotExist {
-		return nil
-	}
-	return err
-}
+func (s GCStore) markerNameFromID(id ChunkID) string  { return s.nameFromID(id) + PrunableExt }
+func (s GCStore) protectNameFromID(id ChunkID) string { return s.nameFromID(id) + ProtectExt }
 
 // ListChunks returns every chunk-related entry in the store together with its
-// pruning status. It is called by commonSafePrune and commonRescueChunks.
+// pruning status. It is called by commonSafePrune.
 func (s GCStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
-	var entries []ChunkEntry
+	type presence struct{ hasChunk, hasPrunable, hasProtect bool }
+	byID := make(map[ChunkID]*presence)
+
 	query := &storage.Query{Prefix: s.prefix}
 	it := s.client.Objects(ctx, query)
 	for {
@@ -295,40 +284,58 @@ func (s GCStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
 			return nil, err
 		}
 		name := attrs.Name
-		if strings.HasSuffix(name, PruningExt) {
-			cacnkName := strings.TrimSuffix(name, PruningExt)
-			id, err := s.idFromName(cacnkName)
+		var id ChunkID
+		if strings.HasSuffix(name, ProtectExt) {
+			id, err = s.idFromName(strings.TrimSuffix(name, ProtectExt))
 			if err != nil {
 				continue
 			}
-			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPruning})
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
+			}
+			byID[id].hasProtect = true
 		} else if strings.HasSuffix(name, PrunableExt) {
-			cacnkName := strings.TrimSuffix(name, PrunableExt)
-			id, err := s.idFromName(cacnkName)
+			id, err = s.idFromName(strings.TrimSuffix(name, PrunableExt))
 			if err != nil {
 				continue
 			}
-			_, serr := s.client.Object(cacnkName).Attrs(context.Background())
-			if serr == storage.ErrObjectNotExist {
-				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
-			} else if serr == nil {
-				entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
 			}
+			byID[id].hasPrunable = true
 		} else {
-			id, err := s.idFromName(name)
+			id, err = s.idFromName(name)
 			if err != nil {
 				continue
 			}
+			if _, ok := byID[id]; !ok {
+				byID[id] = &presence{}
+			}
+			byID[id].hasChunk = true
+		}
+	}
+
+	var entries []ChunkEntry
+	for id, p := range byID {
+		switch {
+		case p.hasChunk && p.hasPrunable && p.hasProtect:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusProtected})
+		case p.hasChunk && p.hasPrunable:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
+		case p.hasChunk:
 			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusNormal})
+		case p.hasPrunable:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
+		case p.hasProtect:
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedProtect})
 		}
 	}
 	return entries, nil
 }
 
-// MarkerExists reports whether the .prunable companion for id is present.
-func (s GCStore) MarkerExists(id ChunkID) (bool, error) {
-	prunable, _ := s.pruningNamesFromID(id)
-	_, err := s.client.Object(prunable).Attrs(context.Background())
+// HasPrunable reports whether the .prunable companion for id is present.
+func (s GCStore) HasPrunable(id ChunkID) (bool, error) {
+	_, err := s.client.Object(s.markerNameFromID(id)).Attrs(context.Background())
 	if err == nil {
 		return true, nil
 	}
@@ -338,20 +345,9 @@ func (s GCStore) MarkerExists(id ChunkID) (bool, error) {
 	return false, err
 }
 
-// DeletePruning removes the .pruning object for id. No-op if absent.
-func (s GCStore) DeletePruning(id ChunkID) error {
-	_, pruning := s.pruningNamesFromID(id)
-	err := s.client.Object(pruning).Delete(context.Background())
-	if err == storage.ErrObjectNotExist {
-		return nil
-	}
-	return err
-}
-
 // DeleteMarker removes the .prunable companion for id. No-op if absent.
 func (s GCStore) DeleteMarker(id ChunkID) error {
-	prunable, _ := s.pruningNamesFromID(id)
-	err := s.client.Object(prunable).Delete(context.Background())
+	err := s.client.Object(s.markerNameFromID(id)).Delete(context.Background())
 	if err == storage.ErrObjectNotExist {
 		return nil
 	}
@@ -360,49 +356,52 @@ func (s GCStore) DeleteMarker(id ChunkID) error {
 
 // CreateMarker creates an empty .prunable companion object for id.
 func (s GCStore) CreateMarker(id ChunkID) error {
-	prunable, _ := s.pruningNamesFromID(id)
-	w := s.client.Object(prunable).NewWriter(context.Background())
+	w := s.client.Object(s.markerNameFromID(id)).NewWriter(context.Background())
 	return w.Close()
 }
 
-// Quarantine copies .cacnk to .pruning and deletes .cacnk, making the chunk
-// invisible to readers.
-func (s GCStore) Quarantine(id ChunkID) error {
-	cacnk := s.nameFromID(id)
-	_, pruning := s.pruningNamesFromID(id)
-	copier := s.client.Object(pruning).CopierFrom(s.client.Object(cacnk))
-	if _, err := copier.Run(context.Background()); err != nil {
-		return err
-	}
-	return s.client.Object(cacnk).Delete(context.Background())
+// CreateProtect creates an empty .protect companion object for id.
+func (s GCStore) CreateProtect(id ChunkID) error {
+	w := s.client.Object(s.protectNameFromID(id)).NewWriter(context.Background())
+	return w.Close()
 }
 
-// Restore copies .pruning back to .cacnk and deletes .pruning. No-op if
-// .pruning is absent.
-func (s GCStore) Restore(id ChunkID) error {
-	cacnk := s.nameFromID(id)
-	_, pruning := s.pruningNamesFromID(id)
-	copier := s.client.Object(cacnk).CopierFrom(s.client.Object(pruning))
-	if _, err := copier.Run(context.Background()); err != nil {
-		if err == storage.ErrObjectNotExist {
-			return nil
-		}
-		return err
+// DeleteProtect removes the .protect companion for id. No-op if absent.
+func (s GCStore) DeleteProtect(id ChunkID) error {
+	err := s.client.Object(s.protectNameFromID(id)).Delete(context.Background())
+	if err == storage.ErrObjectNotExist {
+		return nil
 	}
-	return s.client.Object(pruning).Delete(context.Background())
+	return err
+}
+
+// HasProtect reports whether the .protect companion for id is present.
+func (s GCStore) HasProtect(id ChunkID) (bool, error) {
+	_, err := s.client.Object(s.protectNameFromID(id)).Attrs(context.Background())
+	if err == nil {
+		return true, nil
+	}
+	if err == storage.ErrObjectNotExist {
+		return false, nil
+	}
+	return false, err
+}
+
+// DeleteChunk removes the chunk data object for id. No-op if absent.
+func (s GCStore) DeleteChunk(id ChunkID) error {
+	err := s.client.Object(s.nameFromID(id)).Delete(context.Background())
+	if err == storage.ErrObjectNotExist {
+		return nil
+	}
+	return err
 }
 
 // SafePruningEnabled reports whether the store was opened with safe pruning enabled.
 func (s GCStore) SafePruningEnabled() bool { return s.opt.SafePruning }
 
-// SafePrune implements the two-run safe pruning protocol for a GCStore.
+// SafePrune implements the protect-marker safe pruning protocol for a GCStore.
 func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
 	return commonSafePrune(ctx, ids, s)
-}
-
-// RescueChunks rescues any chunks in ids that were quarantined by SafePrune.
-func (s GCStore) RescueChunks(ctx context.Context, ids map[ChunkID]struct{}) error {
-	return commonRescueChunks(ctx, ids, s)
 }
 
 func (s GCStore) idFromName(name string) (ChunkID, error) {

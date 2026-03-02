@@ -66,12 +66,11 @@ func countFilesWithSuffix(t *testing.T, root, suffix string) int {
 	return n
 }
 
-// TestSafePruneCommand verifies the three-run safe pruning protocol end-to-end
+// TestSafePruneCommand verifies the two-run safe pruning protocol end-to-end
 // using the CLI. blob1 chunks exclusive to blob1 progress through:
 //
-//	run 1 → marked with .prunable
-//	run 2 → quarantined as .pruning
-//	run 3 → fully deleted
+//	run 1 → marked with .prunable (chunk still readable)
+//	run 2 → chunk deleted outright (no .pruning quarantine step)
 func TestSafePruneCommand(t *testing.T) {
 	store := t.TempDir()
 
@@ -92,7 +91,7 @@ func TestSafePruneCommand(t *testing.T) {
 	require.Greater(t, prunableAfterRun1, 0, "run 1 must create .prunable markers")
 	require.Equal(t, 0, pruningAfterRun1, "run 1 must not create any .pruning files")
 
-	// Run 2: quarantines previously marked chunks.
+	// Run 2: deletes chunks that are still marked and have no .protect companion.
 	pruneCmd2 := newPruneCommand(context.Background())
 	pruneCmd2.SetArgs([]string{"--safe-pruning", "-s", store, "testdata/blob2.caibx", "--yes"})
 	_, err = pruneCmd2.ExecuteC()
@@ -101,16 +100,5 @@ func TestSafePruneCommand(t *testing.T) {
 	prunableAfterRun2 := countFilesWithSuffix(t, store, ".prunable")
 	pruningAfterRun2 := countFilesWithSuffix(t, store, ".pruning")
 	require.Equal(t, 0, prunableAfterRun2, "run 2 must clear all .prunable markers")
-	require.Greater(t, pruningAfterRun2, 0, "run 2 must create .pruning (quarantined) files")
-
-	// Run 3: deletes the quarantined .pruning files.
-	pruneCmd3 := newPruneCommand(context.Background())
-	pruneCmd3.SetArgs([]string{"--safe-pruning", "-s", store, "testdata/blob2.caibx", "--yes"})
-	_, err = pruneCmd3.ExecuteC()
-	require.NoError(t, err)
-
-	prunableAfterRun3 := countFilesWithSuffix(t, store, ".prunable")
-	pruningAfterRun3 := countFilesWithSuffix(t, store, ".pruning")
-	require.Equal(t, 0, prunableAfterRun3, "run 3 must leave no .prunable files")
-	require.Equal(t, 0, pruningAfterRun3, "run 3 must delete all .pruning files")
+	require.Equal(t, 0, pruningAfterRun2, "run 2 must not create any .pruning files")
 }
