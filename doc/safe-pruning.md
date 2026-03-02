@@ -22,164 +22,247 @@ Enable it with the `--safe-pruning` flag on `desync prune`, or by setting
 
 ## Chunk States
 
-Each chunk progresses through up to three states:
+Each chunk can carry up to two companion marker files alongside its `.cacnk` data file:
 
-| State        | Files on disk                        | Visible to readers? |
-|--------------|--------------------------------------|---------------------|
-| Normal       | `<id>.cacnk`                         | Yes                 |
-| Marked       | `<id>.cacnk` + `<id>.cacnk.prunable` | Yes                 |
-| Quarantined  | `<id>.cacnk.pruning`                 | No (`.cacnk` gone)  |
+| State              | Files present                                    | Visible to readers? |
+|--------------------|--------------------------------------------------|---------------------|
+| Normal             | `<id>.cacnk`                                     | Yes                 |
+| Prunable           | `<id>.cacnk` + `<id>.cacnk.prunable`             | Yes                 |
+| Protected          | `<id>.cacnk` + `<id>.cacnk.prunable` + `<id>.cacnk.protect` | Yes      |
+| OrphanedPrunable   | `<id>.cacnk.prunable` (no `.cacnk`)              | —                   |
+| OrphanedProtect    | `<id>.cacnk.protect` (no `.cacnk`)               | —                   |
 
-Readers only look for `.cacnk` files and are completely unaffected by `.prunable` markers.
+Readers only look for `.cacnk` files. Marker files never affect read availability — unlike
+the old quarantine protocol, the `.cacnk` file is never renamed or moved.
 
 ## Single Prune Run Algorithm
 
-Each call to `SafePrune(ctx, ids)` executes two sequential phases:
+Each call to `SafePrune(ctx, ids)` executes two sequential phases using two store listings.
 
-### Phase 1 — Cleanup
+### Phase 1 — Orphan Cleanup
 
-Walk the store. For each file:
+Walk the store. For each entry:
 
-- If it ends in `.pruning`: **delete it** (this chunk was quarantined in the previous run
-  and still isn't referenced — final deletion).
-- If it ends in `.prunable`:
-  - Compute the corresponding `.cacnk` path.
-  - If the `.cacnk` no longer exists (orphaned marker): **delete the `.prunable` file**.
+- **OrphanedPrunable** (`.prunable` without `.cacnk`): delete the `.prunable` file.
+- **OrphanedProtect** (`.protect` without `.cacnk`): delete the `.protect` file.
 
-### Phase 2 — Mark and Quarantine
+These are leftover markers from interrupted or crashed operations.
 
-Walk the store. For each `.cacnk` file:
+### Phase 2 — Mark and Delete
 
-- **Skip** temp files (prefix `.tmp-cacnk`) and non-chunk files.
-- Parse the chunk ID.
-- If the chunk **is in `ids`** (keep-set):
-  - Remove its `.prunable` marker if present (it was rescued or re-uploaded).
-  - Continue (keep the chunk).
-- If the chunk **is not in `ids`**:
-  - If **no `.prunable` marker exists**: create an empty `<id>.cacnk.prunable` file
-    (first encounter — mark it as a candidate).
-  - If a **`.prunable` marker already exists** (marked in a previous run): quarantine
-    the chunk by renaming `<id>.cacnk` → `<id>.cacnk.pruning`. Then re-check whether
-    the `.prunable` marker still exists (see [Race Safety](#race-safety)); if it does,
-    delete the `.prunable` marker.
+Walk the store again. For each chunk entry:
 
-## Race Safety
+- If the chunk **is in the keep-set** (`ids`):
+  - Delete its `.prunable` marker if present (idempotent, no-op if absent).
+  - Delete its `.protect` marker if present (cleanup of a writer's lingering protect).
+- If the chunk **is not in the keep-set**:
+  - **Normal** state: create a `.prunable` marker (first encounter — candidate for deletion
+    next run).
+  - **Prunable or Protected** state: perform a fresh `HasProtect` check. This may differ
+    from the listing snapshot if a writer added `.protect` after the listing was taken —
+    this is the key TOCTOU guard.
+    - If protected: delete `.prunable` and `.protect` — a writer is actively saving this
+      chunk; it returns to Normal state.
+    - If not protected: delete the `.cacnk` data file, then the `.prunable` marker.
 
-There is a narrow TOCTOU window during phase 2 quarantine: prune evaluates the
-`.prunable` marker, then executes the rename. A writer could remove `.prunable`
-(via `UntagPrunable`) and commit its index in this gap, after which `RescueChunks`
-would be a no-op (it sees `.cacnk` still present). Prune then quarantines the chunk
-anyway, leaving it stuck in `.pruning` with no writer aware it needs rescue.
+## Race Condition Analysis
 
-**The fix**: after renaming `.cacnk` → `.pruning`, prune immediately re-checks
-whether `.prunable` still exists.
+Let `P` = `safe-propagation-time` — the maximum time for any write to become visible to
+every reader (store propagation latency). Let `E` = the pruner's execution time between its
+`HasProtect` check and the `DeleteChunk` call (a single network round-trip or syscall;
+no explicit sleep in the hot path).
 
-- If `.prunable` is **still present**: the rename was safe — no writer removed the
-  marker during the rename. Delete `.prunable` and leave the chunk quarantined.
-- If `.prunable` is **gone**: a writer removed it concurrently and may have committed
-  an index referencing this chunk. Revert the rename (`.pruning` → `.cacnk`) so
-  the chunk is visible again. The chunk will be re-evaluated in the next prune run.
+### Race 1 — Core TOCTOU: Pruner Misses Protect, Writer Misses Deletion
 
-This works because once `.cacnk` has been renamed to `.pruning`, `HasChunk` returns
-false, so any new writer that checks after the rename will proceed to call
-`StoreChunk` (writing a fresh `.cacnk`) rather than `UntagPrunable`. The only writer
-that can remove `.prunable` after the rename is one that saw `.cacnk` exist before
-the rename — and that writer will call `RescueChunks` with this chunk ID after
-committing its index, restoring the reverted chunk if needed.
+```
+T1:              Writer adds .protect to C           (visible to all by T1+P)
+T2 ∈ [T1, T1+P): Pruner checks HasProtect(C) → false  (protect not yet propagated)
+T3 = T2+E:       Pruner deletes C                   (visible to all by T3+P)
+T1+P:            Writer calls HasChunk(C)
+```
 
-## Why Two Runs Are Required
+At `T1+P`, the deletion is only visible if `T3+P ≤ T1+P`, i.e. `T3 ≤ T1`. But
+`T3 ≥ T2 ≥ T1`, so the deletion can land in `(T1, T1+P+E)` — still invisible to the
+writer's `1P` wait.
 
-- **Run 1**: Marks every unreferenced chunk with a `.prunable` companion file.
-  No data is deleted yet. A writer that commits its index between run 1 and run 2
-  will have `RescueChunks` clear the markers.
-- **Run 2**: Quarantines chunks that are *still* unreferenced (moves `.cacnk` to
-  `.pruning`). The chunk becomes invisible to readers.
-- **Run 3 (Phase 1)**: Deletes the `.pruning` files from run 2.
+**Fix:** Writer waits `2P` from `T1`. Since `T3 < T2+E < T1+P+E`, the deletion propagates
+by `T3+P < T1+2P+E`. With `E ≪ P` (delete is a single API call), `T3+P < T1+2P`, so the
+writer's recheck at `T1+2P` catches any deletion. This is why `safe-propagation-time`
+must bound **both** write propagation latency **and** the pruner's per-chunk execution time.
+In practice (S3/GCS propagation = seconds, delete RTT = milliseconds), `2P` is vastly
+conservative but necessary for formal correctness.
 
-A chunk that enters the index between run 1 and run 2 will have its `.prunable`
-marker removed (by `RescueChunks` or by phase 2 of run 2) and will survive.
+### Race 2 — Normal-to-Deleted: Eliminated by Design Assumption
+
+```
+T0:            Writer stores chunk C (Normal) → no protect, not in recheck list
+T_m1:          Pruner cycle N:   C not in keep set → CreateMarker (.prunable added)
+T_m2:          Pruner cycle N+1: C not in keep set, no protect → DeleteChunk(C)
+T_commit > T0: Writer commits index with C → C is missing → DATA LOSS
+```
+
+This race requires **two full pruner cycles** to complete while the writer is still
+building its index. The protocol assumes `safe-propagation-time ≪ pruner cycle time` —
+propagation latency (milliseconds to seconds) is much shorter than the interval between
+consecutive prune runs (minutes to hours in production). Under this assumption, a Normal
+chunk cannot be deleted within the writer's `2P` window, and the race cannot occur.
+
+This assumption must be treated as a **precondition**: set `safe-propagation-time` no
+larger than half the minimum expected pruner cycle interval, not just the store's
+propagation latency.
+
+**Consequence:** Writers only need to protect and recheck chunks that **had a `.prunable`
+marker at the time of reuse** — not every chunk in the index. This avoids expensive
+per-chunk `HasChunk` round-trips for chunks that are safely Normal.
+
+### Race 3 — Re-upload Timing
+
+After re-uploading a missing chunk `C` at `T_ru` and adding `.protect`:
+
+- `.protect` is visible to all readers by `T_ru+P`.
+- A pruner that checked `HasProtect` before `T_ru+P` (stale read, no protect) could delete
+  `C` at some `T_del < T_ru+2P`.
+
+**Fix:** After re-uploading and re-protecting, wait another `2P` before committing the
+index. One re-upload pass is sufficient: the second `2P` wait covers any stale-check
+deletion of the freshly re-uploaded chunk.
+
+### Race 4 — Protect Marker Cleanup by Writers
+
+Writers must **not** remove `.protect` markers themselves. If a writer removed protect
+after committing the index but before the pruner incorporated the new index into its keep
+set:
+
+```
+T_commit:   Writer commits index (visible at T_commit+P)
+T_commit+P: Writer removes .protect from C
+T_prune_ks: Pruner reads keep set (snapshot before T_commit+P; C not in keep set)
+T_check:    Pruner checks HasProtect(C) → false (writer just removed it)
+            → DeleteChunk(C) → DATA LOSS
+```
+
+**Fix:** Protect markers are cleaned up **only by the pruner**:
+- For chunks **in** the keep set: pruner calls `DeleteProtect` (idempotent).
+- For chunks **not** in the keep set: pruner calls `HasProtect` before deleting; if found,
+  `DeleteMarker + DeleteProtect` (keep chunk); if not found, `DeleteChunk + DeleteMarker`.
+
+Protect markers on keep-set chunks linger for at most one extra pruner cycle — acceptable.
+
+### Race 5 — Re-upload Without Re-adding Protect
+
+When re-uploading chunk `C`, the freshly written `.cacnk` has no `.protect` marker. If a
+new pruner cycle marks it Prunable before the index is committed, and a subsequent cycle
+finds no protect, it will delete `C` — looping back to Race 1.
+
+**Fix:** After re-uploading `C`, the writer also calls `CreateProtect(C)`. The second `2P`
+wait then covers Race 1 for the re-uploaded chunk.
+
+### Correctness Summary
+
+The protocol is correct under these conditions (all satisfied by the implementation):
+
+1. `safe-propagation-time P` bounds both write propagation latency and delete round-trip time.
+2. Writer waits `2P` from when the last `.protect` was written before rechecking.
+3. Only chunks that were Prunable at reuse time are rechecked (Race 2 design assumption).
+4. After any re-upload + protect, writer waits another `2P` before committing.
+5. Protect markers are cleaned up only by the pruner, never by writers.
 
 ## Writer Obligations
 
-Writers using `make`, `tar -i`, or `chop` must perform two operations:
+Writers using `make`, `tar -i`, `chop`, or the git-lfs agent must perform one pre-commit
+operation using `CapturingWriteStore` and `SafePrunePreCommit`.
 
-### 1. `UntagPrunable` (automatic via `ChunkStorage`)
+### `CapturingWriteStore` (automatic during chunking)
 
-When `ChunkStorage.StoreChunk` finds a chunk already present in the store
-(`HasChunk` returns true), it calls `UntagPrunable` on the underlying store
-if it implements `SafePruneStore`. This removes the `.prunable` marker so a
-concurrent prune run won't quarantine the chunk.
+Wrap the target `WriteStore` with `NewCapturingWriteStore(ws, sps)` before passing it to
+`ChopFile` or `ChunkStream`. For each chunk stored:
 
-### 2. `RescueChunks` (called after index commit)
+1. The chunk is written to the underlying store via `StoreChunk`.
+2. `HasPrunable` is called on the `SafePruneStore`.
+3. If the chunk has a `.prunable` marker: `CreateProtect` is called immediately, the chunk
+   data is retained in memory, and `LastProtectTime` is updated.
 
-After successfully writing the index file, the commands `make`, `tar`, and `chop`
-call `RescueChunks(ctx, ids)` with the set of all chunk IDs in the index. For each
-chunk:
+Only prunable chunks are captured; memory overhead is proportional to the deduplication
+hit rate, not to the total file size.
 
-- Any `.prunable` marker is removed.
-- If the `.cacnk` is missing but a `.pruning` (quarantined) file exists, it is
-  renamed back to `.cacnk`.
+### `SafePrunePreCommit` (called after chunking, before index commit)
 
-This handles the race where prune quarantined a chunk between the writer finishing
-the chunks and finishing the index.
+After `ChopFile` or `ChunkStream` completes, call:
+
+```go
+SafePrunePreCommit(ctx, cap.Chunks(), cap.LastProtectTime(), sps, propTime)
+```
+
+This performs the recheck phase:
+
+1. Waits until `LastProtectTime + 2×propTime` for protect markers to propagate.
+2. For each captured chunk, calls `HasChunk`. If missing (pruner won the race):
+   - Re-uploads the chunk via `StoreChunk`.
+   - Re-adds `.protect` via `CreateProtect`.
+3. If any chunks were re-uploaded, waits another `2×propTime`.
+
+After `SafePrunePreCommit` returns, the index may be committed safely.
+
+Use `propTime = 0` for local and SFTP stores (atomic operations, no propagation delay).
+For S3 and GCS, set `safe-propagation-time` in `StoreOptions` to the store's observed
+propagation latency — see [Operational Guidance](#operational-guidance).
 
 ## Operational Guidance
 
-- **Minimum interval between runs**: Allow enough time for any concurrent `make`,
-  `tar`, or `chop` operations to complete between the two prune runs. The protocol
-  does not enforce this — it is the operator's responsibility.
-- **Enabling**: Pass `--safe-pruning` to `desync prune`. No changes are needed for
-  `make`, `tar`, or `chop`; they call `RescueChunks` unconditionally when the store
-  implements `SafePruneStore`.
+- **Minimum interval between runs**: Allow enough time for all concurrent write operations
+  to complete between consecutive prune runs. The protocol does not enforce this — it is
+  the operator's responsibility. Set `safe-propagation-time` to no more than half the
+  minimum expected pruner cycle interval.
+- **Enabling**: Pass `--safe-pruning` to `desync prune`. No extra flags are needed for
+  `make`, `tar`, or `chop`; they use `CapturingWriteStore` and `SafePrunePreCommit`
+  automatically when the store implements `SafePruneStore`.
 - **Idempotent**: Re-running prune with `--safe-pruning` is always safe. If a run is
-  interrupted, the next run cleans up any partial state.
+  interrupted, the next run cleans up any orphaned markers in Phase 1.
+- **`safe-propagation-time`**: For object stores, set this to the store's write-to-read
+  propagation latency (typically 1–10 seconds for S3/GCS). The writer waits `2×` this
+  value, so keep it tight. Do not set it to the pruner cycle interval.
 
 ## Backend Notes
 
-### LocalStore
+### LocalStore and SFTPStore
 
-Rename operations (`os.Rename`) are atomic on POSIX filesystems. Phase 1 cleanup and
-phase 2 quarantine are both atomic.
-
-### SFTPStore
-
-Uses `PosixRename` (the POSIX rename extension) for atomic rename during quarantine.
-This requires an SFTP server that supports the `posix-rename@openssh.com` extension
-(OpenSSH's sftp-server does).
+Both use direct filesystem or SFTP operations. All marker creates and deletes are
+individual file operations. No atomic rename is required — the `.cacnk` file is never
+moved. Use `propTime = 0`.
 
 ### S3Store and GCStore
 
-Object storage does not support atomic rename. Quarantine is implemented as:
+Object storage does not support atomic operations. The `.cacnk`, `.prunable`, and
+`.protect` objects are independent. Partial failures (e.g., `CreateProtect` succeeds but
+the process crashes before committing the index) leave orphaned markers that Phase 1 of
+the next prune run will clean up. No data loss occurs in any failure scenario.
 
-1. Copy `.cacnk` → `.pruning`
-2. Delete `.cacnk`
-3. Delete `.prunable`
-
-If the process is interrupted between steps 1 and 2, both `.cacnk` and `.pruning`
-will exist simultaneously. Phase 1 of the next run will delete the `.pruning` object,
-leaving `.cacnk` intact — no data loss.
+Set `safe-propagation-time` in `StoreOptions` to the measured write-to-read propagation
+latency of your bucket (typically a few seconds).
 
 ## State Machine
 
 ```
-                    ┌─────────────────────────────────────────────────┐
-                    │  prune: id in keep-set → remove .prunable       │
-                    │  writer: HasChunk=true  → UntagPrunable         │
-  ┌──────────────┐  │                                                  │
-  │              │──┴──[first run, not in keep-set]──────────────────►│  .cacnk
-  │  .cacnk      │                                                     │  .cacnk.prunable
-  │  (normal)    │◄──[RescueChunks / id enters keep-set next run]─────│  (marked)
-  │              │                                                     │     │
-  └──────────────┘                                                     │     │[second run,
-        ▲                                                              │     │ still not in
-        │                                                              └─────┘ keep-set]
-        │                                                                     │
-        │ RescueChunks                                                        ▼
-        │ (rename back)                                              .cacnk.pruning
-        └─────────────────────────────────────────────────────────── (quarantined)
-                                                                             │
-                                                                             │[phase 1,
-                                                                             │ next run]
-                                                                             ▼
-                                                                          deleted
+                   ┌───────────────────────────────────────────────────────────┐
+                   │  prune: id in keep-set → DeleteMarker + DeleteProtect      │
+                   │                                                             │
+ ┌─────────────┐   │                                                             │
+ │             │───┴──[run N, not in keep-set]──────────────────────────────►  │ .cacnk
+ │   .cacnk    │                                                                │ .cacnk.prunable
+ │  (Normal)   │◄──[prune: HasProtect=true → DeleteMarker+DeleteProtect]──────  │ (Prunable)
+ │             │                                                                │    │
+ └─────────────┘                                                                │    │ writer: HasPrunable=true
+       ▲                                                                        └────┘ → CreateProtect
+       │ prune: HasProtect=true                                                      │
+       │ → DeleteMarker+DeleteProtect                                                ▼
+       │                                                                   .cacnk + .prunable
+       │                                                                   .cacnk.protect
+       │                                                                   (Protected)
+       │                                                                        │
+       └────────────────────────────────────────────────────────────────────────┘
+                                                                                │
+                                              prune: HasProtect=false           │ prune: HasProtect=false
+                                              → DeleteChunk + DeleteMarker      │ → DeleteChunk + DeleteMarker
+                                                                                ▼
+                                                                             deleted
 ```
