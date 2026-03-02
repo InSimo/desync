@@ -83,3 +83,10 @@ func (s *SwapWriteStore) StoreChunk(chunk *Chunk) error {
 	defer s.mu.RUnlock()
 	return s.s.(WriteStore).StoreChunk(chunk)
 }
+
+// StoreOrReuseChunk stores chunk if not already present.
+func (s *SwapWriteStore) StoreOrReuseChunk(chunk *Chunk) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.s.(WriteStore).StoreOrReuseChunk(chunk)
+}

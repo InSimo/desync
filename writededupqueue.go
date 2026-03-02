@@ -50,6 +50,9 @@ func (q *WriteDedupQueue) HasChunk(id ChunkID) (bool, error) {
 	return q.DedupQueue.HasChunk(id)
 }
 
+// StoreOrReuseChunk stores chunk if not already present.
+func (q *WriteDedupQueue) StoreOrReuseChunk(chunk *Chunk) error { return StoreOrReuse(q, chunk) }
+
 func (q *WriteDedupQueue) StoreChunk(chunk *Chunk) error {
 	id := chunk.ID()
 	req, isInFlight := q.storeChunkQueue.loadOrStore(id)

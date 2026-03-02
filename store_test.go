@@ -42,6 +42,8 @@ func (s *TestStore) StoreChunk(chunk *Chunk) error {
 	return nil
 }
 
+func (s *TestStore) StoreOrReuseChunk(c *Chunk) error { return StoreOrReuse(s, c) }
+
 func (s *TestStore) String() string { return "TestStore" }
 
 func (s *TestStore) Close() error { return nil }

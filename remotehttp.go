@@ -244,6 +244,9 @@ func (r *RemoteHTTP) HasChunk(id ChunkID) (bool, error) {
 	}
 }
 
+// StoreOrReuseChunk stores chunk if not already present.
+func (r *RemoteHTTP) StoreOrReuseChunk(c *Chunk) error { return StoreOrReuse(r, c) }
+
 // StoreChunk adds a new chunk to the store
 func (r *RemoteHTTP) StoreChunk(chunk *Chunk) error {
 	p := r.nameFromID(chunk.ID())

@@ -186,6 +186,9 @@ func (s *SFTPStore) RemoveChunk(id ChunkID) error {
 	return c.client.Remove(name)
 }
 
+// StoreOrReuseChunk stores chunk if not already present.
+func (s *SFTPStore) StoreOrReuseChunk(c *Chunk) error { return StoreOrReuse(s, c) }
+
 // StoreChunk adds a new chunk to the store
 func (s *SFTPStore) StoreChunk(chunk *Chunk) error {
 	c := <-s.pool

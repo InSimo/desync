@@ -98,11 +98,12 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 	return nil
 }
 
-// CapturingWriteStore wraps a WriteStore and intercepts StoreChunk calls.
-// For each chunk stored, it checks HasPrunable on the SafePruneStore; if the
-// chunk carries a .prunable marker, CreateProtect is called immediately and the
-// chunk data is retained in memory. Only prunable chunks are captured, so
-// memory overhead is proportional to the deduplication hit rate, not file size.
+// CapturingWriteStore wraps a WriteStore and intercepts StoreOrReuseChunk calls.
+// When a chunk is already present in the store (reuse path), it checks HasPrunable
+// on the SafePruneStore; if the chunk carries a .prunable marker, CreateProtect is
+// called immediately and the chunk data is retained in memory. Fresh chunks (not yet
+// present) are stored directly without capture. Only prunable reused chunks are
+// captured, so memory overhead is proportional to the deduplication hit rate.
 //
 // After chunking, pass [CapturingWriteStore.Chunks] and
 // [CapturingWriteStore.LastProtectTime] to [SafePrunePreCommit].
@@ -114,33 +115,41 @@ type CapturingWriteStore struct {
 	lastProtectTime time.Time
 }
 
-// NewCapturingWriteStore wraps ws and, for each chunk stored through it,
+// NewCapturingWriteStore wraps ws and, for each chunk reused through it,
 // calls HasPrunable on sps. Prunable chunks are captured and protected in-line.
 func NewCapturingWriteStore(ws WriteStore, sps SafePruneStore) *CapturingWriteStore {
 	return &CapturingWriteStore{WriteStore: ws, sps: sps, chunks: make(map[ChunkID]*Chunk)}
 }
 
-// StoreChunk forwards to the underlying store and, if the chunk has a
-// .prunable marker, captures its data and writes a .protect marker.
-func (c *CapturingWriteStore) StoreChunk(chunk *Chunk) error {
-	if err := c.WriteStore.StoreChunk(chunk); err != nil {
-		return err
-	}
+// StoreOrReuseChunk checks whether the chunk is already present in the store.
+// If present (reuse path), it checks for a .prunable marker and, if found,
+// calls CreateProtect and captures the chunk for pre-commit rechecking.
+// If absent (fresh path), it stores the chunk without capture.
+func (c *CapturingWriteStore) StoreOrReuseChunk(chunk *Chunk) error {
 	id := chunk.ID()
-	prunable, err := c.sps.HasPrunable(id)
+	present, err := c.WriteStore.HasChunk(id)
 	if err != nil {
 		return err
 	}
-	if prunable {
-		if err := c.sps.CreateProtect(id); err != nil {
+	if present {
+		// Reuse path: check for .prunable marker and protect if found.
+		prunable, err := c.sps.HasPrunable(id)
+		if err != nil {
 			return err
 		}
-		c.mu.Lock()
-		c.chunks[id] = chunk
-		c.lastProtectTime = time.Now()
-		c.mu.Unlock()
+		if prunable {
+			if err := c.sps.CreateProtect(id); err != nil {
+				return err
+			}
+			c.mu.Lock()
+			c.chunks[id] = chunk
+			c.lastProtectTime = time.Now()
+			c.mu.Unlock()
+		}
+		return nil
 	}
-	return nil
+	// Fresh path: store the chunk without capture.
+	return c.WriteStore.StoreChunk(chunk)
 }
 
 // Chunks returns a snapshot of the prunable chunks captured so far.

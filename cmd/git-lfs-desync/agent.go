@@ -389,6 +389,12 @@ func (s *countingWriteStore) StoreChunk(chunk *desync.Chunk) error {
 	return err
 }
 
+// StoreOrReuseChunk stores chunk if not already present. Reused chunks are not
+// counted as stored bytes since no network transfer occurs.
+func (s *countingWriteStore) StoreOrReuseChunk(chunk *desync.Chunk) error {
+	return desync.StoreOrReuse(s, chunk)
+}
+
 // countingReadStore wraps a Store and counts bytes retrieved, using the index
 // chunk sizes so progress tracking works without decompressing chunks.
 type countingReadStore struct {

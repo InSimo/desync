@@ -97,6 +97,8 @@ func (s *mockStore) StoreChunk(chunk *Chunk) error {
 	return nil
 }
 
+func (s *mockStore) StoreOrReuseChunk(chunk *Chunk) error { return StoreOrReuse(s, chunk) }
+
 // GetRandomChunk returns a random live chunk (Normal or Prunable), or nil if
 // none exists. Both Normal and Prunable chunks are eligible for reuse: the
 // writer calls HasPrunable and adds a .protect marker if needed.
@@ -643,6 +645,52 @@ func TestMockSafePrunePreCommitMissingChunk(t *testing.T) {
 	// The chunk must now be present and protected.
 	s.assertLive(t, id)
 	s.assertProtected(t, id)
+}
+
+// TestCapturingWriteStoreReuse verifies that CapturingWriteStore.StoreOrReuseChunk
+// protects and captures prunable chunks on the reuse path, and stores fresh
+// chunks without capturing them.
+func TestCapturingWriteStoreReuse(t *testing.T) {
+	s := newMockStore()
+
+	// Set up a prunable chunk: present in the store with a .prunable marker.
+	prunable := NewChunk([]byte("prunable reused chunk"))
+	prunableID := prunable.ID()
+	s.mu.Lock()
+	s.chunks[prunableID] = prunable
+	s.markers[prunableID] = struct{}{}
+	s.mu.Unlock()
+
+	cap := NewCapturingWriteStore(s, s)
+
+	// Reuse path: chunk is present and prunable.
+	err := cap.StoreOrReuseChunk(prunable)
+	require.NoError(t, err)
+
+	// Prunable chunk must now have a .protect marker.
+	s.assertProtected(t, prunableID)
+
+	// Prunable chunk must appear in cap.Chunks().
+	captured := cap.Chunks()
+	_, found := captured[prunableID]
+	require.True(t, found, "prunable reused chunk must be captured")
+
+	// LastProtectTime must be set.
+	require.False(t, cap.LastProtectTime().IsZero(), "LastProtectTime must be set after protecting a chunk")
+
+	// Fresh path: chunk is absent from the store.
+	fresh := NewChunk([]byte("fresh chunk not in store"))
+	freshID := fresh.ID()
+	err = cap.StoreOrReuseChunk(fresh)
+	require.NoError(t, err)
+
+	// Fresh chunk must be stored.
+	s.assertLive(t, freshID)
+
+	// Fresh chunk must NOT be captured.
+	captured = cap.Chunks()
+	_, found = captured[freshID]
+	require.False(t, found, "fresh chunk must not be captured")
 }
 
 // TestMockSafePruneContextCancellationPhase1 verifies that a cancelled context

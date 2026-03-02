@@ -25,6 +25,10 @@ type Store interface {
 type WriteStore interface {
 	Store
 	StoreChunk(c *Chunk) error
+	// StoreOrReuseChunk stores c if not already present; returns nil without
+	// storing if the chunk already exists. Wrappers may override this to
+	// intercept the reuse path (e.g. CapturingWriteStore).
+	StoreOrReuseChunk(c *Chunk) error
 }
 
 // PruneStore is a store that supports read, write and pruning of chunks
