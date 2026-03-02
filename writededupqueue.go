@@ -50,8 +50,8 @@ func (q *WriteDedupQueue) HasChunk(id ChunkID) (bool, error) {
 	return q.DedupQueue.HasChunk(id)
 }
 
-// StoreOrReuseChunk stores chunk if not already present.
-func (q *WriteDedupQueue) StoreOrReuseChunk(chunk *Chunk) error { return StoreOrReuse(q, chunk) }
+// ReuseChunk checks whether a chunk is already present.
+func (q *WriteDedupQueue) ReuseChunk(id ChunkID) (ReuseStatus, error) { return DefaultReuseChunk(q, id) }
 
 func (q *WriteDedupQueue) StoreChunk(chunk *Chunk) error {
 	id := chunk.ID()

@@ -99,5 +99,5 @@ func (r RepairableCache) StoreChunk(c *Chunk) error {
 	return r.l.StoreChunk(c)
 }
 
-// StoreOrReuseChunk stores chunk if not already present.
-func (r RepairableCache) StoreOrReuseChunk(c *Chunk) error { return StoreOrReuse(r, c) }
+// ReuseChunk checks whether a chunk is already present.
+func (r RepairableCache) ReuseChunk(id ChunkID) (ReuseStatus, error) { return DefaultReuseChunk(r, id) }

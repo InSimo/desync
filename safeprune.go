@@ -98,12 +98,12 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 	return nil
 }
 
-// CapturingWriteStore wraps a WriteStore and intercepts StoreOrReuseChunk calls.
-// When a chunk is already present in the store (reuse path), it checks HasPrunable
-// on the SafePruneStore; if the chunk carries a .prunable marker, CreateProtect is
-// called immediately and the chunk data is retained in memory. Fresh chunks (not yet
-// present) are stored directly without capture. Only prunable reused chunks are
-// captured, so memory overhead is proportional to the deduplication hit rate.
+// CapturingWriteStore wraps a WriteStore and intercepts the ReuseChunk /
+// StoreChunk two-step protocol. When ReuseChunk detects a prunable chunk, it
+// sets a protect marker and records the chunk ID in protectPending. The
+// subsequent StoreChunk call (driven by ChunkStorage) captures the chunk data
+// in memory without re-storing it. Fresh chunks and non-prunable reused chunks
+// pass through unmodified.
 //
 // After chunking, pass [CapturingWriteStore.Chunks] and
 // [CapturingWriteStore.LastProtectTime] to [SafePrunePreCommit].
@@ -113,42 +113,65 @@ type CapturingWriteStore struct {
 	mu              sync.Mutex
 	chunks          map[ChunkID]*Chunk
 	lastProtectTime time.Time
+	protectPending  map[ChunkID]struct{} // set by ReuseChunk, consumed by StoreChunk
 }
 
 // NewCapturingWriteStore wraps ws and, for each chunk reused through it,
 // calls HasPrunable on sps. Prunable chunks are captured and protected in-line.
 func NewCapturingWriteStore(ws WriteStore, sps SafePruneStore) *CapturingWriteStore {
-	return &CapturingWriteStore{WriteStore: ws, sps: sps, chunks: make(map[ChunkID]*Chunk)}
+	return &CapturingWriteStore{
+		WriteStore:     ws,
+		sps:            sps,
+		chunks:         make(map[ChunkID]*Chunk),
+		protectPending: make(map[ChunkID]struct{}),
+	}
 }
 
-// StoreOrReuseChunk checks whether the chunk is already present in the store.
-// If present (reuse path), it checks for a .prunable marker and, if found,
-// calls CreateProtect and captures the chunk for pre-commit rechecking.
-// If absent (fresh path), it stores the chunk without capture.
-func (c *CapturingWriteStore) StoreOrReuseChunk(chunk *Chunk) error {
-	id := chunk.ID()
+// ReuseChunk checks whether the chunk is already present in the underlying
+// store. If absent → ReuseAbsent. If present and not prunable → ReuseOK. If
+// present and prunable → CreateProtect, mark protectPending, return
+// ReuseProtectRequired so that ChunkStorage forwards the chunk to StoreChunk
+// for capture.
+func (c *CapturingWriteStore) ReuseChunk(id ChunkID) (ReuseStatus, error) {
 	present, err := c.WriteStore.HasChunk(id)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if present {
-		// Reuse path: check for .prunable marker and protect if found.
-		prunable, err := c.sps.HasPrunable(id)
-		if err != nil {
-			return err
-		}
-		if prunable {
-			if err := c.sps.CreateProtect(id); err != nil {
-				return err
-			}
-			c.mu.Lock()
-			c.chunks[id] = chunk
-			c.lastProtectTime = time.Now()
-			c.mu.Unlock()
-		}
+	if !present {
+		return ReuseAbsent, nil
+	}
+	prunable, err := c.sps.HasPrunable(id)
+	if err != nil {
+		return 0, err
+	}
+	if !prunable {
+		return ReuseOK, nil
+	}
+	if err := c.sps.CreateProtect(id); err != nil {
+		return 0, err
+	}
+	c.mu.Lock()
+	c.protectPending[id] = struct{}{}
+	c.mu.Unlock()
+	return ReuseProtectRequired, nil
+}
+
+// StoreChunk checks whether the chunk was flagged by ReuseChunk as needing
+// capture (protectPending). If so, it captures the chunk data in memory
+// without re-storing it. Otherwise it forwards to the underlying WriteStore.
+func (c *CapturingWriteStore) StoreChunk(chunk *Chunk) error {
+	id := chunk.ID()
+	c.mu.Lock()
+	_, pending := c.protectPending[id]
+	if pending {
+		delete(c.protectPending, id)
+		c.chunks[id] = chunk
+		c.lastProtectTime = time.Now()
+	}
+	c.mu.Unlock()
+	if pending {
 		return nil
 	}
-	// Fresh path: store the chunk without capture.
 	return c.WriteStore.StoreChunk(chunk)
 }
 

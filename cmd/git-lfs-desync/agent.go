@@ -389,10 +389,10 @@ func (s *countingWriteStore) StoreChunk(chunk *desync.Chunk) error {
 	return err
 }
 
-// StoreOrReuseChunk stores chunk if not already present. Reused chunks are not
+// ReuseChunk checks whether a chunk is already present. Reused chunks are not
 // counted as stored bytes since no network transfer occurs.
-func (s *countingWriteStore) StoreOrReuseChunk(chunk *desync.Chunk) error {
-	return desync.StoreOrReuse(s, chunk)
+func (s *countingWriteStore) ReuseChunk(id desync.ChunkID) (desync.ReuseStatus, error) {
+	return desync.DefaultReuseChunk(s, id)
 }
 
 // countingReadStore wraps a Store and counts bytes retrieved, using the index

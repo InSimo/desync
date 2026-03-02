@@ -97,7 +97,7 @@ func (s *mockStore) StoreChunk(chunk *Chunk) error {
 	return nil
 }
 
-func (s *mockStore) StoreOrReuseChunk(chunk *Chunk) error { return StoreOrReuse(s, chunk) }
+func (s *mockStore) ReuseChunk(id ChunkID) (ReuseStatus, error) { return DefaultReuseChunk(s, id) }
 
 // GetRandomChunk returns a random live chunk (Normal or Prunable), or nil if
 // none exists. Both Normal and Prunable chunks are eligible for reuse: the
@@ -647,9 +647,10 @@ func TestMockSafePrunePreCommitMissingChunk(t *testing.T) {
 	s.assertProtected(t, id)
 }
 
-// TestCapturingWriteStoreReuse verifies that CapturingWriteStore.StoreOrReuseChunk
-// protects and captures prunable chunks on the reuse path, and stores fresh
-// chunks without capturing them.
+// TestCapturingWriteStoreReuse verifies the two-step ReuseChunk + StoreChunk
+// protocol: prunable chunks return ReuseProtectRequired and are captured on
+// the subsequent StoreChunk call; fresh chunks return ReuseAbsent and are
+// stored without capture; normal (non-prunable) chunks return ReuseOK.
 func TestCapturingWriteStoreReuse(t *testing.T) {
 	s := newMockStore()
 
@@ -663,12 +664,15 @@ func TestCapturingWriteStoreReuse(t *testing.T) {
 
 	cap := NewCapturingWriteStore(s, s)
 
-	// Reuse path: chunk is present and prunable.
-	err := cap.StoreOrReuseChunk(prunable)
+	// Step 1: ReuseChunk on a prunable chunk → ReuseProtectRequired + .protect set.
+	status, err := cap.ReuseChunk(prunableID)
 	require.NoError(t, err)
-
-	// Prunable chunk must now have a .protect marker.
+	require.Equal(t, ReuseProtectRequired, status, "prunable chunk must return ReuseProtectRequired")
 	s.assertProtected(t, prunableID)
+
+	// Step 2: StoreChunk captures the chunk data without re-storing.
+	err = cap.StoreChunk(prunable)
+	require.NoError(t, err)
 
 	// Prunable chunk must appear in cap.Chunks().
 	captured := cap.Chunks()
@@ -681,7 +685,12 @@ func TestCapturingWriteStoreReuse(t *testing.T) {
 	// Fresh path: chunk is absent from the store.
 	fresh := NewChunk([]byte("fresh chunk not in store"))
 	freshID := fresh.ID()
-	err = cap.StoreOrReuseChunk(fresh)
+
+	status, err = cap.ReuseChunk(freshID)
+	require.NoError(t, err)
+	require.Equal(t, ReuseAbsent, status, "absent chunk must return ReuseAbsent")
+
+	err = cap.StoreChunk(fresh)
 	require.NoError(t, err)
 
 	// Fresh chunk must be stored.
@@ -691,6 +700,17 @@ func TestCapturingWriteStoreReuse(t *testing.T) {
 	captured = cap.Chunks()
 	_, found = captured[freshID]
 	require.False(t, found, "fresh chunk must not be captured")
+
+	// Normal (non-prunable) chunk: present but no .prunable marker.
+	normal := NewChunk([]byte("normal reused chunk"))
+	normalID := normal.ID()
+	s.mu.Lock()
+	s.chunks[normalID] = normal
+	s.mu.Unlock()
+
+	status, err = cap.ReuseChunk(normalID)
+	require.NoError(t, err)
+	require.Equal(t, ReuseOK, status, "normal chunk must return ReuseOK")
 }
 
 // TestMockSafePruneContextCancellationPhase1 verifies that a cancelled context

@@ -64,8 +64,8 @@ func (s LocalStore) RemoveChunk(id ChunkID) error {
 	return os.Remove(p)
 }
 
-// StoreOrReuseChunk stores chunk if not already present.
-func (s LocalStore) StoreOrReuseChunk(c *Chunk) error { return StoreOrReuse(s, c) }
+// ReuseChunk checks whether a chunk is already present.
+func (s LocalStore) ReuseChunk(id ChunkID) (ReuseStatus, error) { return DefaultReuseChunk(s, id) }
 
 // StoreChunk adds a new chunk to the store
 func (s LocalStore) StoreChunk(chunk *Chunk) error {

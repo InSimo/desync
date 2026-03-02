@@ -40,14 +40,18 @@ func (s *ChunkStorage) unmarkProcessed(id ChunkID) {
 	delete(s.processed, id)
 }
 
-// StoreOrReuse is the default implementation of StoreOrReuseChunk for stores
-// that do not need to intercept the reuse path.
-func StoreOrReuse(ws WriteStore, chunk *Chunk) error {
-	present, err := ws.HasChunk(chunk.ID())
-	if err != nil || present {
-		return err
+// DefaultReuseChunk is the default implementation of ReuseChunk for stores
+// that do not need to intercept the reuse path. It checks HasChunk and
+// returns ReuseOK or ReuseAbsent.
+func DefaultReuseChunk(ws WriteStore, id ChunkID) (ReuseStatus, error) {
+	present, err := ws.HasChunk(id)
+	if err != nil {
+		return 0, err
 	}
-	return ws.StoreChunk(chunk)
+	if present {
+		return ReuseOK, nil
+	}
+	return ReuseAbsent, nil
 }
 
 // StoreChunk stores a single chunk in a synchronous manner.
@@ -60,6 +64,16 @@ func (s *ChunkStorage) StoreChunk(chunk *Chunk) (err error) {
 		return nil
 	}
 
+	status, err := s.ws.ReuseChunk(chunk.ID())
+	if err != nil {
+		s.unmarkProcessed(chunk.ID())
+		return err
+	}
+	if status == ReuseOK {
+		return nil
+	}
+
+	// ReuseAbsent or ReuseProtectRequired: chunk needs processing.
 	// The chunk was marked as "processed" above. If there's a problem to actually
 	// store it, we need to unmark it again.
 	defer func() {
@@ -68,7 +82,5 @@ func (s *ChunkStorage) StoreChunk(chunk *Chunk) (err error) {
 		}
 	}()
 
-	// Delegate the has-check and store to StoreOrReuseChunk so wrappers
-	// (e.g. CapturingWriteStore) can intercept the reuse path.
-	return s.ws.StoreOrReuseChunk(chunk)
+	return s.ws.StoreChunk(chunk)
 }

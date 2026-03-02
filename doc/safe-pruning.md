@@ -175,12 +175,26 @@ operation using `CapturingWriteStore` and `SafePrunePreCommit`.
 ### `CapturingWriteStore` (automatic during chunking)
 
 Wrap the target `WriteStore` with `NewCapturingWriteStore(ws, sps)` before passing it to
-`ChopFile` or `ChunkStream`. For each chunk stored:
+`ChopFile` or `ChunkStream`. `CapturingWriteStore` overrides the two-step `ReuseChunk` /
+`StoreChunk` protocol used by `ChunkStorage`:
 
-1. The chunk is written to the underlying store via `StoreChunk`.
-2. `HasPrunable` is called on the `SafePruneStore`.
-3. If the chunk has a `.prunable` marker: `CreateProtect` is called immediately, the chunk
-   data is retained in memory, and `LastProtectTime` is updated.
+**`ReuseChunk(id)`** — called by `ChunkStorage` before constructing the full chunk:
+
+- `ReuseAbsent` — chunk not in store; `ChunkStorage` proceeds to build and store it.
+- `ReuseOK` — chunk present and not prunable; `ChunkStorage` skips all processing.
+- `ReuseProtectRequired` — chunk present but carries a `.prunable` marker;
+  `CreateProtect` has been called and the chunk ID is recorded in `protectPending`.
+  `ChunkStorage` proceeds to call `StoreChunk` so the chunk data can be captured.
+
+**`StoreChunk(chunk)`** — if the chunk ID is in `protectPending` (set by `ReuseChunk`),
+the chunk data is captured in memory for pre-commit rechecking and `LastProtectTime` is
+updated. The chunk is **not** re-stored (it is already present). If the chunk is not
+pending, it is forwarded to the underlying `WriteStore.StoreChunk` (fresh chunk path).
+
+This two-step design restores the early-exit optimisation in `ChunkStorage`: `ReuseOK`
+chunks skip compression, converter pipelines, and the `StoreChunk` call entirely. Only
+prunable chunks (which need their data captured for re-upload) and absent chunks proceed
+through the full pipeline.
 
 Only prunable chunks are captured; memory overhead is proportional to the deduplication
 hit rate, not to the total file size.

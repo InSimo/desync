@@ -129,8 +129,8 @@ func (s GCStore) GetChunk(id ChunkID) (*Chunk, error) {
 	return NewChunkFromStorage(id, b, s.converters, s.opt.SkipVerify)
 }
 
-// StoreOrReuseChunk stores chunk if not already present.
-func (s GCStore) StoreOrReuseChunk(c *Chunk) error { return StoreOrReuse(s, c) }
+// ReuseChunk checks whether a chunk is already present.
+func (s GCStore) ReuseChunk(id ChunkID) (ReuseStatus, error) { return DefaultReuseChunk(s, id) }
 
 // StoreChunk adds a new chunk to the store
 func (s GCStore) StoreChunk(chunk *Chunk) error {
