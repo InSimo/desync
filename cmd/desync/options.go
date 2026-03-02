@@ -21,6 +21,7 @@ type cmdStoreOptions struct {
 	errorRetry             int
 	errorRetryBaseInterval time.Duration
 	safePruning            bool
+	safePropagationTime    time.Duration
 	pflag.FlagSet
 }
 
@@ -53,6 +54,9 @@ func (o cmdStoreOptions) MergedWith(opt desync.StoreOptions) desync.StoreOptions
 	if o.FlagSet.Lookup("safe-pruning") != nil && o.FlagSet.Lookup("safe-pruning").Changed {
 		opt.SafePruning = true
 	}
+	if o.FlagSet.Lookup("safe-propagation-time") != nil && o.FlagSet.Lookup("safe-propagation-time").Changed {
+		opt.SafePropagationTime = o.safePropagationTime
+	}
 	return opt
 }
 
@@ -75,6 +79,7 @@ func addStoreOptions(o *cmdStoreOptions, f *pflag.FlagSet) {
 	f.IntVarP(&o.errorRetry, "error-retry", "e", desync.DefaultErrorRetry, "number of times to retry in case of network error")
 	f.DurationVarP(&o.errorRetryBaseInterval, "error-retry-base-interval", "b", desync.DefaultErrorRetryBaseInterval, "initial retry delay, increases linearly with each subsequent attempt")
 	f.BoolVar(&o.safePruning, "safe-pruning", false, "enable safe concurrent pruning protocol (see doc/safe-pruning.md)")
+	f.DurationVar(&o.safePropagationTime, "safe-propagation-time", desync.DefaultSafePropagationTime, "max store write propagation delay for safe-pruning protocol")
 
 	o.FlagSet = *f
 }

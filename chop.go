@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -13,9 +14,9 @@ import (
 // and stores them in the provided store. When sps is non-nil, ChopFile
 // participates in the safe-pruning protocol: prunable chunks get .protect
 // markers and SafePrunePreCommit is called before returning.
-func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar, sps SafePruneStore) error {
+func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar, sps SafePruneStore, propTime time.Duration) error {
 	in := make(chan IndexChunk)
-	g, ctx := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(ctx)
 
 	// Setup and start the progressbar if any
 	pb.SetTotal(len(chunks))
@@ -59,7 +60,7 @@ func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteSto
 loop:
 	for _, c := range chunks {
 		select {
-		case <-ctx.Done():
+		case <-gCtx.Done():
 			break loop
 		case in <- c:
 		}
@@ -71,7 +72,7 @@ loop:
 		return err
 	}
 	if sps != nil {
-		return SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, 0)
+		return SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, propTime)
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 
 const DefaultErrorRetry = 3
 const DefaultErrorRetryBaseInterval = 500 * time.Millisecond
+const DefaultSafePropagationTime = 1 * time.Second
 
 // Store is a generic interface implemented by read-only stores, like SSH or
 // HTTP remote stores currently.
@@ -214,6 +215,7 @@ type StoreOptions struct {
 func NewStoreOptionsWithDefaults() (o StoreOptions) {
 	o.ErrorRetry = DefaultErrorRetry
 	o.ErrorRetryBaseInterval = DefaultErrorRetryBaseInterval
+	o.SafePropagationTime = DefaultSafePropagationTime
 	return o
 }
 
@@ -221,6 +223,7 @@ func (o *StoreOptions) UnmarshalJSON(data []byte) error {
 	// Set all the default values before loading the JSON store options
 	o.ErrorRetry = DefaultErrorRetry
 	o.ErrorRetryBaseInterval = DefaultErrorRetryBaseInterval
+	o.SafePropagationTime = DefaultSafePropagationTime
 	type Alias StoreOptions
 	return json.Unmarshal(data, (*Alias)(o))
 }

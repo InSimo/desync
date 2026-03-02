@@ -98,6 +98,7 @@ func main() {
 		errorRetryInterval  time.Duration
 		indexes             bool
 		safePruning         bool
+		safePropagationTime time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -243,8 +244,9 @@ Configure Git LFS to use this agent:
 				agent.avgChunk = avgChunk
 				agent.maxChunk = maxChunk
 				agent.safePruning = safePruning
-				return nil			}
-
+				agent.safePropagationTime = safePropagationTime
+				return nil
+			}
 			return agent.Run(ctx)
 		},
 	}
@@ -278,6 +280,8 @@ Configure Git LFS to use this agent:
 	flags.BoolVar(&safePruning, "safe-pruning", false,
 		"enable safe concurrent pruning protocol: after each upload, rescue written chunks\n"+
 			"so a concurrent 'desync prune --safe-pruning' cannot delete them (see doc/safe-pruning.md)")
+	flags.DurationVar(&safePropagationTime, "safe-propagation-time", desync.DefaultSafePropagationTime,
+		"max store write propagation delay for safe-pruning protocol")
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)

@@ -159,7 +159,12 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 			sps = ps
 		}
 	}
-	index, err := desync.ChunkStream(ctx, &c, s, opt.n, sps, 0)
+	mergedOpt, err := cfg.GetStoreOptionsFor(opt.store)
+	if err != nil {
+		return err
+	}
+	mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
+	index, err := desync.ChunkStream(ctx, &c, s, opt.n, sps, mergedOpt.SafePropagationTime)
 	if err != nil {
 		return err
 	}

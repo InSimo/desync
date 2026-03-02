@@ -85,8 +85,9 @@ type Agent struct {
 	minChunk        uint64
 	avgChunk        uint64
 	maxChunk        uint64
-	tmpDir          string
-	safePruning     bool
+	tmpDir              string
+	safePruning         bool
+	safePropagationTime time.Duration
 	enc             *json.Encoder
 	mu              sync.Mutex
 	// setup is called once from handleInit with remote and operation from the
@@ -263,7 +264,7 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
 	// Store chunks in the remote store.
-	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps); err != nil {
+	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps, a.safePropagationTime); err != nil {
 		stopProgress()
 		a.sendComplete(req.OID, "", err)
 		return

@@ -257,6 +257,8 @@ Available configuration values:
   - `uncompressed` - Reads and writes uncompressed chunks from/to this store. This can improve performance, especially for local stores or caches. Compressed and uncompressed chunks can coexist in the same store, but only one kind is read or written by one client.
   - `http-auth` - Value of the Authorization header in HTTP requests. This could be a bearer token with `"Bearer <token>"` or a Base64-encoded username and password pair for basic authentication like `"Basic dXNlcjpwYXNzd29yZAo="`.
   - `http-cookie` - Value of the Cookie header in HTTP requests. This should be in the form of a list of name-value pairs separated by a semicolon and a space (`'; '`) like `"name=value; name2=value2; name3=value3"`.
+  - `safe-pruning` - Enables the protect-marker safe pruning protocol, which allows the `prune` command to run concurrently with chunk write operations without risking deletion of newly written chunks. See [doc/safe-pruning.md](doc/safe-pruning.md). Default: `false`. Can also be set with `--safe-pruning`.
+  - `safe-propagation-time` - Maximum time (in nanoseconds) for a write to become visible to all readers in an eventually-consistent store (e.g. S3, GCS). Writers wait 2x this value after adding `.protect` markers before committing an index. Set to `0` for immediately-consistent stores such as local filesystems or SFTP. Default: `1000000000` (1 second). Can also be set with `--safe-propagation-time`. Only relevant when `safe-pruning` is enabled.
 - `defaults` - Provides default values for command-line flags so they do not need to be repeated on every invocation. A CLI flag always takes precedence over a config default. All sub-keys are optional.
   - `stores` - List of chunk store locations used as the default for `--store` when none is given on the command line. Commands that accept a single store (e.g. `make`, `chop`, `prune`) use the first entry; commands that accept multiple stores (e.g. `extract`, `cat`) use the full list.
   - `index-store` - Default index store location used when `--index-store` is not provided. Currently only used by `git-lfs-desync`.
@@ -302,6 +304,10 @@ Available configuration values:
     },
     "/path/to/local/cache": {
       "uncompressed": true
+    },
+    "s3+https://s3.us-west-2.amazonaws.com/my-bucket/chunks/": {
+      "safe-pruning": true,
+      "safe-propagation-time": 1000000000
     }
   },
   "defaults": {
