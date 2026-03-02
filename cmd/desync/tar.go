@@ -159,7 +159,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 			sps = ps
 		}
 	}
-	index, err := desync.ChunkStream(ctx, c, s, opt.n, sps)
+	index, err := desync.ChunkStream(ctx, &c, s, opt.n, sps, 0)
 	if err != nil {
 		return err
 	}

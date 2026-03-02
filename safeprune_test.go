@@ -816,15 +816,57 @@ func TestMockSafePruneMultipleChunkStates(t *testing.T) {
 // mockIndexStore — in-memory index store for stress testing
 // ---------------------------------------------------------------------------
 
-// stressChunkStore is the minimal chunk storage interface required by
-// runSafePruneStress and mockIndexStore.CheckInvariant.
-type stressChunkStore interface {
-	StoreChunk(*Chunk) error
+// hasChecker is the minimal interface required by mockIndexStore.CheckInvariant.
+type hasChecker interface {
 	HasChunk(ChunkID) (bool, error)
-	GetRandomChunk() *Chunk
-	HasPrunable(ChunkID) (bool, error)
-	CreateProtect(ChunkID) error
 }
+
+// mockChunker implements the ChunkerInterface for the stress test. It yields
+// stressChunksPerIdx chunks per "file": odd slots reuse an existing chunk from
+// the store (deduplication path); even slots produce fresh random data. After
+// all chunks are emitted, Next returns an empty slice to signal EOF.
+type mockChunker struct {
+	store     *mockStore
+	remaining int
+	slot      int
+	offset    uint64
+}
+
+func newMockChopper(store *mockStore, numChunks int) *mockChunker {
+	return &mockChunker{store: store, remaining: numChunks}
+}
+
+func (m *mockChunker) Next() (uint64, []byte, error) {
+	if m.remaining <= 0 {
+		return m.offset, nil, nil // EOF
+	}
+	m.remaining--
+	slot := m.slot
+	m.slot++
+
+	var data []byte
+	if slot%2 == 1 {
+		if reused := m.store.GetRandomChunk(); reused != nil {
+			if d, err := reused.Data(); err == nil {
+				// Copy to avoid sharing the backing array with the store's chunk.
+				data = make([]byte, len(d))
+				copy(data, d)
+			}
+		}
+	}
+	if data == nil {
+		data = make([]byte, 32)
+		cryptorand.Read(data)
+	}
+
+	start := m.offset
+	m.offset += uint64(len(data))
+	return start, data, nil
+}
+
+func (m *mockChunker) Min() uint64 { return 32 }
+func (m *mockChunker) Avg() uint64 { return 32 }
+func (m *mockChunker) Max() uint64 { return 32 }
 
 // mockIndexStore is a thread-safe, in-memory index store used by the
 // safe-prune stress harness. It tracks live indexes and supports computing
@@ -869,7 +911,7 @@ func (s *mockIndexStore) AllChunkIDs() map[ChunkID]struct{} {
 
 // CheckInvariant verifies that every chunk referenced by every live index is
 // present in cs.
-func (s *mockIndexStore) CheckInvariant(cs stressChunkStore) error {
+func (s *mockIndexStore) CheckInvariant(cs hasChecker) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for name, idx := range s.indexes {
@@ -914,7 +956,10 @@ func (s *mockIndexStore) HasIndex(name string) bool {
 // writer goroutines and one pruner goroutine concurrently for stressDuration,
 // then performs a final end-state invariant check.
 //
+// store is the underlying chunk/safe-prune store.
 // prune is called by the pruner goroutine with the live keep set.
+// sps, if non-nil, enables the safe-pruning writer protocol via
+// NewChunkStorageWithPruning + SafePrunePreCommit; pass nil for unsafe tests.
 // propagationTime is the maximum store write propagation latency; writers wait
 // 2×propagationTime between adding protect markers and rechecking chunks.
 // Use 0 for stores with immediate visibility (local/mock).
@@ -927,8 +972,9 @@ func (s *mockIndexStore) HasIndex(name string) bool {
 // Returns nil if the invariant held throughout, or the first violation found.
 func runSafePruneStress(
 	t *testing.T,
-	cs stressChunkStore,
+	store *mockStore,
 	prune func(context.Context, map[ChunkID]struct{}) error,
+	sps SafePruneStore,
 	propagationTime time.Duration,
 	prunerSleep time.Duration,
 	delay *propagationDelays,
@@ -983,111 +1029,16 @@ func runSafePruneStress(
 				default:
 				}
 
-				// recheckList maps chunk IDs to their *Chunk for possible re-upload.
-				recheckList := make(map[ChunkID]*Chunk)
-				var lastProtectTime time.Time
-
-				// Build stressChunksPerIdx chunks.
-				// Odd slots: try to reuse an existing chunk (deduplication).
-				// Even slots (or fallback): store a fresh random chunk.
-				idxChunks := make([]IndexChunk, 0, stressChunksPerIdx)
-				offset := uint64(0)
-				for j := 0; j < stressChunksPerIdx; j++ {
-					var chunk *Chunk
-
-					// Odd slots: pick a random existing chunk and reuse it.
-					// Check HasPrunable: if marked, add .protect and schedule recheck.
-					if j%2 == 1 {
-						if reused := cs.GetRandomChunk(); reused != nil {
-							present, err := cs.HasChunk(reused.ID())
-							if err != nil {
-								return fmt.Errorf("worker %d iter %d: HasChunk (reuse): %w",
-									workerID, iteration, err)
-							}
-							if present {
-								marked, err := cs.HasPrunable(reused.ID())
-								if err != nil {
-									return fmt.Errorf("worker %d iter %d: HasPrunable: %w",
-										workerID, iteration, err)
-								}
-								if marked {
-									if err := cs.CreateProtect(reused.ID()); err != nil {
-										return fmt.Errorf("worker %d iter %d: CreateProtect: %w",
-											workerID, iteration, err)
-									}
-									recheckList[reused.ID()] = reused
-									lastProtectTime = time.Now()
-								}
-								chunk = reused
-							}
-						}
+				// Use the production ChunkStream pipeline: mockChunker feeds
+				// chunks (mix of fresh + reused) into ChunkStream, which
+				// internally handles ChunkStorage + SafePrunePreCommit.
+				chopper := newMockChopper(store, stressChunksPerIdx)
+				idx, err := ChunkStream(gCtx, chopper, store, 1, sps, propagationTime)
+				if err != nil {
+					if gCtx.Err() != nil {
+						return nil
 					}
-
-					// Even slots or fallback: generate a fresh chunk.
-					if chunk == nil {
-						data := make([]byte, 32)
-						if _, err := cryptorand.Read(data); err != nil {
-							return fmt.Errorf("worker %d iter %d: rand.Read: %w", workerID, iteration, err)
-						}
-						chunk = NewChunk(data)
-						if err := cs.StoreChunk(chunk); err != nil {
-							return fmt.Errorf("worker %d iter %d: StoreChunk: %w", workerID, iteration, err)
-						}
-					}
-
-					idxChunks = append(idxChunks, IndexChunk{ID: chunk.ID(), Start: offset, Size: 32})
-					offset += 32
-				}
-
-				// Pre-commit: if any reused chunks were marked, wait 2P then recheck.
-				// A chunk missing after the wait was deleted by a stale-reading pruner;
-				// re-upload it, re-add protect, and wait another 2P.
-				if len(recheckList) > 0 {
-					if propagationTime > 0 {
-						deadline := lastProtectTime.Add(2 * propagationTime)
-						if remaining := time.Until(deadline); remaining > 0 {
-							select {
-							case <-gCtx.Done():
-								return nil
-							case <-time.After(remaining):
-							}
-						}
-					}
-
-					reuploads := false
-					for id, chunk := range recheckList {
-						if gCtx.Err() != nil {
-							return nil
-						}
-						present, err := cs.HasChunk(id)
-						if err != nil {
-							return fmt.Errorf("worker %d iter %d: HasChunk (recheck): %w",
-								workerID, iteration, err)
-						}
-						if !present {
-							if err := cs.StoreChunk(chunk); err != nil {
-								return fmt.Errorf("worker %d iter %d: StoreChunk (reupload): %w",
-									workerID, iteration, err)
-							}
-							if err := cs.CreateProtect(id); err != nil {
-								return fmt.Errorf("worker %d iter %d: CreateProtect (reupload): %w",
-									workerID, iteration, err)
-							}
-							lastProtectTime = time.Now()
-							reuploads = true
-						}
-					}
-
-					if reuploads && propagationTime > 0 {
-						deadline := lastProtectTime.Add(2 * propagationTime)
-						if remaining := time.Until(deadline); remaining > 0 {
-							select {
-							case <-gCtx.Done():
-								return nil
-							case <-time.After(remaining):
-							}
-						}
-					}
+					return fmt.Errorf("worker %d iter %d: ChunkStream: %w", workerID, iteration, err)
 				}
 
 				// Commit the index.
@@ -1095,15 +1046,15 @@ func runSafePruneStress(
 				if delay != nil {
 					delay.sleep(delay.beforeWrite)
 				}
-				sharedIndexStore.StoreIndex(name, Index{Chunks: idxChunks})
+				sharedIndexStore.StoreIndex(name, idx)
 				if delay != nil {
 					delay.sleep(delay.afterAdd)
 				}
 
 				// Inline invariant check — verify only this worker's own chunks
 				// to avoid observing other workers' transient windows.
-				for _, ic := range idxChunks {
-					ok, err := cs.HasChunk(ic.ID)
+				for _, ic := range idx.Chunks {
+					ok, err := store.HasChunk(ic.ID)
 					if err != nil {
 						return fmt.Errorf("worker %d iter %d: HasChunk: %w", workerID, iteration, err)
 					}
@@ -1152,7 +1103,7 @@ func runSafePruneStress(
 						return nil
 					}
 
-					present, err := cs.HasChunk(c.ID)
+					present, err := store.HasChunk(c.ID)
 					if err != nil {
 						return fmt.Errorf("reader %q: HasChunk %s: %w", name, c.ID, err)
 					}
@@ -1167,7 +1118,7 @@ func runSafePruneStress(
 							wait = delay.beforeWrite + delay.afterAdd
 						}
 						time.Sleep(wait)
-						present, err = cs.HasChunk(c.ID)
+						present, err = store.HasChunk(c.ID)
 						if err != nil {
 							return fmt.Errorf("reader %q: HasChunk retry %s: %w", name, c.ID, err)
 						}
@@ -1191,7 +1142,7 @@ func runSafePruneStress(
 	}
 	// End-state check: after all goroutines have exited, no live index may
 	// reference a missing chunk.
-	return sharedIndexStore.CheckInvariant(cs)
+	return sharedIndexStore.CheckInvariant(store)
 }
 
 // TestMockSafePruneStressWithProtect verifies that the protect-marker
@@ -1202,10 +1153,13 @@ func runSafePruneStress(
 //	go test -race -run TestMockSafePruneStressWithProtect -v -count=1 .
 func TestMockSafePruneStressWithProtect(t *testing.T) {
 	cs := newMockStore()
-	// prunerSleep=10ms: two pruner cycles take > 20ms, well beyond a writer
-	// iteration (~1ms for in-memory operations), satisfying the Race 2 design
+	// propagationTime=50ms: SafePrunePreCommit waits 100ms before rechecking
+	// captured chunks, ensuring any in-flight pruner delete (Race 1 TOCTOU
+	// between HasProtect and DeleteChunk) completes before the recheck.
+	// prunerSleep=500ms: two pruner cycles take >1s, well beyond a writer
+	// iteration (~100ms with the propagation wait), satisfying the Race 2 design
 	// assumption that the writer completes faster than two pruner cycles.
-	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, 0, 10*time.Millisecond, nil))
+	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, cs, 50*time.Millisecond, 500*time.Millisecond, nil))
 }
 
 // TestMockUnsafePruneStress confirms that the stress harness detects invariant
@@ -1216,7 +1170,7 @@ func TestMockSafePruneStressWithProtect(t *testing.T) {
 // harness can distinguish safe from unsafe implementations.
 func TestMockUnsafePruneStress(t *testing.T) {
 	cs := newMockStore()
-	err := runSafePruneStress(t, cs, cs.Prune, 0, time.Millisecond, nil)
+	err := runSafePruneStress(t, cs, cs.Prune, nil, 0, time.Millisecond, nil)
 	require.Error(t, err, "unsafe Prune must trigger an invariant violation")
 }
 
@@ -1236,12 +1190,10 @@ func TestMockSafePruneStressWithProtectWithDelay(t *testing.T) {
 	}
 	cs := newMockStore()
 	cs.delays = delay
-	// prunerSleep=50ms: with store operation delays, a writer iteration can take
-	// up to ~88ms (building 6 chunks with delays + recheck/wait + StoreIndex).
-	// Two pruner cycles must exceed this to satisfy the Race 2 design assumption
-	// that the writer completes before the pruner can complete two full cycles.
-	// With only 1 chunk in the store: 2×(50ms+3ms)=106ms > 88ms ✓
-	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, 2*time.Millisecond, 50*time.Millisecond, delay))
+	// prunerSleep=500ms: with store operation delays plus -race overhead, a
+	// writer iteration can take well over 100ms. Two pruner cycles must exceed
+	// this to satisfy the Race 2 design assumption.
+	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, cs, 50*time.Millisecond, 500*time.Millisecond, delay))
 }
 
 // TestMockUnsafePruneStressWithDelay confirms that propagation delays make
@@ -1255,6 +1207,6 @@ func TestMockUnsafePruneStressWithDelay(t *testing.T) {
 	}
 	cs := newMockStore()
 	cs.delays = delay
-	err := runSafePruneStress(t, cs, cs.Prune, 0, time.Millisecond, delay)
+	err := runSafePruneStress(t, cs, cs.Prune, nil, 0, time.Millisecond, delay)
 	require.Error(t, err, "unsafe Prune must trigger an invariant violation even with propagation delays")
 }

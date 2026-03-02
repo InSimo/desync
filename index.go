@@ -8,6 +8,7 @@ import (
 	"math"
 	"slices"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -137,7 +138,16 @@ func (i *Index) Length() int64 {
 // is performed in n goroutines while the hashing algorithm is performed serially.
 // When sps is non-nil, ChunkStream participates in the safe-pruning protocol:
 // prunable chunks get .protect markers and SafePrunePreCommit is called before returning.
-func ChunkStream(ctx context.Context, c Chunker, ws WriteStore, n int, sps SafePruneStore) (Index, error) {
+// ChunkerInterface is the interface used by ChunkStream to obtain successive
+// chunks of data from an input stream. Chunker implements this interface.
+type ChunkerInterface interface {
+	Next() (uint64, []byte, error)
+	Min() uint64
+	Avg() uint64
+	Max() uint64
+}
+
+func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration) (Index, error) {
 	type chunkJob struct {
 		num   int
 		start uint64
@@ -149,7 +159,7 @@ func ChunkStream(ctx context.Context, c Chunker, ws WriteStore, n int, sps SafeP
 		results = make(map[int]IndexChunk)
 	)
 
-	g, ctx := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(ctx)
 	var s *ChunkStorage
 	if sps != nil {
 		s = NewChunkStorageWithPruning(ws, sps)
@@ -208,7 +218,7 @@ loop:
 
 		// Send it off for compression and storage
 		select {
-		case <-ctx.Done():
+		case <-gCtx.Done():
 			break loop
 		case in <- chunkJob{num: num, start: start, b: b}:
 		}
@@ -239,7 +249,7 @@ loop:
 	}
 
 	if sps != nil {
-		if err := SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, 0); err != nil {
+		if err := SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, propTime); err != nil {
 			return Index{}, err
 		}
 	}
