@@ -29,7 +29,7 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 		}
 		switch e.Status {
 		case ChunkStatusOrphanedPrunable:
-			if err := s.DeleteMarker(e.ID); err != nil {
+			if err := s.DeletePrunable(e.ID); err != nil {
 				return err
 			}
 		case ChunkStatusOrphanedProtect:
@@ -56,7 +56,7 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 		}
 		if _, keep := ids[e.ID]; keep {
 			// Chunk is referenced: remove any pruning markers and linger protect.
-			if err := s.DeleteMarker(e.ID); err != nil {
+			if err := s.DeletePrunable(e.ID); err != nil {
 				return err
 			}
 			if err := s.DeleteProtect(e.ID); err != nil {
@@ -67,7 +67,7 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 		switch e.Status {
 		case ChunkStatusNormal:
 			if !finalizeOnly {
-				if err := s.CreateMarker(e.ID); err != nil {
+				if err := s.CreatePrunable(e.ID); err != nil {
 					return err
 				}
 			}
@@ -81,7 +81,7 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 			if protected {
 				// Writer is saving this chunk: remove the prunable marker and
 				// the protect marker; chunk survives in Normal state.
-				if err := s.DeleteMarker(e.ID); err != nil {
+				if err := s.DeletePrunable(e.ID); err != nil {
 					return err
 				}
 				if err := s.DeleteProtect(e.ID); err != nil {
@@ -92,7 +92,7 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 				if err := s.DeleteChunk(e.ID); err != nil {
 					return err
 				}
-				if err := s.DeleteMarker(e.ID); err != nil {
+				if err := s.DeletePrunable(e.ID); err != nil {
 					return err
 				}
 			}

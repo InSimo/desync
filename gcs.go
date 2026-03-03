@@ -345,8 +345,8 @@ func (s GCStore) HasPrunable(id ChunkID) (bool, error) {
 	return false, err
 }
 
-// DeleteMarker removes the .prunable companion for id. No-op if absent.
-func (s GCStore) DeleteMarker(id ChunkID) error {
+// DeletePrunable removes the .prunable companion for id. No-op if absent.
+func (s GCStore) DeletePrunable(id ChunkID) error {
 	err := s.client.Object(s.markerNameFromID(id)).Delete(context.Background())
 	if err == storage.ErrObjectNotExist {
 		return nil
@@ -354,8 +354,8 @@ func (s GCStore) DeleteMarker(id ChunkID) error {
 	return err
 }
 
-// CreateMarker creates an empty .prunable companion object for id.
-func (s GCStore) CreateMarker(id ChunkID) error {
+// CreatePrunable creates an empty .prunable companion object for id.
+func (s GCStore) CreatePrunable(id ChunkID) error {
 	w := s.client.Object(s.markerNameFromID(id)).NewWriter(context.Background())
 	return w.Close()
 }

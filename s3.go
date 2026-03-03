@@ -289,8 +289,8 @@ func (s S3Store) HasPrunable(id ChunkID) (bool, error) {
 	return false, err
 }
 
-// DeleteMarker removes the .prunable companion for id. No-op if absent.
-func (s S3Store) DeleteMarker(id ChunkID) error {
+// DeletePrunable removes the .prunable companion for id. No-op if absent.
+func (s S3Store) DeletePrunable(id ChunkID) error {
 	err := s.client.RemoveObject(s.bucket, s.markerNameFromID(id))
 	if s.s3NoSuchKey(err) {
 		return nil
@@ -298,8 +298,8 @@ func (s S3Store) DeleteMarker(id ChunkID) error {
 	return err
 }
 
-// CreateMarker creates an empty .prunable companion object for id.
-func (s S3Store) CreateMarker(id ChunkID) error {
+// CreatePrunable creates an empty .prunable companion object for id.
+func (s S3Store) CreatePrunable(id ChunkID) error {
 	_, err := s.client.PutObject(s.bucket, s.markerNameFromID(id), bytes.NewReader(nil), 0, minio.PutObjectOptions{})
 	return err
 }

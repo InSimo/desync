@@ -187,7 +187,7 @@ func (s *mockStore) HasPrunable(id ChunkID) (bool, error) {
 	return ok, nil
 }
 
-func (s *mockStore) DeleteMarker(id ChunkID) error {
+func (s *mockStore) DeletePrunable(id ChunkID) error {
 	s.delays.sleepBeforeDelete()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -195,7 +195,7 @@ func (s *mockStore) DeleteMarker(id ChunkID) error {
 	return nil
 }
 
-func (s *mockStore) CreateMarker(id ChunkID) error {
+func (s *mockStore) CreatePrunable(id ChunkID) error {
 	s.delays.sleepBeforeWrite()
 	s.mu.Lock()
 	s.markers[id] = struct{}{}
@@ -798,7 +798,7 @@ func TestMockSafePruneMultipleChunkStates(t *testing.T) {
 	s.assertGone(t, prunable.ID())
 	s.assertUnmarked(t, prunable.ID())
 
-	// Protected → kept (HasProtect=true → DeleteMarker+DeleteProtect, chunk survives).
+	// Protected → kept (HasProtect=true → DeletePrunable+DeleteProtect, chunk survives).
 	s.assertLive(t, protected.ID())
 	s.assertUnmarked(t, protected.ID())
 	s.assertUnprotected(t, protected.ID())
@@ -827,13 +827,13 @@ func TestMockSafePruneFinalizeOnly(t *testing.T) {
 	// prunableChunk: already marked — finalizeOnly pass should delete it.
 	prunable := NewChunk([]byte("finalize only prunable chunk"))
 	require.NoError(t, s.StoreChunk(prunable))
-	require.NoError(t, s.CreateMarker(prunable.ID()))
+	require.NoError(t, s.CreatePrunable(prunable.ID()))
 	s.assertMarked(t, prunable.ID())
 
 	// protectedChunk: marked + protected — finalizeOnly pass should keep it.
 	protected := NewChunk([]byte("finalize only protected chunk"))
 	require.NoError(t, s.StoreChunk(protected))
-	require.NoError(t, s.CreateMarker(protected.ID()))
+	require.NoError(t, s.CreatePrunable(protected.ID()))
 	require.NoError(t, s.CreateProtect(protected.ID()))
 	s.assertMarked(t, protected.ID())
 	s.assertProtected(t, protected.ID())

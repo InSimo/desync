@@ -74,11 +74,11 @@ type SafePruneStore interface {
 	// index is committed.
 	HasPrunable(id ChunkID) (bool, error)
 
-	// DeleteMarker removes the .prunable companion for id. No-op if absent.
-	DeleteMarker(id ChunkID) error
+	// DeletePrunable removes the .prunable companion for id. No-op if absent.
+	DeletePrunable(id ChunkID) error
 
-	// CreateMarker creates an empty .prunable companion for id.
-	CreateMarker(id ChunkID) error
+	// CreatePrunable creates an empty .prunable companion for id.
+	CreatePrunable(id ChunkID) error
 
 	// CreateProtect creates an empty .protect companion for id. Writers call
 	// this when reusing a prunable chunk to prevent the pruner from deleting it.

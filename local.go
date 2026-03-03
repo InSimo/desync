@@ -373,8 +373,8 @@ func (s LocalStore) HasPrunable(id ChunkID) (bool, error) {
 	return false, err
 }
 
-// DeleteMarker removes the .prunable companion for id. No-op if absent.
-func (s LocalStore) DeleteMarker(id ChunkID) error {
+// DeletePrunable removes the .prunable companion for id. No-op if absent.
+func (s LocalStore) DeletePrunable(id ChunkID) error {
 	err := os.Remove(s.markerPathFromID(id))
 	if os.IsNotExist(err) {
 		return nil
@@ -382,8 +382,8 @@ func (s LocalStore) DeleteMarker(id ChunkID) error {
 	return err
 }
 
-// CreateMarker creates an empty .prunable companion for id.
-func (s LocalStore) CreateMarker(id ChunkID) error {
+// CreatePrunable creates an empty .prunable companion for id.
+func (s LocalStore) CreatePrunable(id ChunkID) error {
 	return os.WriteFile(s.markerPathFromID(id), nil, 0644)
 }
 

@@ -376,8 +376,8 @@ func (s *SFTPStore) HasPrunable(id ChunkID) (bool, error) {
 	return false, err
 }
 
-// DeleteMarker removes the .prunable companion for id. No-op if absent.
-func (s *SFTPStore) DeleteMarker(id ChunkID) error {
+// DeletePrunable removes the .prunable companion for id. No-op if absent.
+func (s *SFTPStore) DeletePrunable(id ChunkID) error {
 	c := <-s.pool
 	defer func() { s.pool <- c }()
 	err := c.client.Remove(c.markerPathFromID(id))
@@ -387,8 +387,8 @@ func (s *SFTPStore) DeleteMarker(id ChunkID) error {
 	return err
 }
 
-// CreateMarker creates an empty .prunable companion file for id.
-func (s *SFTPStore) CreateMarker(id ChunkID) error {
+// CreatePrunable creates an empty .prunable companion file for id.
+func (s *SFTPStore) CreatePrunable(id ChunkID) error {
 	c := <-s.pool
 	defer func() { s.pool <- c }()
 	f, err := c.client.Create(c.markerPathFromID(id))

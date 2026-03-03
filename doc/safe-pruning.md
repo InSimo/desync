@@ -96,7 +96,7 @@ conservative but necessary for formal correctness.
 
 ```
 T0:            Writer stores chunk C (Normal) → no protect, not in recheck list
-T_m1:          Pruner cycle N:   C not in keep set → CreateMarker (.prunable added)
+T_m1:          Pruner cycle N:   C not in keep set → CreatePrunable (.prunable added)
 T_m2:          Pruner cycle N+1: C not in keep set, no protect → DeleteChunk(C)
 T_commit > T0: Writer commits index with C → C is missing → DATA LOSS
 ```
@@ -144,7 +144,7 @@ T_check:    Pruner checks HasProtect(C) → false (writer just removed it)
 **Fix:** Protect markers are cleaned up **only by the pruner**:
 - For chunks **in** the keep set: pruner calls `DeleteProtect` (idempotent).
 - For chunks **not** in the keep set: pruner calls `HasProtect` before deleting; if found,
-  `DeleteMarker + DeleteProtect` (keep chunk); if not found, `DeleteChunk + DeleteMarker`.
+  `DeletePrunable + DeleteProtect` (keep chunk); if not found, `DeleteChunk + DeletePrunable`.
 
 Protect markers on keep-set chunks linger for at most one extra pruner cycle — acceptable.
 
@@ -244,17 +244,17 @@ latency of your bucket (typically a few seconds).
 
 ```
                    ┌───────────────────────────────────────────────────────────┐
-                   │  prune: id in keep-set → DeleteMarker + DeleteProtect      │
+                   │  prune: id in keep-set → DeletePrunable + DeleteProtect      │
                    │                                                             │
  ┌─────────────┐   │                                                             │
  │             │───┴──[run N, not in keep-set]──────────────────────────────►  │ .cacnk
  │   .cacnk    │                                                                │ .cacnk.prunable
- │  (Normal)   │◄──[prune: HasProtect=true → DeleteMarker+DeleteProtect]──────  │ (Prunable)
+ │  (Normal)   │◄──[prune: HasProtect=true → DeletePrunable+DeleteProtect]──────  │ (Prunable)
  │             │                                                                │    │
  └─────────────┘                                                                │    │ writer: HasPrunable=true
        ▲                                                                        └────┘ → CreateProtect
        │ prune: HasProtect=true                                                      │
-       │ → DeleteMarker+DeleteProtect                                                ▼
+       │ → DeletePrunable+DeleteProtect                                                ▼
        │                                                                   .cacnk + .prunable
        │                                                                   .cacnk.protect
        │                                                                   (Protected)
@@ -262,7 +262,7 @@ latency of your bucket (typically a few seconds).
        └────────────────────────────────────────────────────────────────────────┘
                                                                                 │
                                               prune: HasProtect=false           │ prune: HasProtect=false
-                                              → DeleteChunk + DeleteMarker      │ → DeleteChunk + DeleteMarker
+                                              → DeleteChunk + DeletePrunable      │ → DeleteChunk + DeletePrunable
                                                                                 ▼
                                                                              deleted
 ```
