@@ -449,8 +449,8 @@ func (s *SFTPStore) DeleteChunk(id ChunkID) error {
 func (s *SFTPStore) SafePruningEnabled() bool { return s.safePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for an SFTPStore.
-func (s *SFTPStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	return commonSafePrune(ctx, ids, s)
+func (s *SFTPStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) error {
+	return commonSafePrune(ctx, ids, s, finalizeOnly)
 }
 
 // Close terminates all client connections

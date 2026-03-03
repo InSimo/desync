@@ -400,8 +400,8 @@ func (s GCStore) DeleteChunk(id ChunkID) error {
 func (s GCStore) SafePruningEnabled() bool { return s.opt.SafePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for a GCStore.
-func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	return commonSafePrune(ctx, ids, s)
+func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) error {
+	return commonSafePrune(ctx, ids, s, finalizeOnly)
 }
 
 func (s GCStore) idFromName(name string) (ChunkID, error) {

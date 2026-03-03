@@ -15,6 +15,7 @@ type pruneOptions struct {
 	store      string
 	indexStore string
 	yes        bool
+	finalize   bool
 }
 
 func newPruneCommand(ctx context.Context) *cobra.Command {
@@ -38,6 +39,7 @@ from STDIN. Indexes can be provided as positional arguments, via --index-store, 
 	flags.StringVarP(&opt.store, "store", "s", "", "target store")
 	flags.StringVar(&opt.indexStore, "index-store", "", "index store to read all indexes from")
 	flags.BoolVarP(&opt.yes, "yes", "y", false, "do not ask for confirmation")
+	flags.BoolVar(&opt.finalize, "finalize", false, "delete already-marked chunks without marking new ones; requires --safe-pruning or safe-pruning enabled via config")
 	addStoreOptions(&opt.cmdStoreOptions, flags)
 	return cmd
 }
@@ -130,12 +132,22 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		}
 	}
 
-	if opt.cmdStoreOptions.safePruning {
+	mergedOpt, err := cfg.GetStoreOptionsFor(opt.store)
+	if err != nil {
+		return err
+	}
+	mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
+
+	if opt.finalize && !mergedOpt.SafePruning {
+		return errors.New("--finalize requires safe-pruning to be enabled (--safe-pruning or via config)")
+	}
+
+	if mergedOpt.SafePruning {
 		ss, ok := s.(desync.SafePruneStore)
 		if !ok {
 			return fmt.Errorf("store '%s' does not support safe pruning", s)
 		}
-		return ss.SafePrune(ctx, ids)
+		return ss.SafePrune(ctx, ids, opt.finalize)
 	}
 	return s.Prune(ctx, ids)
 }

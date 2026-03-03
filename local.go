@@ -427,6 +427,6 @@ func (s LocalStore) DeleteChunk(id ChunkID) error {
 func (s LocalStore) SafePruningEnabled() bool { return s.Opt.SafePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for a LocalStore.
-func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	return commonSafePrune(ctx, ids, s)
+func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) error {
+	return commonSafePrune(ctx, ids, s, finalizeOnly)
 }

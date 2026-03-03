@@ -12,7 +12,9 @@ import (
 // Phase 1 cleans up orphaned markers left by previous runs. Phase 2 marks
 // new deletion candidates and deletes chunks that were already marked in a
 // prior run and have no .protect companion set by a concurrent writer.
-func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneStore) error {
+// If finalizeOnly is true, Normal chunks are not marked — only already-prunable
+// chunks are acted on.
+func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneStore, finalizeOnly bool) error {
 	list, err := s.ListChunks(ctx)
 	if err != nil {
 		return err
@@ -64,8 +66,10 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 		}
 		switch e.Status {
 		case ChunkStatusNormal:
-			if err := s.CreateMarker(e.ID); err != nil {
-				return err
+			if !finalizeOnly {
+				if err := s.CreateMarker(e.ID); err != nil {
+					return err
+				}
 			}
 		case ChunkStatusPrunable, ChunkStatusProtected:
 			// Fresh HasProtect check — may differ from the listing if a writer

@@ -344,8 +344,8 @@ func (s S3Store) DeleteChunk(id ChunkID) error {
 func (s S3Store) SafePruningEnabled() bool { return s.opt.SafePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for an S3Store.
-func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	return commonSafePrune(ctx, ids, s)
+func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) error {
+	return commonSafePrune(ctx, ids, s, finalizeOnly)
 }
 
 func (s S3Store) idFromName(name string) (ChunkID, error) {

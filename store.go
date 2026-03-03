@@ -61,7 +61,9 @@ type SafePruneStore interface {
 	// SafePrune runs one iteration of the safe pruning algorithm. The first
 	// call marks unreferenced chunks with a .prunable companion file; the
 	// second call deletes chunks that are still unreferenced and unprotected.
-	SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error
+	// If finalizeOnly is true, Normal chunks are left unmarked — only
+	// already-prunable chunks are deleted (or restored if protected).
+	SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) error
 
 	// ListChunks returns every chunk-related entry in the store together with
 	// its pruning status. Called twice by commonSafePrune (once per phase).

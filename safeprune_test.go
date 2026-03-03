@@ -131,8 +131,8 @@ func (s *mockStore) Prune(ctx context.Context, ids map[ChunkID]struct{}) error {
 
 // SafePruneStore — high-level operation (delegates to commonSafePrune)
 
-func (s *mockStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	return commonSafePrune(ctx, ids, s)
+func (s *mockStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) error {
+	return commonSafePrune(ctx, ids, s, finalizeOnly)
 }
 
 // SafePruneStore — primitive operations
@@ -319,7 +319,7 @@ func TestLocalStoreSafePruneFullCycle(t *testing.T) {
 	keepPrunable := s.markerPathFromID(keepID)
 
 	// --- Run 1: mark ---
-	require.NoError(t, s.SafePrune(ctx, keepSet))
+	require.NoError(t, s.SafePrune(ctx, keepSet, false))
 
 	_, err = os.Stat(keepPath)
 	require.NoError(t, err, "keep chunk must survive run 1")
@@ -336,7 +336,7 @@ func TestLocalStoreSafePruneFullCycle(t *testing.T) {
 	require.NoError(t, err, "marked chunk must still be readable")
 
 	// --- Run 2: delete (no protect) ---
-	require.NoError(t, s.SafePrune(ctx, keepSet))
+	require.NoError(t, s.SafePrune(ctx, keepSet, false))
 
 	_, err = os.Stat(prunePath)
 	require.True(t, os.IsNotExist(err), "prune chunk .cacnk must be gone after run 2")
@@ -369,12 +369,12 @@ func TestLocalStoreSafePruneKeepSetRemovesMarker(t *testing.T) {
 	_, cacnk := s.nameFromID(id)
 
 	// Run 1 with empty keep-set: chunk gets marked.
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}, false))
 	_, err = os.Stat(prunable)
 	require.NoError(t, err, "chunk must be marked after run 1")
 
 	// Run 2 with the chunk now in the keep-set: marker removed, no deletion.
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{id: {}}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{id: {}}, false))
 
 	_, err = os.Stat(prunable)
 	require.True(t, os.IsNotExist(err), ".prunable must be cleared when chunk enters keep-set")
@@ -397,7 +397,7 @@ func TestLocalStoreSafePruneProtectKeepsChunk(t *testing.T) {
 	protect := s.protectPathFromID(id)
 
 	// Run 1: marks the chunk as prunable.
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}, false))
 	_, err = os.Stat(prunable)
 	require.NoError(t, err, ".prunable must exist after run 1")
 
@@ -407,7 +407,7 @@ func TestLocalStoreSafePruneProtectKeepsChunk(t *testing.T) {
 	require.NoError(t, err, ".protect must exist after CreateProtect")
 
 	// Run 2: HasProtect=true → keep chunk, clean markers.
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}, false))
 
 	_, err = os.Stat(cacnk)
 	require.NoError(t, err, ".cacnk must survive run 2 when protect is present")
@@ -436,13 +436,13 @@ func TestLocalStoreSafePruneUncompressed(t *testing.T) {
 
 	empty := map[ChunkID]struct{}{}
 
-	require.NoError(t, s.SafePrune(ctx, empty))
+	require.NoError(t, s.SafePrune(ctx, empty, false))
 	_, err = os.Stat(cacnk)
 	require.NoError(t, err, ".cacnk must exist after run 1 (uncompressed)")
 	_, err = os.Stat(prunable)
 	require.NoError(t, err, ".prunable must exist after run 1 (uncompressed)")
 
-	require.NoError(t, s.SafePrune(ctx, empty))
+	require.NoError(t, s.SafePrune(ctx, empty, false))
 	_, err = os.Stat(cacnk)
 	require.True(t, os.IsNotExist(err), ".cacnk must be deleted after run 2 (uncompressed)")
 	_, err = os.Stat(prunable)
@@ -469,7 +469,7 @@ func TestMockSafePruneFullCycle(t *testing.T) {
 	keepSet := map[ChunkID]struct{}{keepID: {}}
 
 	// Run 1: unreferenced chunk gains a marker.
-	require.NoError(t, s.SafePrune(ctx, keepSet))
+	require.NoError(t, s.SafePrune(ctx, keepSet, false))
 	s.assertLive(t, keepID)
 	s.assertUnmarked(t, keepID)
 	s.assertLive(t, pruneID)
@@ -480,7 +480,7 @@ func TestMockSafePruneFullCycle(t *testing.T) {
 	require.NoError(t, err, "marked chunk must still be readable")
 
 	// Run 2: marked chunk with no protect is deleted.
-	require.NoError(t, s.SafePrune(ctx, keepSet))
+	require.NoError(t, s.SafePrune(ctx, keepSet, false))
 	s.assertLive(t, keepID)
 	s.assertGone(t, pruneID)
 	s.assertUnmarked(t, pruneID)
@@ -503,11 +503,11 @@ func TestMockSafePruneKeepSetRemovesMarker(t *testing.T) {
 	id := chunk.ID()
 
 	// Run 1 with empty keep-set: chunk gets marked.
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}, false))
 	s.assertMarked(t, id)
 
 	// Run 2 with the chunk now in the keep-set: marker removed, no deletion.
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{id: {}}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{id: {}}, false))
 	s.assertLive(t, id)
 	s.assertUnmarked(t, id)
 }
@@ -523,7 +523,7 @@ func TestMockSafePruneProtectKeepsChunk(t *testing.T) {
 	id := chunk.ID()
 
 	// Run 1: marks the chunk as prunable.
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}, false))
 	s.assertLive(t, id)
 	s.assertMarked(t, id)
 
@@ -532,7 +532,7 @@ func TestMockSafePruneProtectKeepsChunk(t *testing.T) {
 	s.assertProtected(t, id)
 
 	// Run 2: HasProtect=true → keep chunk, clean markers.
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}, false))
 	s.assertLive(t, id)
 	s.assertUnmarked(t, id)
 	s.assertUnprotected(t, id)
@@ -560,7 +560,7 @@ func TestMockSafePruneOrphanedMarkersCleanup(t *testing.T) {
 	s.protects[orphanProtectID] = struct{}{}
 	s.mu.Unlock()
 
-	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}))
+	require.NoError(t, s.SafePrune(ctx, map[ChunkID]struct{}{}, false))
 
 	s.assertGone(t, orphanPrunableID)
 	s.assertUnmarked(t, orphanPrunableID)
@@ -727,7 +727,7 @@ func TestMockSafePruneContextCancellationPhase1(t *testing.T) {
 	s.mu.Unlock()
 
 	cancel() // cancel before SafePrune
-	err := s.SafePrune(ctx, map[ChunkID]struct{}{})
+	err := s.SafePrune(ctx, map[ChunkID]struct{}{}, false)
 	_, ok := err.(Interrupted)
 	require.True(t, ok, "expected Interrupted from Phase 1, got: %v", err)
 }
@@ -744,7 +744,7 @@ func TestMockSafePruneContextCancellationPhase2(t *testing.T) {
 	require.NoError(t, s.StoreChunk(chunk))
 
 	cancel() // cancel before SafePrune; Phase 1 or Phase 2 will observe the cancellation
-	err := s.SafePrune(ctx, map[ChunkID]struct{}{})
+	err := s.SafePrune(ctx, map[ChunkID]struct{}{}, false)
 	_, ok := err.(Interrupted)
 	require.True(t, ok, "expected Interrupted, got: %v", err)
 }
@@ -788,7 +788,7 @@ func TestMockSafePruneMultipleChunkStates(t *testing.T) {
 	s.mu.Unlock()
 
 	keepSet := map[ChunkID]struct{}{} // keep nothing
-	require.NoError(t, s.SafePrune(ctx, keepSet))
+	require.NoError(t, s.SafePrune(ctx, keepSet, false))
 
 	// Normal → Prunable (marker added, still live).
 	s.assertLive(t, normal.ID())
@@ -810,6 +810,50 @@ func TestMockSafePruneMultipleChunkStates(t *testing.T) {
 	// OrphanedProtect → protect gone.
 	s.assertGone(t, orphanedProtectID)
 	s.assertUnprotected(t, orphanedProtectID)
+}
+
+// TestMockSafePruneFinalizeOnly verifies finalizeOnly=true behaviour:
+// - A Normal chunk is left unmarked (not turned into Prunable).
+// - A Prunable chunk with no protect is deleted (finalized).
+// - A Prunable chunk with a protect is kept and its markers cleaned.
+func TestMockSafePruneFinalizeOnly(t *testing.T) {
+	ctx := context.Background()
+	s := newMockStore()
+
+	// normalChunk: Normal state — should remain untouched by finalizeOnly pass.
+	normal := NewChunk([]byte("finalize only normal chunk"))
+	require.NoError(t, s.StoreChunk(normal))
+
+	// prunableChunk: already marked — finalizeOnly pass should delete it.
+	prunable := NewChunk([]byte("finalize only prunable chunk"))
+	require.NoError(t, s.StoreChunk(prunable))
+	require.NoError(t, s.CreateMarker(prunable.ID()))
+	s.assertMarked(t, prunable.ID())
+
+	// protectedChunk: marked + protected — finalizeOnly pass should keep it.
+	protected := NewChunk([]byte("finalize only protected chunk"))
+	require.NoError(t, s.StoreChunk(protected))
+	require.NoError(t, s.CreateMarker(protected.ID()))
+	require.NoError(t, s.CreateProtect(protected.ID()))
+	s.assertMarked(t, protected.ID())
+	s.assertProtected(t, protected.ID())
+
+	// Run a finalizeOnly pass with an empty keep set (keep nothing new).
+	empty := map[ChunkID]struct{}{}
+	require.NoError(t, s.SafePrune(ctx, empty, true))
+
+	// Normal chunk must remain live and unmarked — finalizeOnly does not mark new candidates.
+	s.assertLive(t, normal.ID())
+	s.assertUnmarked(t, normal.ID())
+
+	// Prunable chunk must be deleted — it was already marked, no protect.
+	s.assertGone(t, prunable.ID())
+	s.assertUnmarked(t, prunable.ID())
+
+	// Protected chunk must survive — HasProtect=true → keep, clean markers.
+	s.assertLive(t, protected.ID())
+	s.assertUnmarked(t, protected.ID())
+	s.assertUnprotected(t, protected.ID())
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,7 +1203,10 @@ func TestMockSafePruneStressWithProtect(t *testing.T) {
 	// prunerSleep=500ms: two pruner cycles take >1s, well beyond a writer
 	// iteration (~100ms with the propagation wait), satisfying the Race 2 design
 	// assumption that the writer completes faster than two pruner cycles.
-	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, cs, 50*time.Millisecond, 500*time.Millisecond, nil))
+	safePrune := func(ctx context.Context, ids map[ChunkID]struct{}) error {
+		return cs.SafePrune(ctx, ids, false)
+	}
+	require.NoError(t, runSafePruneStress(t, cs, safePrune, cs, 50*time.Millisecond, 500*time.Millisecond, nil))
 }
 
 // TestMockUnsafePruneStress confirms that the stress harness detects invariant
@@ -1193,7 +1240,10 @@ func TestMockSafePruneStressWithProtectWithDelay(t *testing.T) {
 	// prunerSleep=500ms: with store operation delays plus -race overhead, a
 	// writer iteration can take well over 100ms. Two pruner cycles must exceed
 	// this to satisfy the Race 2 design assumption.
-	require.NoError(t, runSafePruneStress(t, cs, cs.SafePrune, cs, 50*time.Millisecond, 500*time.Millisecond, delay))
+	safePrune := func(ctx context.Context, ids map[ChunkID]struct{}) error {
+		return cs.SafePrune(ctx, ids, false)
+	}
+	require.NoError(t, runSafePruneStress(t, cs, safePrune, cs, 50*time.Millisecond, 500*time.Millisecond, delay))
 }
 
 // TestMockUnsafePruneStressWithDelay confirms that propagation delays make
