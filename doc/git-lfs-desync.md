@@ -45,7 +45,7 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `--ca-cert` | — | CA certificate file to trust instead of the OS trust store. |
 | `-t`, `--trust-insecure` | `false` | Trust invalid/self-signed certificates. |
 | `--config` | `$HOME/.config/desync/config.json` | desync config file for S3 credentials and store options. Mutually exclusive with `--config-from-git`. |
-| `--config-from-git` | — | Read the desync config from a git object (e.g. `origin/_desync:config.json`). Mutually exclusive with `--config`. |
+| `--config-from-git` | — | Read the desync config from a git object. `%(remote)` and `%(operation)` are replaced with values from the LFS init message (e.g. `%(remote)/_desync:config.json`). Mutually exclusive with `--config`. |
 | `--digest` | config default, then `sha512-256` | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. May be set via the `defaults.digest` config key. |
 
 ## Config defaults
@@ -116,7 +116,7 @@ LFS agent config (no `--store` needed):
     standalonetransferagent = desync
 ```
 
-The store URL can also come from a git-resident config via `--config-from-git`, which is useful for sharing a team config without per-machine setup.
+The store URL can also come from a git-resident config via `--config-from-git`, which is useful for sharing a team config without per-machine setup. Use `%(remote)` in the object name to automatically select the config for the remote being operated on.
 
 ---
 
@@ -157,6 +157,20 @@ GCS stores use [application default credentials](https://cloud.google.com/docs/a
 `git-lfs-desync` is invoked by Git itself during clone, fetch, and push operations, with the working directory set to the repository root. This means the desync config — containing S3 credentials and store options — normally needs to live at a fixed path on each developer's machine, making it awkward to onboard contributors or run in CI environments.
 
 `--config-from-git <object>` solves this by reading the config JSON directly from the repository's object database via `git cat-file --text-conv <object>`. The object name can be any git ref, tree path, or blob — for example, a file on a dedicated branch that never mingles with the main working tree.
+
+### Template expansion
+
+The `--config-from-git` value is a template: `%(remote)` is replaced with the remote name from the LFS init message, and `%(operation)` is replaced with the operation (`upload` or `download`). This lets you parameterise the config object name so the correct config is loaded automatically based on context.
+
+For example:
+
+```ini
+args = --config-from-git %(remote)/_desync:config.json
+```
+
+When git-lfs triggers an upload from `origin`, the agent loads `origin/_desync:config.json`. When pushing to `upstream`, it loads `upstream/_desync:config.json`. This is useful for repositories with multiple remotes that use different storage backends.
+
+If `%(remote)` or `%(operation)` appear in the template but the init message does not supply a value (empty string), the placeholder is replaced with an empty string.
 
 ### Storing the config in a `_desync` branch
 
@@ -201,7 +215,7 @@ git stash pop
 ```ini
 [lfs "customtransfer.desync"]
     path = /usr/local/bin/git-lfs-desync
-    args = --config-from-git origin/_desync:config.json \
+    args = --config-from-git %(remote)/_desync:config.json \
            --cache ~/.cache/desync/chunks
     concurrent = true
     concurrenttransfers = 5

@@ -804,6 +804,66 @@ func TestLocalIndexStoreSharding(t *testing.T) {
 	}
 }
 
+func TestExpandGitObjectName(t *testing.T) {
+	cases := []struct{ tmpl, remote, op, want string }{
+		{"%(remote)/_desync:config.json", "origin", "upload", "origin/_desync:config.json"},
+		{"%(remote)/_desync:config.json", "upstream", "download", "upstream/_desync:config.json"},
+		{"%(operation)/config.json", "origin", "upload", "upload/config.json"},
+		{"%(remote)/%(operation)/config.json", "origin", "download", "origin/download/config.json"},
+		{"no-placeholders:config.json", "origin", "upload", "no-placeholders:config.json"},
+		{"", "origin", "upload", ""},
+	}
+	for _, c := range cases {
+		got := expandGitObjectName(c.tmpl, c.remote, c.op)
+		if got != c.want {
+			t.Errorf("expandGitObjectName(%q, %q, %q) = %q, want %q", c.tmpl, c.remote, c.op, got, c.want)
+		}
+	}
+}
+
+func TestAgentInitWithSetup(t *testing.T) {
+	chunkStore, err := desync.NewLocalStore(t.TempDir(), desync.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chunkStore.Close()
+	indexStore, err := desync.NewLocalIndexStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer indexStore.Close()
+
+	var gotRemote, gotOp string
+	var buf bytes.Buffer
+	a := &Agent{
+		enc: json.NewEncoder(&buf),
+	}
+	a.setup = func(remote, operation string) error {
+		gotRemote = remote
+		gotOp = operation
+		a.writeStore = chunkStore
+		a.readStore = chunkStore
+		a.indexWriteStore = indexStore
+		return nil
+	}
+
+	raw, _ := json.Marshal(initRequest{Event: "init", Operation: "upload", Remote: "myremote"})
+	a.handleInit(raw)
+
+	if gotRemote != "myremote" {
+		t.Errorf("setup got remote %q, want %q", gotRemote, "myremote")
+	}
+	if gotOp != "upload" {
+		t.Errorf("setup got operation %q, want %q", gotOp, "upload")
+	}
+
+	var resp initResponse
+	json.NewDecoder(&buf).Decode(&resp)
+	if resp.Error != nil {
+		t.Errorf("unexpected init error: %v", resp.Error.Message)
+	}
+}
+
 func TestAgentTerminate(t *testing.T) {
 	var input bytes.Buffer
 	enc := json.NewEncoder(&input)

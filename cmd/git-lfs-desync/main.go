@@ -26,14 +26,19 @@ var cfgFile string
 var cfgFromGit string
 var digestAlgorithm string
 
-func initConfig() error {
-	if cfgFile != "" && cfgFromGit != "" {
-		return fmt.Errorf("--config and --config-from-git are mutually exclusive")
-	}
-	if cfgFromGit != "" {
-		out, err := exec.Command("git", "cat-file", "--text-conv", cfgFromGit).Output()
+// expandGitObjectName replaces %(fieldname) placeholders in template.
+// Supported fields: remote, operation.
+func expandGitObjectName(template, remote, operation string) string {
+	s := strings.ReplaceAll(template, "%(remote)", remote)
+	s = strings.ReplaceAll(s, "%(operation)", operation)
+	return s
+}
+
+func initConfig(gitObjectName string) error {
+	if gitObjectName != "" {
+		out, err := exec.Command("git", "cat-file", "--text-conv", gitObjectName).Output()
 		if err != nil {
-			return fmt.Errorf("reading config from git object %q: %w", cfgFromGit, err)
+			return fmt.Errorf("reading config from git object %q: %w", gitObjectName, err)
 		}
 		cfg, err = desyncconfig.LoadConfigFromReader(bytes.NewReader(out))
 		return err
@@ -118,109 +123,125 @@ Configure Git LFS to use this agent:
 			if indexes {
 				return nil
 			}
-			if err := initConfig(); err != nil {
-				return err
+			if cfgFile != "" && cfgFromGit != "" {
+				return fmt.Errorf("--config and --config-from-git are mutually exclusive")
 			}
-			return desyncconfig.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm))
+			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if indexes {
 				return runIndexes(args, os.Stdin, os.Stdout)
 			}
-			storeURL = cfg.ResolveStore(storeURL)
-			indexURL = cfg.ResolveIndexStore(indexURL)
-			chunkSize = cfg.ResolveChunkSize(chunkSize)
-			if storeURL == "" {
-				return fmt.Errorf("--store is required")
-			}
 
-			opt, err := cfg.GetStoreOptionsFor(storeURL)
-			if err != nil {
-				return err
-			}
-			opt.N = concurrency
-			opt.ErrorRetry = errorRetry
-			if cmd.Flags().Changed("client-cert") {
-				opt.ClientCert = clientCert
-			}
-			if cmd.Flags().Changed("client-key") {
-				opt.ClientKey = clientKey
-			}
-			if cmd.Flags().Changed("ca-cert") {
-				opt.CACert = caCert
-			}
-			if cmd.Flags().Changed("trust-insecure") {
-				opt.TrustInsecure = trustInsecure
-			}
-			if cmd.Flags().Changed("error-retry-base-interval") {
-				opt.ErrorRetryBaseInterval = errorRetryInterval
-			}
+			agent := &Agent{tmpDir: os.TempDir()}
+			defer agent.Close()
 
-			chunkStore, err := chunkStoreFromURL(storeURL, opt)
-			if err != nil {
-				return err
-			}
+			agent.setup = func(remote, operation string) error {
+				gitObjectName := expandGitObjectName(cfgFromGit, remote, operation)
+				if err := initConfig(gitObjectName); err != nil {
+					return err
+				}
+				if err := desyncconfig.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
+					return err
+				}
 
-			// Build the read store used for downloads, optionally wrapping the
-			// chunk store with a local cache tier. readStore.Close() closes the
-			// full chain (chunkStore and, if present, the cache store).
-			readStore, err := buildReadStore(cmd, chunkStore, cache, cacheRepair,
-				concurrency, errorRetry, clientCert, clientKey, caCert, trustInsecure, errorRetryInterval)
-			if err != nil {
-				chunkStore.Close()
-				return err
-			}
-			defer readStore.Close()
+				resolvedStore := cfg.ResolveStore(storeURL)
+				resolvedIndex := cfg.ResolveIndexStore(indexURL)
+				resolvedChunkSize := cfg.ResolveChunkSize(chunkSize)
 
-			if indexURL == "" {
-				indexURL, err = deriveIndexURL(storeURL)
+				if resolvedStore == "" {
+					return fmt.Errorf("--store is required")
+				}
+
+				opt, err := cfg.GetStoreOptionsFor(resolvedStore)
 				if err != nil {
 					return err
 				}
-			}
+				opt.N = concurrency
+				opt.ErrorRetry = errorRetry
+				if cmd.Flags().Changed("client-cert") {
+					opt.ClientCert = clientCert
+				}
+				if cmd.Flags().Changed("client-key") {
+					opt.ClientKey = clientKey
+				}
+				if cmd.Flags().Changed("ca-cert") {
+					opt.CACert = caCert
+				}
+				if cmd.Flags().Changed("trust-insecure") {
+					opt.TrustInsecure = trustInsecure
+				}
+				if cmd.Flags().Changed("error-retry-base-interval") {
+					opt.ErrorRetryBaseInterval = errorRetryInterval
+				}
 
-			idxOpt, err := cfg.GetStoreOptionsFor(indexURL)
-			if err != nil {
-				return err
-			}
-			idxOpt.N = concurrency
-			idxOpt.ErrorRetry = errorRetry
-			if cmd.Flags().Changed("client-cert") {
-				idxOpt.ClientCert = clientCert
-			}
-			if cmd.Flags().Changed("client-key") {
-				idxOpt.ClientKey = clientKey
-			}
-			if cmd.Flags().Changed("ca-cert") {
-				idxOpt.CACert = caCert
-			}
-			if cmd.Flags().Changed("trust-insecure") {
-				idxOpt.TrustInsecure = trustInsecure
-			}
-			if cmd.Flags().Changed("error-retry-base-interval") {
-				idxOpt.ErrorRetryBaseInterval = errorRetryInterval
-			}
+				chunkStore, err := chunkStoreFromURL(resolvedStore, opt)
+				if err != nil {
+					return err
+				}
 
-			indexStore, err := indexStoreFromURL(indexURL, idxOpt)
-			if err != nil {
-				return err
-			}
-			defer indexStore.Close()
+				// Build the read store used for downloads, optionally wrapping the
+				// chunk store with a local cache tier. readStore.Close() closes the
+				// full chain (chunkStore and, if present, the cache store).
+				readStore, err := buildReadStore(cmd, chunkStore, cache, cacheRepair,
+					concurrency, errorRetry, clientCert, clientKey, caCert, trustInsecure, errorRetryInterval)
+				if err != nil {
+					chunkStore.Close()
+					return err
+				}
 
-			minChunk, avgChunk, maxChunk, err := parseChunkSizeParam(chunkSize)
-			if err != nil {
-				return err
-			}
+				if resolvedIndex == "" {
+					resolvedIndex, err = deriveIndexURL(resolvedStore)
+					if err != nil {
+						readStore.Close()
+						return err
+					}
+				}
 
-			agent := &Agent{
-				writeStore:      chunkStore,
-				readStore:       readStore,
-				indexWriteStore: indexStore,
-				n:               concurrency,
-				minChunk:        minChunk,
-				avgChunk:        avgChunk,
-				maxChunk:        maxChunk,
-				tmpDir:          os.TempDir(),
+				idxOpt, err := cfg.GetStoreOptionsFor(resolvedIndex)
+				if err != nil {
+					readStore.Close()
+					return err
+				}
+				idxOpt.N = concurrency
+				idxOpt.ErrorRetry = errorRetry
+				if cmd.Flags().Changed("client-cert") {
+					idxOpt.ClientCert = clientCert
+				}
+				if cmd.Flags().Changed("client-key") {
+					idxOpt.ClientKey = clientKey
+				}
+				if cmd.Flags().Changed("ca-cert") {
+					idxOpt.CACert = caCert
+				}
+				if cmd.Flags().Changed("trust-insecure") {
+					idxOpt.TrustInsecure = trustInsecure
+				}
+				if cmd.Flags().Changed("error-retry-base-interval") {
+					idxOpt.ErrorRetryBaseInterval = errorRetryInterval
+				}
+
+				indexStore, err := indexStoreFromURL(resolvedIndex, idxOpt)
+				if err != nil {
+					readStore.Close()
+					return err
+				}
+
+				minChunk, avgChunk, maxChunk, err := parseChunkSizeParam(resolvedChunkSize)
+				if err != nil {
+					readStore.Close()
+					indexStore.Close()
+					return err
+				}
+
+				agent.writeStore = chunkStore
+				agent.readStore = readStore
+				agent.indexWriteStore = indexStore
+				agent.n = concurrency
+				agent.minChunk = minChunk
+				agent.avgChunk = avgChunk
+				agent.maxChunk = maxChunk
+				return nil
 			}
 
 			return agent.Run(ctx)
@@ -247,7 +268,8 @@ Configure Git LFS to use this agent:
 		desync.DefaultErrorRetryBaseInterval, "initial retry delay, increases linearly with each attempt")
 	flags.StringVar(&cfgFile, "config", "", "desync config file (default: $HOME/.config/desync/config.json)")
 	flags.StringVar(&cfgFromGit, "config-from-git", "",
-		"read desync config from a git object (e.g. origin/_desync:config.json)")
+		"read desync config from a git object; %(remote) and %(operation) are replaced\n"+
+			"with values from the LFS init message (e.g. %(remote)/_desync:config.json)")
 	flags.StringVar(&digestAlgorithm, "digest", "", "digest algorithm, sha512-256 or sha256 (default sha512-256)")
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+

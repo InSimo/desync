@@ -19,6 +19,7 @@ import (
 type initRequest struct {
 	Event               string `json:"event"`
 	Operation           string `json:"operation"`
+	Remote              string `json:"remote"`
 	Concurrent          bool   `json:"concurrent"`
 	ConcurrentTransfers int    `json:"concurrenttransfers"`
 }
@@ -87,6 +88,20 @@ type Agent struct {
 	tmpDir          string
 	enc             *json.Encoder
 	mu              sync.Mutex
+	// setup is called once from handleInit with remote and operation from the
+	// LFS init message. It expands %(remote)/%(operation) in cfgFromGit, loads
+	// config, and initializes writeStore/readStore/indexWriteStore on the Agent.
+	// Nil means stores are already initialized (used in tests).
+	setup func(remote, operation string) error
+}
+
+func (a *Agent) Close() {
+	if a.readStore != nil {
+		a.readStore.Close()
+	}
+	if a.indexWriteStore != nil {
+		a.indexWriteStore.Close()
+	}
 }
 
 // Run reads LFS protocol messages from stdin and dispatches handlers.
@@ -173,9 +188,18 @@ func (a *Agent) handleInit(raw json.RawMessage) {
 
 	var errMsg string
 
-	// Probe the index store.
-	if _, err := a.indexWriteStore.HasIndex(probeIndexName); err != nil {
-		errMsg = "index store not available: " + err.Error()
+	// Initialize stores using remote and operation from the init message.
+	if a.setup != nil {
+		if err := a.setup(req.Remote, req.Operation); err != nil {
+			errMsg = "initialization failed: " + err.Error()
+		}
+	}
+
+	// Probe the index store (only if setup succeeded).
+	if errMsg == "" {
+		if _, err := a.indexWriteStore.HasIndex(probeIndexName); err != nil {
+			errMsg = "index store not available: " + err.Error()
+		}
 	}
 
 	// Probe the chunk store (writeStore for uploads, readStore for downloads).
