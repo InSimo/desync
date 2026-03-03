@@ -55,6 +55,17 @@ type lfsError struct {
 	Message string `json:"message"`
 }
 
+type initResponse struct {
+	Error *lfsError `json:"error,omitempty"`
+}
+
+// probeIndexName and probeChunkID are dummy values used during init to verify
+// store connectivity. HasIndex/HasChunk returning (false, nil) is success;
+// only a non-nil error indicates a store problem.
+const probeIndexName = "0000/0000000000000000000000000000000000000000000000000000000000000000.caibx"
+
+var probeChunkID = desync.ChunkID{} // zero value
+
 // oidIndexName converts a Git LFS OID to the index file name used in the
 // desync index store. The first 4 characters of the OID are used as a
 // sharding prefix directory to avoid flat-directory hot spots:
@@ -157,10 +168,38 @@ func (a *Agent) runLoop(ctx context.Context, dec *json.Decoder, concurrentTransf
 }
 
 func (a *Agent) handleInit(raw json.RawMessage) {
-	// Reply with empty object to signal readiness.
+	var req initRequest
+	json.Unmarshal(raw, &req) // best-effort; fields have safe zero values
+
+	var errMsg string
+
+	// Probe the index store.
+	if _, err := a.indexWriteStore.HasIndex(probeIndexName); err != nil {
+		errMsg = "index store not available: " + err.Error()
+	}
+
+	// Probe the chunk store (writeStore for uploads, readStore for downloads).
+	if errMsg == "" {
+		var chunkErr error
+		switch req.Operation {
+		case "upload":
+			_, chunkErr = a.writeStore.HasChunk(probeChunkID)
+		default: // "download" and anything else
+			_, chunkErr = a.readStore.HasChunk(probeChunkID)
+		}
+		if chunkErr != nil {
+			errMsg = "chunk store not available: " + chunkErr.Error()
+		}
+	}
+
+	resp := initResponse{}
+	if errMsg != "" {
+		resp.Error = &lfsError{Code: 2, Message: errMsg}
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.enc.Encode(struct{}{})
+	a.enc.Encode(resp)
 }
 
 func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {

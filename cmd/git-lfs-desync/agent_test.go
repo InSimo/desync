@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -74,8 +75,24 @@ func TestParseChunkSizeParam(t *testing.T) {
 }
 
 func TestAgentInit(t *testing.T) {
+	chunkStore, err := desync.NewLocalStore(t.TempDir(), desync.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chunkStore.Close()
+	indexStore, err := desync.NewLocalIndexStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer indexStore.Close()
+
 	var buf bytes.Buffer
-	a := &Agent{enc: json.NewEncoder(&buf)}
+	a := &Agent{
+		writeStore:      chunkStore,
+		readStore:       chunkStore,
+		indexWriteStore: indexStore,
+		enc:             json.NewEncoder(&buf),
+	}
 
 	raw, _ := json.Marshal(initRequest{Event: "init", Operation: "upload"})
 	a.handleInit(raw)
@@ -84,9 +101,52 @@ func TestAgentInit(t *testing.T) {
 	if err := json.NewDecoder(&buf).Decode(&got); err != nil {
 		t.Fatalf("decoding init response: %v", err)
 	}
-	// Response should be an empty JSON object
-	if len(got) != 0 {
-		t.Errorf("expected empty object, got %v", got)
+	// Successful init: response should be an empty JSON object (no "error" key).
+	if _, hasErr := got["error"]; hasErr {
+		t.Errorf("expected no error in init response, got %v", got)
+	}
+}
+
+// errorStore is a minimal Store/WriteStore/IndexWriteStore that returns errors
+// for all operations — used to simulate unreachable stores during init.
+type errorStore struct{ msg string }
+
+func (s *errorStore) HasChunk(desync.ChunkID) (bool, error)          { return false, fmt.Errorf("%s", s.msg) }
+func (s *errorStore) GetChunk(desync.ChunkID) (*desync.Chunk, error) { return nil, fmt.Errorf("%s", s.msg) }
+func (s *errorStore) StoreChunk(*desync.Chunk) error                 { return fmt.Errorf("%s", s.msg) }
+func (s *errorStore) Close() error                                   { return nil }
+func (s *errorStore) String() string                                 { return "errorStore" }
+func (s *errorStore) HasIndex(string) (bool, error)                  { return false, fmt.Errorf("%s", s.msg) }
+func (s *errorStore) GetIndexReader(string) (io.ReadCloser, error)   { return nil, fmt.Errorf("%s", s.msg) }
+func (s *errorStore) GetIndex(string) (desync.Index, error)          { return desync.Index{}, fmt.Errorf("%s", s.msg) }
+func (s *errorStore) StoreIndex(string, desync.Index) error          { return fmt.Errorf("%s", s.msg) }
+
+func TestAgentInitStoreError(t *testing.T) {
+	bad := &errorStore{msg: "connection refused"}
+
+	var buf bytes.Buffer
+	a := &Agent{
+		writeStore:      bad,
+		readStore:       bad,
+		indexWriteStore: bad,
+		enc:             json.NewEncoder(&buf),
+	}
+
+	raw, _ := json.Marshal(initRequest{Event: "init", Operation: "upload"})
+	a.handleInit(raw)
+
+	var resp initResponse
+	if err := json.NewDecoder(&buf).Decode(&resp); err != nil {
+		t.Fatalf("decoding init response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error in init response, got none")
+	}
+	if resp.Error.Code != 2 {
+		t.Errorf("expected error code 2, got %d", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "connection refused") {
+		t.Errorf("expected error message to contain %q, got %q", "connection refused", resp.Error.Message)
 	}
 }
 
