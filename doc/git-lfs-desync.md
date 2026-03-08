@@ -168,7 +168,7 @@ GCS stores use [application default credentials](https://cloud.google.com/docs/a
 
 `git-lfs-desync` is invoked by Git itself during clone, fetch, and push operations, with the working directory set to the repository root. This means the desync config — containing S3 credentials and store options — normally needs to live at a fixed path on each developer's machine, making it awkward to onboard contributors or run in CI environments.
 
-`--config-from-git <object>` solves this by reading the config JSON directly from the repository's object database via `git cat-file --text-conv <object>`. The object name can be any git ref, tree path, or blob — for example, a file on a dedicated branch that never mingles with the main working tree.
+`--config-from-git <object>` solves this by reading the config JSON directly from the repository's object database via `git cat-file --textconv <object>`. The object name can be any git ref, tree path, or blob — for example, a file on a dedicated branch that never mingles with the main working tree.
 
 ### Template expansion
 
@@ -498,7 +498,7 @@ docker run -d \
   -p 9000:9000 \
   -e MINIO_ROOT_USER=minioadmin \
   -e MINIO_ROOT_PASSWORD=minioadmin \
-  quay.io/minio/minio server /data
+  minio/minio server /data
 ```
 
 Create a bucket:
@@ -575,8 +575,13 @@ The cache is not populated on upload — only downloads fill the cache.
 
 ### 6. Clone and verify download (cache populated on first pull)
 
+> **Note:** Use `GIT_LFS_SKIP_SMUDGE=1` during the clone. Without it, git-lfs
+> triggers the smudge filter during checkout — before the agent is configured in
+> the clone — and the download fails. Configure the agent first, then run
+> `git lfs pull` to fetch the objects.
+
 ```sh
-S3_ACCESS_KEY=minioadmin S3_SECRET_KEY=minioadmin git clone /tmp/lfs-bare /tmp/lfs-clone
+GIT_LFS_SKIP_SMUDGE=1 git clone /tmp/lfs-bare /tmp/lfs-clone
 cd /tmp/lfs-clone
 
 # Configure agent in the clone with the same local cache
@@ -611,4 +616,198 @@ A second `git lfs pull` (or any clone using the same `--cache` directory) will b
 ```sh
 docker rm -f minio-lfs
 rm -rf /tmp/lfs-repo /tmp/lfs-bare /tmp/lfs-clone /tmp/lfs-cache /tmp/git-lfs-desync
+```
+
+---
+
+## Local Testing with Garage and config-from-git
+
+[Garage](https://garagehq.deuxfleurs.fr/) is a self-hosted S3-compatible object store. This section tests the full upload/download cycle using Garage as the backend and `--config-from-git` to supply credentials — so that `git clone` can download LFS objects during the initial checkout without any per-machine configuration.
+
+> **Warning:** The Garage instance below uses a randomly generated `rpc_secret` and is bound to `localhost`. Do not expose it to the internet or untrusted networks.
+
+### 1. Start Garage
+
+Generate a config file with a random RPC secret and start the container:
+
+```sh
+mkdir -p /tmp/garage-meta /tmp/garage-data
+
+cat > /tmp/garage.toml << EOF
+metadata_dir = "/tmp/garage-meta"
+data_dir     = "/tmp/garage-data"
+replication_factor = 1
+rpc_bind_addr   = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret      = "$(openssl rand -hex 32)"
+
+[s3_api]
+s3_region    = "garage"
+api_bind_addr = "[::]:3900"
+root_domain  = ".s3.garage"
+EOF
+
+docker run -d \
+  --name garage-lfs \
+  -p 3900:3900 -p 3901:3901 \
+  -v /tmp/garage.toml:/etc/garage.toml \
+  -v /tmp/garage-meta:/tmp/garage-meta \
+  -v /tmp/garage-data:/tmp/garage-data \
+  dxflrs/garage:v2.2.0
+```
+
+Apply a single-node layout, create a bucket, and create an API key:
+
+```sh
+# Apply layout (Garage assigns to the only available node automatically)
+docker exec garage-lfs /garage layout assign -z dc1 -c 1G
+docker exec garage-lfs /garage layout apply --version 1
+
+# Create bucket
+docker exec garage-lfs /garage bucket create lfs-test
+
+# Create key and capture credentials
+docker exec garage-lfs /garage key create lfs-key
+# → outputs Key ID and Secret key — save these for the next step
+
+# Grant the key read+write access
+docker exec garage-lfs /garage bucket allow --read --write lfs-test --key lfs-key
+```
+
+### 2. Build the agent
+
+```sh
+go build -o /tmp/git-lfs-desync ./cmd/git-lfs-desync
+```
+
+### 3. Set up a local cache directory
+
+```sh
+mkdir -p /tmp/lfs-cache-garage
+```
+
+### 4. Set up a test repository
+
+```sh
+mkdir /tmp/garage-repo && cd /tmp/garage-repo
+git init
+git lfs install
+
+# Configure LFS agent for pushing (direct store args with S3 credentials from env)
+git config lfs.customtransfer.desync.path /tmp/git-lfs-desync
+git config lfs.customtransfer.desync.args \
+    "--store s3+http://localhost:3900/lfs-test/chunks/ \
+     --index-store s3+http://localhost:3900/lfs-test/index/"
+git config lfs.customtransfer.desync.concurrent true
+git config lfs.standalonetransferagent desync
+git config lfs.url "https://localhost"
+
+git lfs track "*.bin"
+git add .gitattributes
+git commit -m "Track .bin files with LFS"
+```
+
+### 5. Commit the desync config on an orphan `_desync` branch
+
+Replace `<KEY_ID>` and `<SECRET_KEY>` with the values printed by `garage key create` above.
+
+```sh
+cd /tmp/garage-repo
+git checkout --orphan _desync
+git rm -rf .
+
+cat > config.json << 'EOF'
+{
+  "s3-credentials": {
+    "http://localhost:3900": {
+      "access-key": "<KEY_ID>",
+      "secret-key": "<SECRET_KEY>",
+      "aws-region": "garage"
+    }
+  },
+  "defaults": {
+    "stores":      ["s3+http://localhost:3900/lfs-test/chunks/"],
+    "index-store": "s3+http://localhost:3900/lfs-test/index/"
+  }
+}
+EOF
+
+git add config.json
+git commit -m "desync config"
+git checkout master
+```
+
+The `aws-region` value (`"garage"`) must match the `s3_region` set in `garage.toml`.
+
+### 6. Add a large file and push
+
+```sh
+cd /tmp/garage-repo
+dd if=/dev/urandom of=large.bin bs=1M count=20
+ORIGINAL_SHA=$(sha256sum large.bin)
+
+git add large.bin
+git commit -m "Add large test file"
+
+# Create a bare repo to push to (simulates a remote)
+git init --bare /tmp/garage-bare
+git remote add origin /tmp/garage-bare
+
+# Push master (LFS objects go to Garage) and the _desync config branch
+S3_ACCESS_KEY=<KEY_ID> S3_SECRET_KEY=<SECRET_KEY> git push origin master
+git push origin _desync
+```
+
+Verify that chunks and the index landed in Garage:
+
+```sh
+docker exec garage-lfs /garage bucket info lfs-test
+# → shows object count and total size
+```
+
+### 7. Clone with LFS working during the initial checkout
+
+Pass the LFS agent config via `git -c` so the smudge filter can download LFS objects during `git clone` — no `GIT_LFS_SKIP_SMUDGE=1` or follow-up `git lfs pull` needed.
+
+> **Note:** The remote name is hardcoded as `origin` in `--config-from-git` because the
+> `%(remote)` placeholder is not substituted when the agent is invoked by the smudge
+> filter during checkout. `origin` is always correct for an initial `git clone`.
+
+```sh
+git \
+  -c lfs.customtransfer.desync.path=/tmp/git-lfs-desync \
+  -c 'lfs.customtransfer.desync.args=--config-from-git origin/_desync:config.json --cache /tmp/lfs-cache-garage' \
+  -c lfs.customtransfer.desync.concurrent=true \
+  -c lfs.standalonetransferagent=desync \
+  -c lfs.url=https://localhost \
+  clone /tmp/garage-bare /tmp/garage-clone
+
+# Verify integrity
+sha256sum /tmp/garage-clone/large.bin
+# Must match $ORIGINAL_SHA
+```
+
+The agent reads `origin/_desync:config.json` from the cloned repository's object database to obtain S3 credentials — no credentials are needed on the command line or in any local config file.
+
+After the clone, chunks are cached in `/tmp/lfs-cache-garage`:
+
+```sh
+ls /tmp/lfs-cache-garage/ | wc -l
+# → subdirectory entries (chunks stored in two-character prefix directories)
+```
+
+A second clone (or `git lfs pull`) using the same `--cache` directory is served entirely from the local cache.
+
+### 8. Cleanup
+
+```sh
+docker rm -f garage-lfs
+# Garage writes data as root inside the container; use Docker to remove it
+docker run --rm \
+  -v /tmp/garage-meta:/data/meta \
+  -v /tmp/garage-data:/data/chunks \
+  alpine sh -c 'rm -rf /data/meta/* /data/chunks/*'
+rmdir /tmp/garage-meta /tmp/garage-data
+rm -rf /tmp/garage-repo /tmp/garage-bare /tmp/garage-clone \
+       /tmp/lfs-cache-garage /tmp/garage.toml /tmp/git-lfs-desync
 ```
