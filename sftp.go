@@ -211,56 +211,7 @@ func (s *SFTPStore) HasChunk(id ChunkID) (bool, error) {
 // Prune removes any chunks from the store that are not contained in a list
 // of chunks
 func (s *SFTPStore) Prune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	c := <-s.pool
-	defer func() { s.pool <- c }()
-	walker := c.client.Walk(c.path)
-
-	for walker.Step() {
-		// See if we're meant to stop
-		select {
-		case <-ctx.Done():
-			return Interrupted{}
-		default:
-		}
-		if err := walker.Err(); err != nil {
-			return err
-		}
-		info := walker.Stat()
-		if info.IsDir() { // Skip dirs
-			continue
-		}
-		path := walker.Path()
-		if !strings.HasSuffix(path, CompressedChunkExt) { // Skip files without chunk extension
-			continue
-		}
-		// Skip compressed chunks if this is running in uncompressed mode and vice-versa
-		var sID string
-		if c.opt.Uncompressed {
-			if !strings.HasSuffix(path, UncompressedChunkExt) {
-				return nil
-			}
-			sID = strings.TrimSuffix(filepath.Base(path), UncompressedChunkExt)
-		} else {
-			if !strings.HasSuffix(path, CompressedChunkExt) {
-				return nil
-			}
-			sID = strings.TrimSuffix(filepath.Base(path), CompressedChunkExt)
-		}
-		// Convert the name into a checksum, if that fails we're probably not looking
-		// at a chunk file and should skip it.
-		id, err := ChunkIDFromString(sID)
-		if err != nil {
-			continue
-		}
-		// See if the chunk we're looking at is in the list we want to keep, if not
-		// remove it.
-		if _, ok := ids[id]; !ok {
-			if err = s.RemoveChunk(id); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return commonPrune(ctx, ids, s)
 }
 
 func (s *SFTPStoreBase) markerPathFromID(id ChunkID) string {

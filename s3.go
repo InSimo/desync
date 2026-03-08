@@ -157,33 +157,7 @@ func (s S3Store) RemoveChunk(id ChunkID) error {
 
 // Prune removes any chunks from the store that are not contained in a list (map)
 func (s S3Store) Prune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	doneCh := make(chan struct{})
-	defer close(doneCh)
-	objectCh := s.client.ListObjectsV2(s.bucket, s.prefix, true, doneCh)
-	for object := range objectCh {
-		if object.Err != nil {
-			return object.Err
-		}
-		// See if we're meant to stop
-		select {
-		case <-ctx.Done():
-			return Interrupted{}
-		default:
-		}
-
-		id, err := s.idFromName(object.Key)
-		if err != nil {
-			continue
-		}
-
-		// Drop the chunk if it's not on the list
-		if _, ok := ids[id]; !ok {
-			if err = s.RemoveChunk(id); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return commonPrune(ctx, ids, s)
 }
 
 func (s S3Store) nameFromID(id ChunkID) string {

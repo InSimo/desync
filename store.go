@@ -32,6 +32,13 @@ type WriteStore interface {
 type PruneStore interface {
 	WriteStore
 	Prune(ctx context.Context, ids map[ChunkID]struct{}) error
+
+	// ListChunks returns every chunk-related entry in the store together with
+	// its pruning status.
+	ListChunks(ctx context.Context) ([]ChunkEntry, error)
+
+	// DeleteChunk removes the chunk data file for id. No-op if absent.
+	DeleteChunk(id ChunkID) error
 }
 
 // ChunkStatus describes the pruning state of a chunk in the store.
@@ -65,10 +72,6 @@ type SafePruneStore interface {
 	// already-prunable chunks are deleted (or restored if protected).
 	SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) error
 
-	// ListChunks returns every chunk-related entry in the store together with
-	// its pruning status. Called twice by commonSafePrune (once per phase).
-	ListChunks(ctx context.Context) ([]ChunkEntry, error)
-
 	// HasPrunable reports whether the .prunable companion for id is present.
 	// Called by writers to detect chunks that need protect markers before the
 	// index is committed.
@@ -91,10 +94,6 @@ type SafePruneStore interface {
 	// HasProtect reports whether the .protect companion for id is present.
 	// Called by the pruner as the TOCTOU guard before deleting a prunable chunk.
 	HasProtect(id ChunkID) (bool, error)
-
-	// DeleteChunk removes the chunk data file for id. No-op if absent.
-	// Called by the pruner after confirming no protect marker is present.
-	DeleteChunk(id ChunkID) error
 }
 
 // IndexStore is implemented by stores that hold indexes.

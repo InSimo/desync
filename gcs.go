@@ -222,30 +222,7 @@ func (s GCStore) RemoveChunk(id ChunkID) error {
 
 // Prune removes any chunks from the store that are not contained in a list (map)
 func (s GCStore) Prune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	query := &storage.Query{Prefix: s.prefix}
-	it := s.client.Objects(ctx, query)
-	for {
-		attrs, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		id, err := s.idFromName(attrs.Name)
-		if err != nil {
-			continue
-		}
-
-		// Drop the chunk if it's not on the list
-		if _, ok := ids[id]; !ok {
-			if err = s.RemoveChunk(id); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return commonPrune(ctx, ids, s)
 }
 
 func (s GCStore) nameFromID(id ChunkID) string {

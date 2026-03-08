@@ -166,56 +166,7 @@ func (s LocalStore) Verify(ctx context.Context, n int, repair bool, w io.Writer)
 // Prune removes any chunks from the store that are not contained in a list
 // of chunks
 func (s LocalStore) Prune(ctx context.Context, ids map[ChunkID]struct{}) error {
-	// Go through all chunks underneath Base, filtering out other directories and files
-	err := filepath.Walk(s.Base, func(path string, info os.FileInfo, err error) error {
-		// See if we're meant to stop
-		select {
-		case <-ctx.Done():
-			return Interrupted{}
-		default:
-		}
-		if err != nil { // failed to walk? => fail
-			return err
-		}
-		if info.IsDir() { // Skip dirs
-			return nil
-		}
-
-		// If the chunk is only partially downloaded remove it
-		if strings.HasPrefix(filepath.Base(path), tmpChunkPrefix) {
-			_ = os.Remove(path)
-			return nil
-		}
-
-		// Skip compressed chunks if this is running in uncompressed mode and vice-versa
-		var sID string
-		if s.Opt.Uncompressed {
-			if !strings.HasSuffix(path, UncompressedChunkExt) {
-				return nil
-			}
-			sID = strings.TrimSuffix(filepath.Base(path), UncompressedChunkExt)
-		} else {
-			if !strings.HasSuffix(path, CompressedChunkExt) {
-				return nil
-			}
-			sID = strings.TrimSuffix(filepath.Base(path), CompressedChunkExt)
-		}
-		// Convert the name into a checksum, if that fails we're probably not looking
-		// at a chunk file and should skip it.
-		id, err := ChunkIDFromString(sID)
-		if err != nil {
-			return nil
-		}
-		// See if the chunk we're looking at is in the list we want to keep, if not
-		// remove it.
-		if _, ok := ids[id]; !ok {
-			if err = s.RemoveChunk(id); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	return err
+	return commonPrune(ctx, ids, s)
 }
 
 // HasChunk returns true if the chunk is in the store
