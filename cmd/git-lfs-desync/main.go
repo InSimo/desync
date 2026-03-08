@@ -36,7 +36,7 @@ func expandGitObjectName(template, remote, operation string) string {
 
 func initConfig(gitObjectName string) error {
 	if gitObjectName != "" {
-		out, err := exec.Command("git", "cat-file", "--text-conv", gitObjectName).Output()
+		out, err := exec.Command("git", "cat-file", "--textconv", gitObjectName).Output()
 		if err != nil {
 			return fmt.Errorf("reading config from git object %q: %w", gitObjectName, err)
 		}
