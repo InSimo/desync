@@ -242,27 +242,43 @@ latency of your bucket (typically a few seconds).
 
 ## State Machine
 
+### Phase 1 – Orphan Cleanup
+
+Each prune run first removes stray marker files with no accompanying `.cacnk`:
+
 ```
-                   ┌───────────────────────────────────────────────────────────┐
-                   │  prune: id in keep-set → DeletePrunable + DeleteProtect      │
-                   │                                                             │
- ┌─────────────┐   │                                                             │
- │             │───┴──[run N, not in keep-set]──────────────────────────────►  │ .cacnk
- │   .cacnk    │                                                                │ .cacnk.prunable
- │  (Normal)   │◄──[prune: HasProtect=true → DeletePrunable+DeleteProtect]──────  │ (Prunable)
- │             │                                                                │    │
- └─────────────┘                                                                │    │ writer: HasPrunable=true
-       ▲                                                                        └────┘ → CreateProtect
-       │ prune: HasProtect=true                                                      │
-       │ → DeletePrunable+DeleteProtect                                                ▼
-       │                                                                   .cacnk + .prunable
-       │                                                                   .cacnk.protect
-       │                                                                   (Protected)
-       │                                                                        │
-       └────────────────────────────────────────────────────────────────────────┘
-                                                                                │
-                                              prune: HasProtect=false           │ prune: HasProtect=false
-                                              → DeleteChunk + DeletePrunable      │ → DeleteChunk + DeletePrunable
-                                                                                ▼
-                                                                             deleted
+  .cacnk.prunable  (no .cacnk)  ──[pruner: DeletePrunable]──► gone
+  .cacnk.protect   (no .cacnk)  ──[pruner: DeleteProtect]───► gone
 ```
+
+### Phase 2 – Main State Machine
+
+```
+  ┌────────────────────────────────────────────────────────────────────────────────┐
+  │                                   [4]                                          │
+  │                                                                                │
+  ┌─────────────┐   [1]   ┌──────────────────┐   [3]   ┌──────────────────┐       │
+  │   Normal    │────────►│    Prunable      │────────►│    Protected     │───────┘
+  │   .cacnk    │◄────────│   .cacnk         │         │   .cacnk         │
+  └─────────────┘  [2]    │   .cacnk.prunable│         │   .cacnk.prunable│
+                          └──────────────────┘         │   .cacnk.protect │
+                                   │                   └──────────────────┘
+                                  [5]                          │[5]
+                                   ▼                           ▼
+                          ┌────────────────────────────────────────────┐
+                          │                  Deleted                   │
+                          └────────────────────────────────────────────┘
+                                                   │[6]
+                                                   └──────────────────────────────────────────► Protected
+```
+
+| # | Trigger | Action |
+|---|---------|--------|
+| [1] | pruner Phase 2: chunk **not in keep-set**, state Normal | `CreatePrunable` |
+| [2] | pruner Phase 2: chunk **in keep-set**, state Prunable | `DeletePrunable` |
+|     | pruner Phase 2: chunk not in keep-set, fresh `HasProtect=true` | `DeletePrunable + DeleteProtect` |
+| [3] | writer: `HasPrunable=true` | `CreateProtect` |
+| [4] | pruner Phase 2: chunk **in keep-set**, state Protected | `DeletePrunable + DeleteProtect` |
+|     | pruner Phase 2: chunk not in keep-set, fresh `HasProtect=true` | `DeletePrunable + DeleteProtect` |
+| [5] | pruner Phase 2: fresh `HasProtect=false` (Prunable or Protected) | `DeleteChunk + DeletePrunable` |
+| [6] | writer `SafePrunePreCommit`: chunk missing after `2P` wait | `StoreChunk + CreateProtect` |
