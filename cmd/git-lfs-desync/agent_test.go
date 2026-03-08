@@ -812,6 +812,8 @@ func TestExpandGitObjectName(t *testing.T) {
 		{"%(remote)/%(operation)/config.json", "origin", "download", "origin/download/config.json"},
 		{"no-placeholders:config.json", "origin", "upload", "no-placeholders:config.json"},
 		{"", "origin", "upload", ""},
+		// Empty remote (smudge filter during git clone) defaults to "origin".
+		{"%(remote)/_desync:config.json", "", "download", "origin/_desync:config.json"},
 	}
 	for _, c := range cases {
 		got := expandGitObjectName(c.tmpl, c.remote, c.op)

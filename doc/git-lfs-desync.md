@@ -18,37 +18,37 @@ go build -o /usr/local/bin/git-lfs-desync ./cmd/git-lfs-desync
 
 ## Supported Backends
 
-| Protocol | URL Scheme | Notes |
-|---|---|---|
-| **Local filesystem** | `/path/to/dir` or `./dir` | No credentials needed; simplest setup |
-| **S3-compatible** | `s3+https://host/bucket/prefix/` | AWS S3, MinIO, Ceph RGW, etc. |
-| **SFTP** | `sftp://user@host/path/` | Uses SSH keys or agent |
-| **HTTP/HTTPS** | `https://host/path/` | Requires a write-capable HTTP store server |
-| **Google Cloud Storage** | `gs://bucket/prefix/` | Uses GCS application default credentials |
+| Protocol                 | URL Scheme                       | Notes                                      |
+| ------------------------ | -------------------------------- | ------------------------------------------ |
+| **Local filesystem**     | `/path/to/dir` or `./dir`        | No credentials needed; simplest setup      |
+| **S3-compatible**        | `s3+https://host/bucket/prefix/` | AWS S3, MinIO, Ceph RGW, etc.              |
+| **SFTP**                 | `sftp://user@host/path/`         | Uses SSH keys or agent                     |
+| **HTTP/HTTPS**           | `https://host/path/`             | Requires a write-capable HTTP store server |
+| **Google Cloud Storage** | `gs://bucket/prefix/`            | Uses GCS application default credentials   |
 
 SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent.
 
 ## Flags
 
-| Flag | Default | Description |
-|---|---|---|
-| `-s`, `--store` | config default or *(required)* | Chunk store location. See [Supported Backends](#supported-backends) for URL schemes. May be set via the `defaults.stores` config key. |
-| `--index-store` | config default, then derived from `--store` | Index store location. Falls back to `defaults.index-store` in the config, then to replacing the last path segment of `--store` with `index` (or a sibling `index` directory for local paths). |
-| `-c`, `--cache` | — | Local chunk store used as a download cache. On a cache miss, the chunk is fetched from `--store` and saved to the cache; subsequent downloads are served from the cache. Uploads always go directly to `--store`. Accepts the same URL schemes as `--store`. |
-| `--cache-repair` | `true` | If the cache returns a corrupt chunk, re-download it from `--store` and replace the cached copy. |
-| `-n`, `--concurrency` | `10` | Number of concurrent goroutines for chunk I/O. |
-| `-m`, `--chunk-size` | config default, then `16:64:256` | Min:avg:max chunk size in KB. May be set via the `defaults.chunk-size` config key. |
-| `-e`, `--error-retry` | `3` | Number of times to retry on network error. |
-| `-b`, `--error-retry-base-interval` | `500ms` | Initial retry delay; increases linearly with each attempt. |
-| `--client-cert` | — | Path to client certificate for mutual TLS. |
-| `--client-key` | — | Path to client key for mutual TLS. |
-| `--ca-cert` | — | CA certificate file to trust instead of the OS trust store. |
-| `-t`, `--trust-insecure` | `false` | Trust invalid/self-signed certificates. |
-| `--config` | `$HOME/.config/desync/config.json` | desync config file for S3 credentials and store options. Mutually exclusive with `--config-from-git`. |
-| `--config-from-git` | — | Read the desync config from a git object. `%(remote)` and `%(operation)` are replaced with values from the LFS init message (e.g. `%(remote)/_desync:config.json`). Mutually exclusive with `--config`. |
-| `--digest` | config default, then `sha512-256` | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. May be set via the `defaults.digest` config key. |
-| `--indexes` | `false` | Translate LFS OIDs to desync index names and write to stdout (one per line). Reads OIDs from positional args, or from the first whitespace-delimited token of each stdin line when no args are given (blank lines are skipped). When set, no store configuration is needed and the agent exits immediately without starting the LFS transfer protocol. See [Index and Chunk Pruning](#index-and-chunk-pruning). |
-| `--safe-pruning` | `false` | Enable the safe concurrent pruning protocol on the upload path. After each successful upload, calls `RescueChunks` on the chunk store to recover any chunks that a concurrent `desync prune --safe-pruning` may have quarantined between the `StoreChunk` and `StoreIndex` steps. Must be used together with `desync prune --safe-pruning` and `desync index-prune --safe-index-pruning`. Supported by all writable backends (local, S3, SFTP, GCS). See [Index and Chunk Pruning](#index-and-chunk-pruning) and [doc/safe-pruning.md](safe-pruning.md). |
+| Flag                                | Default                                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-s`, `--store`                     | config default or _(required)_              | Chunk store location. See [Supported Backends](#supported-backends) for URL schemes. May be set via the `defaults.stores` config key.                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `--index-store`                     | config default, then derived from `--store` | Index store location. Falls back to `defaults.index-store` in the config, then to replacing the last path segment of `--store` with `index` (or a sibling `index` directory for local paths).                                                                                                                                                                                                                                                                                                                                                            |
+| `-c`, `--cache`                     | —                                           | Local chunk store used as a download cache. On a cache miss, the chunk is fetched from `--store` and saved to the cache; subsequent downloads are served from the cache. Uploads always go directly to `--store`. Accepts the same URL schemes as `--store`.                                                                                                                                                                                                                                                                                             |
+| `--cache-repair`                    | `true`                                      | If the cache returns a corrupt chunk, re-download it from `--store` and replace the cached copy.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `-n`, `--concurrency`               | `10`                                        | Number of concurrent goroutines for chunk I/O.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `-m`, `--chunk-size`                | config default, then `16:64:256`            | Min:avg:max chunk size in KB. May be set via the `defaults.chunk-size` config key.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `-e`, `--error-retry`               | `3`                                         | Number of times to retry on network error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `-b`, `--error-retry-base-interval` | `500ms`                                     | Initial retry delay; increases linearly with each attempt.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `--client-cert`                     | —                                           | Path to client certificate for mutual TLS.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `--client-key`                      | —                                           | Path to client key for mutual TLS.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `--ca-cert`                         | —                                           | CA certificate file to trust instead of the OS trust store.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `-t`, `--trust-insecure`            | `false`                                     | Trust invalid/self-signed certificates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `--config`                          | `$HOME/.config/desync/config.json`          | desync config file for S3 credentials and store options. Mutually exclusive with `--config-from-git`.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `--config-from-git`                 | —                                           | Read the desync config from a git object. `%(remote)` and `%(operation)` are replaced with values from the LFS init message (e.g. `%(remote)/_desync:config.json`). `%(remote)` defaults to `origin` when the remote is not available (e.g. smudge filter during `git clone`). Mutually exclusive with `--config`.                                                                                                                                                                                                                                       |
+| `--digest`                          | config default, then `sha512-256`           | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. May be set via the `defaults.digest` config key.                                                                                                                                                                                                                                                                                                                                                        |
+| `--indexes`                         | `false`                                     | Translate LFS OIDs to desync index names and write to stdout (one per line). Reads OIDs from positional args, or from the first whitespace-delimited token of each stdin line when no args are given (blank lines are skipped). When set, no store configuration is needed and the agent exits immediately without starting the LFS transfer protocol. See [Index and Chunk Pruning](#index-and-chunk-pruning).                                                                                                                                          |
+| `--safe-pruning`                    | `false`                                     | Enable the safe concurrent pruning protocol on the upload path. After each successful upload, calls `RescueChunks` on the chunk store to recover any chunks that a concurrent `desync prune --safe-pruning` may have quarantined between the `StoreChunk` and `StoreIndex` steps. Must be used together with `desync prune --safe-pruning` and `desync index-prune --safe-index-pruning`. Supported by all writable backends (local, S3, SFTP, GCS). See [Index and Chunk Pruning](#index-and-chunk-pruning) and [doc/safe-pruning.md](safe-pruning.md). |
 
 ## Config defaults
 
@@ -71,26 +71,27 @@ CLI --index-store  >  defaults.index-store  >  derived from --store
 ```json
 {
   "defaults": {
-    "digest":      "sha512-256",
-    "stores":      ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"],
+    "digest": "sha512-256",
+    "stores": ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"],
     "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/",
-    "chunk-size":  "16:64:256"
+    "chunk-size": "16:64:256"
   }
 }
 ```
 
-| Key | Type | Description |
-|---|---|---|
-| `defaults.stores` | array of strings | Chunk store(s). The first entry is used as the single store for `git-lfs-desync`. Additional entries are ignored by this command (but used by multi-store `desync` subcommands). |
-| `defaults.index-store` | string | Index store URL or path. |
-| `defaults.digest` | string | Digest algorithm (`sha512-256` or `sha256`). |
-| `defaults.chunk-size` | string | Min:avg:max chunk size in KB, e.g. `"16:64:256"`. |
+| Key                    | Type             | Description                                                                                                                                                                      |
+| ---------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defaults.stores`      | array of strings | Chunk store(s). The first entry is used as the single store for `git-lfs-desync`. Additional entries are ignored by this command (but used by multi-store `desync` subcommands). |
+| `defaults.index-store` | string           | Index store URL or path.                                                                                                                                                         |
+| `defaults.digest`      | string           | Digest algorithm (`sha512-256` or `sha256`).                                                                                                                                     |
+| `defaults.chunk-size`  | string           | Min:avg:max chunk size in KB, e.g. `"16:64:256"`.                                                                                                                                |
 
 ### Example: store URL in config, no per-invocation flags
 
 ```sh
 cat ~/.config/desync/config.json
 ```
+
 ```json
 {
   "s3-credentials": {
@@ -172,7 +173,7 @@ GCS stores use [application default credentials](https://cloud.google.com/docs/a
 
 ### Template expansion
 
-The `--config-from-git` value is a template: `%(remote)` is replaced with the remote name from the LFS init message, and `%(operation)` is replaced with the operation (`upload` or `download`). This lets you parameterise the config object name so the correct config is loaded automatically based on context.
+The `--config-from-git` value is a template: `%(remote)` is replaced with the remote name from the LFS init message, and `%(operation)` is replaced with the operation (`upload` or `download`). This lets you parameterise the config object name so the correct config is loaded automatically based on context. If the remote name is not available — for example when the smudge filter invokes the agent during `git clone` — `%(remote)` defaults to `origin`.
 
 For example:
 
@@ -376,13 +377,13 @@ Use this approach when uploads or downloads may be running at the same time as t
 args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ --safe-pruning
 ```
 
-**Step 1 — prune orphaned chunks** (using *all* current indexes — including stale ones — as the keep set):
+**Step 1 — prune orphaned chunks** (using _all_ current indexes — including stale ones — as the keep set):
 
 ```sh
 desync prune -s /path/to/chunks --index-store /path/to/indexes --safe-pruning --yes
 ```
 
-Because stale indexes are still present, the chunks they reference are included in the keep set and are not deleted yet. Only chunks not referenced by *any* index are removed. `--safe-pruning` additionally uses the two-run protocol to avoid deleting chunks that a concurrent upload is in the process of writing (see [doc/safe-pruning.md](safe-pruning.md)).
+Because stale indexes are still present, the chunks they reference are included in the keep set and are not deleted yet. Only chunks not referenced by _any_ index are removed. `--safe-pruning` additionally uses the two-run protocol to avoid deleting chunks that a concurrent upload is in the process of writing (see [doc/safe-pruning.md](safe-pruning.md)).
 
 **Step 2 — prune stale indexes:**
 
@@ -769,14 +770,10 @@ docker exec garage-lfs /garage bucket info lfs-test
 
 Pass the LFS agent config via `git -c` so the smudge filter can download LFS objects during `git clone` — no `GIT_LFS_SKIP_SMUDGE=1` or follow-up `git lfs pull` needed.
 
-> **Note:** The remote name is hardcoded as `origin` in `--config-from-git` because the
-> `%(remote)` placeholder is not substituted when the agent is invoked by the smudge
-> filter during checkout. `origin` is always correct for an initial `git clone`.
-
 ```sh
 git \
   -c lfs.customtransfer.desync.path=/tmp/git-lfs-desync \
-  -c 'lfs.customtransfer.desync.args=--config-from-git origin/_desync:config.json --cache /tmp/lfs-cache-garage' \
+  -c 'lfs.customtransfer.desync.args=--config-from-git %(remote)/_desync:config.json --cache /tmp/lfs-cache-garage' \
   -c lfs.customtransfer.desync.concurrent=true \
   -c lfs.standalonetransferagent=desync \
   -c lfs.url=https://localhost \

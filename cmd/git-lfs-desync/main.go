@@ -28,7 +28,13 @@ var digestAlgorithm string
 
 // expandGitObjectName replaces %(fieldname) placeholders in template.
 // Supported fields: remote, operation.
+// If remote is empty (e.g. when invoked by the smudge filter during git clone),
+// it defaults to "origin" so that %(remote)/_desync:config.json works without
+// hardcoding the remote name.
 func expandGitObjectName(template, remote, operation string) string {
+	if remote == "" {
+		remote = "origin"
+	}
 	s := strings.ReplaceAll(template, "%(remote)", remote)
 	s = strings.ReplaceAll(s, "%(operation)", operation)
 	return s
@@ -272,7 +278,8 @@ Configure Git LFS to use this agent:
 	flags.StringVar(&cfgFile, "config", "", "desync config file (default: $HOME/.config/desync/config.json)")
 	flags.StringVar(&cfgFromGit, "config-from-git", "",
 		"read desync config from a git object; %(remote) and %(operation) are replaced\n"+
-			"with values from the LFS init message (e.g. %(remote)/_desync:config.json)")
+			"with values from the LFS init message (e.g. %(remote)/_desync:config.json);\n"+
+			"%(remote) defaults to \"origin\" when the remote is not available (e.g. smudge filter during git clone)")
 	flags.StringVar(&digestAlgorithm, "digest", "", "digest algorithm, sha512-256 or sha256 (default sha512-256)")
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
