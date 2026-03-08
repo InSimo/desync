@@ -535,7 +535,6 @@ git config lfs.customtransfer.desync.args \
      --index-store s3+http://localhost:9000/lfs-test/index/ \
      --cache /tmp/lfs-cache \
      --safe-pruning"
-git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 # Standalone mode requires a dummy lfs.url (no real LFS server)
 git config lfs.url "https://localhost"
@@ -592,7 +591,6 @@ git config lfs.customtransfer.desync.args \
      --index-store s3+http://localhost:9000/lfs-test/index/ \
      --cache /tmp/lfs-cache \
      --safe-pruning"
-git config lfs.customtransfer.desync.concurrent true
 git config lfs.standalonetransferagent desync
 git config lfs.url "https://localhost"
 
@@ -625,7 +623,7 @@ rm -rf /tmp/lfs-repo /tmp/lfs-bare /tmp/lfs-clone /tmp/lfs-cache /tmp/git-lfs-de
 
 [Garage](https://garagehq.deuxfleurs.fr/) is a self-hosted S3-compatible object store. This section tests the full upload/download cycle using Garage as the backend and `--config-from-git` to supply credentials — so that `git clone` can download LFS objects during the initial checkout without any per-machine configuration.
 
-> **Warning:** The Garage instance below uses a randomly generated `rpc_secret` and is bound to `localhost`. Do not expose it to the internet or untrusted networks.
+> **Warning:** The Garage instance below serves the S3 API over unencrypted HTTP. For production use, place an HTTPS reverse proxy in front of it. Keep it bound to `localhost` and tear it down when you are done testing.
 
 ### 1. Start Garage
 
@@ -650,7 +648,7 @@ EOF
 
 docker run -d \
   --name garage-lfs \
-  -p 3900:3900 -p 3901:3901 \
+  -p 3900:3900 \
   -v /tmp/garage.toml:/etc/garage.toml \
   -v /tmp/garage-meta:/tmp/garage-meta \
   -v /tmp/garage-data:/tmp/garage-data \
@@ -729,6 +727,11 @@ cat > config.json << 'EOF'
   "defaults": {
     "stores":      ["s3+http://localhost:3900/lfs-test/chunks/"],
     "index-store": "s3+http://localhost:3900/lfs-test/index/"
+  },
+  "store-options": {
+    "s3+http://localhost:3900/lfs-test/chunks/": {
+      "safe-pruning": true
+    }
   }
 }
 EOF
@@ -774,7 +777,6 @@ Pass the LFS agent config via `git -c` so the smudge filter can download LFS obj
 git \
   -c lfs.customtransfer.desync.path=/tmp/git-lfs-desync \
   -c 'lfs.customtransfer.desync.args=--config-from-git %(remote)/_desync:config.json --cache /tmp/lfs-cache-garage' \
-  -c lfs.customtransfer.desync.concurrent=true \
   -c lfs.standalonetransferagent=desync \
   -c lfs.url=https://localhost \
   clone /tmp/garage-bare /tmp/garage-clone
