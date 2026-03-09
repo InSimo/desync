@@ -489,14 +489,29 @@ desync prune -s /some/local/store index1.caibx index2.caibx
 desync prune -s /some/local/store --index-store /some/index/store
 ```
 
-Use `--dry-run` to see what would be deleted without making any changes. The `--yes` flag is not required and cannot be combined with `--dry-run`. For a store with safe-pruning enabled the output also breaks down how many chunks would be marked for deletion and how many are currently protected by active writers.
+Use `--dry-run` to see what would be deleted without making any changes. The `--yes` flag is not required and cannot be combined with `--dry-run`. Stats are always printed after a successful prune run, showing stored and deduplicated sizes alongside chunk counts, and a final line with the total number of indexes and their combined size. For a store with safe-pruning enabled the output also breaks down how many chunks would be marked for deletion and how many are currently protected by active writers.
 
 ```text
 desync prune -s /some/local/store --dry-run index1.caibx index2.caibx
 ```
 
+Normal (non-safe) pruning output:
+
 ```text
-Dry run: would delete 42 chunks from '/some/local/store'
+42 chunks (1.2 GiB stored) would be deleted from '/some/local/store'
+1337 chunks (38.4 GiB stored, 41.0 GiB deduplicated) kept in '/some/local/store'
+Total: 2 index(es), 41.5 GiB
+```
+
+Safe-pruning output (two-pass protocol):
+
+```text
+Pruning '/some/local/store':
+  42 chunks (1.2 GiB stored) would be deleted
+  15 chunks (450.0 MiB stored) would be marked for deletion
+  3 chunks (90.0 MiB stored) protected by active writers
+  1337 chunks (38.4 GiB stored, 41.0 GiB deduplicated) kept
+Total: 2 index(es), 41.5 GiB
 ```
 
 Use `--report-missing` to detect chunks that are referenced by indexes but absent from the store. The report is printed after pruning completes, and the command exits with a non-zero status if any missing chunks are found. It can be combined with `--dry-run`.
