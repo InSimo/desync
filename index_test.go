@@ -170,7 +170,7 @@ func TestChunkStreamIntegrity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	index, err := ChunkStream(context.Background(), c, s, 10)
+	index, err := ChunkStream(context.Background(), &c, s, 10, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,6 +19,7 @@ type pruneOptions struct {
 	yes           bool
 	finalize      bool
 	reportMissing bool
+	dryRun        bool
 }
 
 func newPruneCommand(ctx context.Context) *cobra.Command {
@@ -32,7 +33,8 @@ that are not referenced in the provided index files. Use '-' to read a single in
 from STDIN. Indexes can be provided as positional arguments, via --index-store, or both.`,
 		Example: `  desync prune -s /path/to/local --yes file.caibx
   desync prune -s /path/to/local --index-store /path/to/indexes --yes
-  desync prune -s /path/to/local --report-missing --yes file.caibx`,
+  desync prune -s /path/to/local --report-missing --yes file.caibx
+  desync prune -s /path/to/local --dry-run file.caibx`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPrune(ctx, opt, args)
@@ -45,6 +47,7 @@ from STDIN. Indexes can be provided as positional arguments, via --index-store, 
 	flags.BoolVarP(&opt.yes, "yes", "y", false, "do not ask for confirmation")
 	flags.BoolVar(&opt.finalize, "finalize", false, "delete already-marked chunks without marking new ones; requires --safe-pruning or safe-pruning enabled via config")
 	flags.BoolVar(&opt.reportMissing, "report-missing", false, "after pruning, report any chunks referenced by indexes but absent from the store")
+	flags.BoolVar(&opt.dryRun, "dry-run", false, "report what would be deleted without making any changes; cannot be combined with --yes")
 	addStoreOptions(&opt.cmdStoreOptions, flags)
 	return cmd
 }
@@ -58,6 +61,9 @@ type indexEntry struct {
 func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 	if err := opt.cmdStoreOptions.validate(); err != nil {
 		return err
+	}
+	if opt.dryRun && opt.yes {
+		return errors.New("--dry-run and --yes are mutually exclusive")
 	}
 	opt.store = cfg.ResolveStore(opt.store)
 	if opt.store == "" {
@@ -144,8 +150,9 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		}
 	}
 
-	// If the -y option wasn't provided, ask the user to confirm before doing anything
-	if !opt.yes {
+	// If the -y option wasn't provided (and this isn't a dry run), ask the user
+	// to confirm before doing anything
+	if !opt.yes && !opt.dryRun {
 		fmt.Printf("Warning: The provided index files reference %d unique chunks. Are you sure\nyou want to delete all other chunks from '%s'?\n", len(ids), s)
 	ask:
 		for {
@@ -174,23 +181,56 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 	}
 
 	var missing []desync.ChunkID
+	var stats desync.PruneStats
 	if mergedOpt.SafePruning {
 		ss, ok := s.(desync.SafePruneStore)
 		if !ok {
 			return fmt.Errorf("store '%s' does not support safe pruning", s)
 		}
-		missing, err = ss.SafePrune(ctx, ids, opt.finalize)
+		missing, stats, err = ss.SafePrune(ctx, ids, opt.finalize, opt.dryRun)
 	} else {
-		missing, err = s.Prune(ctx, ids)
+		missing, stats, err = s.Prune(ctx, ids, opt.dryRun)
 	}
 	if err != nil {
 		return err
 	}
 
+	printPruneStats(s, stats, mergedOpt.SafePruning, opt.dryRun)
+
 	if opt.reportMissing && len(missing) > 0 {
 		return reportMissingChunks(missing, indexEntries)
 	}
 	return nil
+}
+
+// printPruneStats prints a summary of what was done (or would be done in dry-run mode).
+func printPruneStats(s desync.PruneStore, stats desync.PruneStats, safePruning bool, dryRun bool) {
+	verb := "deleted"
+	if dryRun {
+		verb = "would be deleted"
+	}
+	if !safePruning {
+		fmt.Printf("%d chunks %s from '%s'\n", stats.Deletable, verb, s)
+		if stats.Kept > 0 {
+			fmt.Printf("%d chunks kept in '%s'\n", stats.Kept, s)
+		}
+		return
+	}
+	fmt.Printf("Pruning '%s':\n", s)
+	fmt.Printf("  %d chunks %s\n", stats.Deletable, verb)
+	if stats.Prunable > 0 {
+		markedVerb := "marked for deletion"
+		if dryRun {
+			markedVerb = "would be marked for deletion"
+		}
+		fmt.Printf("  %d chunks %s\n", stats.Prunable, markedVerb)
+	}
+	if stats.Protected > 0 {
+		fmt.Printf("  %d chunks are protected by active writers\n", stats.Protected)
+	}
+	if stats.Kept > 0 {
+		fmt.Printf("  %d chunks kept\n", stats.Kept)
+	}
 }
 
 // reportMissingChunks prints a summary of chunks that are referenced by

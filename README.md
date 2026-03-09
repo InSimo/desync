@@ -489,7 +489,17 @@ desync prune -s /some/local/store index1.caibx index2.caibx
 desync prune -s /some/local/store --index-store /some/index/store
 ```
 
-Use `--report-missing` to detect chunks that are referenced by indexes but absent from the store. The report is printed after pruning completes, and the command exits with a non-zero status if any missing chunks are found.
+Use `--dry-run` to see what would be deleted without making any changes. The `--yes` flag is not required and cannot be combined with `--dry-run`. For a store with safe-pruning enabled the output also breaks down how many chunks would be marked for deletion and how many are currently protected by active writers.
+
+```text
+desync prune -s /some/local/store --dry-run index1.caibx index2.caibx
+```
+
+```text
+Dry run: would delete 42 chunks from '/some/local/store'
+```
+
+Use `--report-missing` to detect chunks that are referenced by indexes but absent from the store. The report is printed after pruning completes, and the command exits with a non-zero status if any missing chunks are found. It can be combined with `--dry-run`.
 
 ```text
 desync prune -s /some/local/store --report-missing --yes index1.caibx index2.caibx

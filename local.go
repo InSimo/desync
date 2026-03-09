@@ -165,8 +165,8 @@ func (s LocalStore) Verify(ctx context.Context, n int, repair bool, w io.Writer)
 
 // Prune removes any chunks from the store that are not contained in a list
 // of chunks
-func (s LocalStore) Prune(ctx context.Context, ids map[ChunkID]struct{}) ([]ChunkID, error) {
-	return commonPrune(ctx, ids, s)
+func (s LocalStore) Prune(ctx context.Context, ids map[ChunkID]struct{}, dryRun bool) ([]ChunkID, PruneStats, error) {
+	return commonPrune(ctx, ids, s, dryRun)
 }
 
 // HasChunk returns true if the chunk is in the store
@@ -378,6 +378,6 @@ func (s LocalStore) DeleteChunk(id ChunkID) error {
 func (s LocalStore) SafePruningEnabled() bool { return s.Opt.SafePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for a LocalStore.
-func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) ([]ChunkID, error) {
-	return commonSafePrune(ctx, ids, s, finalizeOnly)
+func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error) {
+	return commonSafePrune(ctx, ids, s, finalizeOnly, dryRun)
 }

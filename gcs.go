@@ -221,8 +221,8 @@ func (s GCStore) RemoveChunk(id ChunkID) error {
 }
 
 // Prune removes any chunks from the store that are not contained in a list (map)
-func (s GCStore) Prune(ctx context.Context, ids map[ChunkID]struct{}) ([]ChunkID, error) {
-	return commonPrune(ctx, ids, s)
+func (s GCStore) Prune(ctx context.Context, ids map[ChunkID]struct{}, dryRun bool) ([]ChunkID, PruneStats, error) {
+	return commonPrune(ctx, ids, s, dryRun)
 }
 
 func (s GCStore) nameFromID(id ChunkID) string {
@@ -377,8 +377,8 @@ func (s GCStore) DeleteChunk(id ChunkID) error {
 func (s GCStore) SafePruningEnabled() bool { return s.opt.SafePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for a GCStore.
-func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) ([]ChunkID, error) {
-	return commonSafePrune(ctx, ids, s, finalizeOnly)
+func (s GCStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error) {
+	return commonSafePrune(ctx, ids, s, finalizeOnly, dryRun)
 }
 
 func (s GCStore) idFromName(name string) (ChunkID, error) {

@@ -156,8 +156,8 @@ func (s S3Store) RemoveChunk(id ChunkID) error {
 }
 
 // Prune removes any chunks from the store that are not contained in a list (map)
-func (s S3Store) Prune(ctx context.Context, ids map[ChunkID]struct{}) ([]ChunkID, error) {
-	return commonPrune(ctx, ids, s)
+func (s S3Store) Prune(ctx context.Context, ids map[ChunkID]struct{}, dryRun bool) ([]ChunkID, PruneStats, error) {
+	return commonPrune(ctx, ids, s, dryRun)
 }
 
 func (s S3Store) nameFromID(id ChunkID) string {
@@ -318,8 +318,8 @@ func (s S3Store) DeleteChunk(id ChunkID) error {
 func (s S3Store) SafePruningEnabled() bool { return s.opt.SafePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for an S3Store.
-func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) ([]ChunkID, error) {
-	return commonSafePrune(ctx, ids, s, finalizeOnly)
+func (s S3Store) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error) {
+	return commonSafePrune(ctx, ids, s, finalizeOnly, dryRun)
 }
 
 func (s S3Store) idFromName(name string) (ChunkID, error) {
