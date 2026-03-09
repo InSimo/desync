@@ -93,24 +93,31 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 	}
 
 	// Read the input files and merge all chunk IDs in a map to de-dup them.
-	// Also collect per-index entries when --report-missing is requested.
-	ids := make(map[desync.ChunkID]struct{})
+	// ids maps each unique ChunkID to its uncompressed size (from the index).
+	// Also collect per-index entries when --report-missing is requested,
+	// and track the number of indexes and their total (pre-dedup) size.
+	ids := make(map[desync.ChunkID]int64)
+	var numIndexes int
+	var totalIndexSize int64
 	var indexEntries []indexEntry
 	for _, name := range args {
 		c, err := readCaibxFile(name, opt.cmdStoreOptions)
 		if err != nil {
 			return err
 		}
+		numIndexes++
 		if opt.reportMissing {
 			entry := indexEntry{name: name, ids: make(map[desync.ChunkID]struct{})}
 			for _, c := range c.Chunks {
-				ids[c.ID] = struct{}{}
+				ids[c.ID] = int64(c.Size)
+				totalIndexSize += int64(c.Size)
 				entry.ids[c.ID] = struct{}{}
 			}
 			indexEntries = append(indexEntries, entry)
 		} else {
 			for _, c := range c.Chunks {
-				ids[c.ID] = struct{}{}
+				ids[c.ID] = int64(c.Size)
+				totalIndexSize += int64(c.Size)
 			}
 		}
 	}
@@ -135,16 +142,19 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 			if err != nil {
 				return err
 			}
+			numIndexes++
 			if opt.reportMissing {
 				entry := indexEntry{name: name, ids: make(map[desync.ChunkID]struct{})}
 				for _, c := range idx.Chunks {
-					ids[c.ID] = struct{}{}
+					ids[c.ID] = int64(c.Size)
+					totalIndexSize += int64(c.Size)
 					entry.ids[c.ID] = struct{}{}
 				}
 				indexEntries = append(indexEntries, entry)
 			} else {
 				for _, c := range idx.Chunks {
-					ids[c.ID] = struct{}{}
+					ids[c.ID] = int64(c.Size)
+					totalIndexSize += int64(c.Size)
 				}
 			}
 		}
@@ -195,7 +205,7 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		return err
 	}
 
-	printPruneStats(s, stats, mergedOpt.SafePruning, opt.dryRun)
+	printPruneStats(s, stats, mergedOpt.SafePruning, opt.dryRun, numIndexes, totalIndexSize)
 
 	if opt.reportMissing && len(missing) > 0 {
 		return reportMissingChunks(missing, indexEntries)
@@ -203,34 +213,77 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 	return nil
 }
 
+// formatBytes formats a byte count as a human-readable string (e.g. "1.2 MiB").
+func formatBytes(n int64) string {
+	const (
+		KiB = 1024
+		MiB = 1024 * KiB
+		GiB = 1024 * MiB
+		TiB = 1024 * GiB
+	)
+	switch {
+	case n >= TiB:
+		return fmt.Sprintf("%.1f TiB", float64(n)/TiB)
+	case n >= GiB:
+		return fmt.Sprintf("%.1f GiB", float64(n)/GiB)
+	case n >= MiB:
+		return fmt.Sprintf("%.1f MiB", float64(n)/MiB)
+	case n >= KiB:
+		return fmt.Sprintf("%.1f KiB", float64(n)/KiB)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// fmtChunkLine formats a count + optional stored/deduplicated sizes into a
+// human-readable fragment like "3 chunks (1.2 MiB stored, 2.3 MiB deduplicated)".
+func fmtChunkLine(css desync.ChunkSizeStats) string {
+	s := fmt.Sprintf("%d chunks", css.Count)
+	if css.StoredSize > 0 || css.DeduplicatedSize > 0 {
+		s += " ("
+		if css.StoredSize > 0 {
+			s += formatBytes(css.StoredSize) + " stored"
+		}
+		if css.DeduplicatedSize > 0 {
+			if css.StoredSize > 0 {
+				s += ", "
+			}
+			s += formatBytes(css.DeduplicatedSize) + " deduplicated"
+		}
+		s += ")"
+	}
+	return s
+}
+
 // printPruneStats prints a summary of what was done (or would be done in dry-run mode).
-func printPruneStats(s desync.PruneStore, stats desync.PruneStats, safePruning bool, dryRun bool) {
+func printPruneStats(s desync.PruneStore, stats desync.PruneStats, safePruning bool, dryRun bool, numIndexes int, totalIndexSize int64) {
 	verb := "deleted"
 	if dryRun {
 		verb = "would be deleted"
 	}
 	if !safePruning {
-		fmt.Printf("%d chunks %s from '%s'\n", stats.Deletable, verb, s)
-		if stats.Kept > 0 {
-			fmt.Printf("%d chunks kept in '%s'\n", stats.Kept, s)
+		fmt.Printf("%s %s from '%s'\n", fmtChunkLine(stats.Deletable), verb, s)
+		if stats.Kept.Count > 0 {
+			fmt.Printf("%s kept in '%s'\n", fmtChunkLine(stats.Kept), s)
 		}
-		return
-	}
-	fmt.Printf("Pruning '%s':\n", s)
-	fmt.Printf("  %d chunks %s\n", stats.Deletable, verb)
-	if stats.Prunable > 0 {
-		markedVerb := "marked for deletion"
-		if dryRun {
-			markedVerb = "would be marked for deletion"
+	} else {
+		fmt.Printf("Pruning '%s':\n", s)
+		fmt.Printf("  %s %s\n", fmtChunkLine(stats.Deletable), verb)
+		if stats.Prunable.Count > 0 {
+			markedVerb := "marked for deletion"
+			if dryRun {
+				markedVerb = "would be marked for deletion"
+			}
+			fmt.Printf("  %s %s\n", fmtChunkLine(stats.Prunable), markedVerb)
 		}
-		fmt.Printf("  %d chunks %s\n", stats.Prunable, markedVerb)
+		if stats.Protected.Count > 0 {
+			fmt.Printf("  %s protected by active writers\n", fmtChunkLine(stats.Protected))
+		}
+		if stats.Kept.Count > 0 {
+			fmt.Printf("  %s kept\n", fmtChunkLine(stats.Kept))
+		}
 	}
-	if stats.Protected > 0 {
-		fmt.Printf("  %d chunks are protected by active writers\n", stats.Protected)
-	}
-	if stats.Kept > 0 {
-		fmt.Printf("  %d chunks kept\n", stats.Kept)
-	}
+	fmt.Printf("Total: %d index(es), %s\n", numIndexes, formatBytes(totalIndexSize))
 }
 
 // reportMissingChunks prints a summary of chunks that are referenced by

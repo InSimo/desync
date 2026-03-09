@@ -31,7 +31,7 @@ type WriteStore interface {
 // PruneStore is a store that supports read, write and pruning of chunks
 type PruneStore interface {
 	WriteStore
-	Prune(ctx context.Context, ids map[ChunkID]struct{}, dryRun bool) ([]ChunkID, PruneStats, error)
+	Prune(ctx context.Context, ids map[ChunkID]int64, dryRun bool) ([]ChunkID, PruneStats, error)
 
 	// ListChunks returns every chunk-related entry in the store together with
 	// its pruning status.
@@ -52,10 +52,11 @@ const (
 	ChunkStatusOrphanedProtect                     // .protect without .cacnk or .prunable
 )
 
-// ChunkEntry pairs a chunk ID with its current pruning state.
+// ChunkEntry pairs a chunk ID with its current pruning state and on-disk size.
 type ChunkEntry struct {
-	ID     ChunkID
-	Status ChunkStatus
+	ID         ChunkID
+	Status     ChunkStatus
+	StoredSize int64 // on-disk/object size of the chunk data file; 0 for orphaned markers
 }
 
 // SafePruneStore extends PruneStore with the protect-marker safe pruning
@@ -70,7 +71,7 @@ type SafePruneStore interface {
 	// second call deletes chunks that are still unreferenced and unprotected.
 	// If finalizeOnly is true, Normal chunks are left unmarked — only
 	// already-prunable chunks are deleted (or restored if protected).
-	SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error)
+	SafePrune(ctx context.Context, ids map[ChunkID]int64, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error)
 
 	// HasPrunable reports whether the .prunable companion for id is present.
 	// Called by writers to detect chunks that need protect markers before the

@@ -14,7 +14,7 @@ import (
 // prior run and have no .protect companion set by a concurrent writer.
 // If finalizeOnly is true, Normal chunks are not marked — only already-prunable
 // chunks are acted on.
-func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneStore, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error) {
+func commonSafePrune(ctx context.Context, ids map[ChunkID]int64, s SafePruneStore, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error) {
 	list, err := s.ListChunks(ctx)
 	if err != nil {
 		return nil, PruneStats{}, err
@@ -61,8 +61,10 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 			continue // cleaned up in Phase 1; skip if still appearing
 		}
 		seen[e.ID] = struct{}{}
-		if _, keep := ids[e.ID]; keep {
-			stats.Kept++
+		if uncompSize, keep := ids[e.ID]; keep {
+			stats.Kept.Count++
+			stats.Kept.StoredSize += e.StoredSize
+			stats.Kept.DeduplicatedSize += uncompSize
 			// Chunk is referenced: remove any pruning markers and linger protect.
 			if !dryRun {
 				if err := s.DeletePrunable(e.ID); err != nil {
@@ -77,7 +79,8 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 		switch e.Status {
 		case ChunkStatusNormal:
 			if !finalizeOnly {
-				stats.Prunable++
+				stats.Prunable.Count++
+				stats.Prunable.StoredSize += e.StoredSize
 				if !dryRun {
 					if err := s.CreatePrunable(e.ID); err != nil {
 						return nil, PruneStats{}, err
@@ -93,7 +96,8 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 				return nil, PruneStats{}, err
 			}
 			if protected {
-				stats.Protected++
+				stats.Protected.Count++
+				stats.Protected.StoredSize += e.StoredSize
 				// Writer is saving this chunk: remove the prunable marker and
 				// the protect marker; chunk survives in Normal state.
 				if !dryRun {
@@ -105,7 +109,8 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 					}
 				}
 			} else {
-				stats.Deletable++
+				stats.Deletable.Count++
+				stats.Deletable.StoredSize += e.StoredSize
 				// No protect: safe to delete.
 				if !dryRun {
 					if err := s.DeleteChunk(e.ID); err != nil {

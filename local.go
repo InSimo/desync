@@ -165,7 +165,7 @@ func (s LocalStore) Verify(ctx context.Context, n int, repair bool, w io.Writer)
 
 // Prune removes any chunks from the store that are not contained in a list
 // of chunks
-func (s LocalStore) Prune(ctx context.Context, ids map[ChunkID]struct{}, dryRun bool) ([]ChunkID, PruneStats, error) {
+func (s LocalStore) Prune(ctx context.Context, ids map[ChunkID]int64, dryRun bool) ([]ChunkID, PruneStats, error) {
 	return commonPrune(ctx, ids, s, dryRun)
 }
 
@@ -224,7 +224,10 @@ func (s LocalStore) protectPathFromID(id ChunkID) string {
 // ListChunks returns every chunk-related entry in the store together with its
 // pruning status. It is called by commonSafePrune.
 func (s LocalStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
-	type presence struct{ hasChunk, hasPrunable, hasProtect bool }
+	type presence struct {
+		hasChunk, hasPrunable, hasProtect bool
+		size                              int64
+	}
 	byID := make(map[ChunkID]*presence)
 
 	chunkExt := CompressedChunkExt
@@ -287,6 +290,7 @@ func (s LocalStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
 				byID[id] = &presence{}
 			}
 			byID[id].hasChunk = true
+			byID[id].size = info.Size()
 		}
 		return nil
 	})
@@ -298,11 +302,11 @@ func (s LocalStore) ListChunks(ctx context.Context) ([]ChunkEntry, error) {
 	for id, p := range byID {
 		switch {
 		case p.hasChunk && p.hasPrunable && p.hasProtect:
-			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusProtected})
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusProtected, StoredSize: p.size})
 		case p.hasChunk && p.hasPrunable:
-			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable})
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusPrunable, StoredSize: p.size})
 		case p.hasChunk:
-			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusNormal})
+			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusNormal, StoredSize: p.size})
 		case p.hasPrunable:
 			entries = append(entries, ChunkEntry{ID: id, Status: ChunkStatusOrphanedPrunable})
 		case p.hasProtect:
@@ -378,6 +382,6 @@ func (s LocalStore) DeleteChunk(id ChunkID) error {
 func (s LocalStore) SafePruningEnabled() bool { return s.Opt.SafePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for a LocalStore.
-func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error) {
+func (s LocalStore) SafePrune(ctx context.Context, ids map[ChunkID]int64, finalizeOnly bool, dryRun bool) ([]ChunkID, PruneStats, error) {
 	return commonSafePrune(ctx, ids, s, finalizeOnly, dryRun)
 }
