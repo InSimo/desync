@@ -489,6 +489,25 @@ desync prune -s /some/local/store index1.caibx index2.caibx
 desync prune -s /some/local/store --index-store /some/index/store
 ```
 
+Use `--report-missing` to detect chunks that are referenced by indexes but absent from the store. The report is printed after pruning completes, and the command exits with a non-zero status if any missing chunks are found.
+
+```text
+desync prune -s /some/local/store --report-missing --yes index1.caibx index2.caibx
+```
+
+The output lists the total number of missing chunks, the number of affected indexes, and for each affected index its name, the ratio of missing to total unique chunks, and the missing chunk IDs:
+
+```text
+Missing chunks: 3 total, across 2 index(es)
+
+index1.caibx: 2/47 chunks missing
+  a1b2c3d4...
+  e5f6a7b8...
+
+index2.caibx: 1/23 chunks missing
+  a1b2c3d4...
+```
+
 Prune an index store to only retain the listed index files, deleting all others. Possible data loss.
 
 ```text
