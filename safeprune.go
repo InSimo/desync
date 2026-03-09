@@ -14,27 +14,27 @@ import (
 // prior run and have no .protect companion set by a concurrent writer.
 // If finalizeOnly is true, Normal chunks are not marked — only already-prunable
 // chunks are acted on.
-func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneStore, finalizeOnly bool) error {
+func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneStore, finalizeOnly bool) ([]ChunkID, error) {
 	list, err := s.ListChunks(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Phase 1: clean up orphaned markers from prior runs.
 	for _, e := range list {
 		select {
 		case <-ctx.Done():
-			return Interrupted{}
+			return nil, Interrupted{}
 		default:
 		}
 		switch e.Status {
 		case ChunkStatusOrphanedPrunable:
 			if err := s.DeletePrunable(e.ID); err != nil {
-				return err
+				return nil, err
 			}
 		case ChunkStatusOrphanedProtect:
 			if err := s.DeleteProtect(e.ID); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -43,24 +43,26 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 	// A second ListChunks call reflects the post-Phase-1 state.
 	list2, err := s.ListChunks(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	seen := make(map[ChunkID]struct{}, len(list2))
 	for _, e := range list2 {
 		select {
 		case <-ctx.Done():
-			return Interrupted{}
+			return nil, Interrupted{}
 		default:
 		}
 		if e.Status == ChunkStatusOrphanedPrunable || e.Status == ChunkStatusOrphanedProtect {
 			continue // cleaned up in Phase 1; skip if still appearing
 		}
+		seen[e.ID] = struct{}{}
 		if _, keep := ids[e.ID]; keep {
 			// Chunk is referenced: remove any pruning markers and linger protect.
 			if err := s.DeletePrunable(e.ID); err != nil {
-				return err
+				return nil, err
 			}
 			if err := s.DeleteProtect(e.ID); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
@@ -68,7 +70,7 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 		case ChunkStatusNormal:
 			if !finalizeOnly {
 				if err := s.CreatePrunable(e.ID); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		case ChunkStatusPrunable, ChunkStatusProtected:
@@ -76,29 +78,35 @@ func commonSafePrune(ctx context.Context, ids map[ChunkID]struct{}, s SafePruneS
 			// added .protect after ListChunks ran. This is the TOCTOU guard.
 			protected, err := s.HasProtect(e.ID)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if protected {
 				// Writer is saving this chunk: remove the prunable marker and
 				// the protect marker; chunk survives in Normal state.
 				if err := s.DeletePrunable(e.ID); err != nil {
-					return err
+					return nil, err
 				}
 				if err := s.DeleteProtect(e.ID); err != nil {
-					return err
+					return nil, err
 				}
 			} else {
 				// No protect: safe to delete.
 				if err := s.DeleteChunk(e.ID); err != nil {
-					return err
+					return nil, err
 				}
 				if err := s.DeletePrunable(e.ID); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
 	}
-	return nil
+	var missing []ChunkID
+	for id := range ids {
+		if _, ok := seen[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing, nil
 }
 
 // SafePrunePreCommit is the recheck phase of the writer-side protect-marker

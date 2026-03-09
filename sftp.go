@@ -210,7 +210,7 @@ func (s *SFTPStore) HasChunk(id ChunkID) (bool, error) {
 
 // Prune removes any chunks from the store that are not contained in a list
 // of chunks
-func (s *SFTPStore) Prune(ctx context.Context, ids map[ChunkID]struct{}) error {
+func (s *SFTPStore) Prune(ctx context.Context, ids map[ChunkID]struct{}) ([]ChunkID, error) {
 	return commonPrune(ctx, ids, s)
 }
 
@@ -400,7 +400,7 @@ func (s *SFTPStore) DeleteChunk(id ChunkID) error {
 func (s *SFTPStore) SafePruningEnabled() bool { return s.safePruning }
 
 // SafePrune implements the protect-marker safe pruning protocol for an SFTPStore.
-func (s *SFTPStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) error {
+func (s *SFTPStore) SafePrune(ctx context.Context, ids map[ChunkID]struct{}, finalizeOnly bool) ([]ChunkID, error) {
 	return commonSafePrune(ctx, ids, s, finalizeOnly)
 }
 

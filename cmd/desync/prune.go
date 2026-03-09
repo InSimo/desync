@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/folbricht/desync"
 	"github.com/spf13/cobra"
@@ -12,10 +14,11 @@ import (
 
 type pruneOptions struct {
 	cmdStoreOptions
-	store      string
-	indexStore string
-	yes        bool
-	finalize   bool
+	store         string
+	indexStore    string
+	yes           bool
+	finalize      bool
+	reportMissing bool
 }
 
 func newPruneCommand(ctx context.Context) *cobra.Command {
@@ -28,7 +31,8 @@ func newPruneCommand(ctx context.Context) *cobra.Command {
 that are not referenced in the provided index files. Use '-' to read a single index
 from STDIN. Indexes can be provided as positional arguments, via --index-store, or both.`,
 		Example: `  desync prune -s /path/to/local --yes file.caibx
-  desync prune -s /path/to/local --index-store /path/to/indexes --yes`,
+  desync prune -s /path/to/local --index-store /path/to/indexes --yes
+  desync prune -s /path/to/local --report-missing --yes file.caibx`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPrune(ctx, opt, args)
@@ -40,8 +44,15 @@ from STDIN. Indexes can be provided as positional arguments, via --index-store, 
 	flags.StringVar(&opt.indexStore, "index-store", "", "index store to read all indexes from")
 	flags.BoolVarP(&opt.yes, "yes", "y", false, "do not ask for confirmation")
 	flags.BoolVar(&opt.finalize, "finalize", false, "delete already-marked chunks without marking new ones; requires --safe-pruning or safe-pruning enabled via config")
+	flags.BoolVar(&opt.reportMissing, "report-missing", false, "after pruning, report any chunks referenced by indexes but absent from the store")
 	addStoreOptions(&opt.cmdStoreOptions, flags)
 	return cmd
+}
+
+// indexEntry holds the per-index information needed for missing-chunk reporting.
+type indexEntry struct {
+	name string
+	ids  map[desync.ChunkID]struct{}
 }
 
 func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
@@ -75,15 +86,26 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		}
 	}
 
-	// Read the input files and merge all chunk IDs in a map to de-dup them
+	// Read the input files and merge all chunk IDs in a map to de-dup them.
+	// Also collect per-index entries when --report-missing is requested.
 	ids := make(map[desync.ChunkID]struct{})
+	var indexEntries []indexEntry
 	for _, name := range args {
 		c, err := readCaibxFile(name, opt.cmdStoreOptions)
 		if err != nil {
 			return err
 		}
-		for _, c := range c.Chunks {
-			ids[c.ID] = struct{}{}
+		if opt.reportMissing {
+			entry := indexEntry{name: name, ids: make(map[desync.ChunkID]struct{})}
+			for _, c := range c.Chunks {
+				ids[c.ID] = struct{}{}
+				entry.ids[c.ID] = struct{}{}
+			}
+			indexEntries = append(indexEntries, entry)
+		} else {
+			for _, c := range c.Chunks {
+				ids[c.ID] = struct{}{}
+			}
 		}
 	}
 
@@ -107,8 +129,17 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 			if err != nil {
 				return err
 			}
-			for _, c := range idx.Chunks {
-				ids[c.ID] = struct{}{}
+			if opt.reportMissing {
+				entry := indexEntry{name: name, ids: make(map[desync.ChunkID]struct{})}
+				for _, c := range idx.Chunks {
+					ids[c.ID] = struct{}{}
+					entry.ids[c.ID] = struct{}{}
+				}
+				indexEntries = append(indexEntries, entry)
+			} else {
+				for _, c := range idx.Chunks {
+					ids[c.ID] = struct{}{}
+				}
 			}
 		}
 	}
@@ -142,12 +173,63 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		return errors.New("--finalize requires safe-pruning to be enabled (--safe-pruning or via config)")
 	}
 
+	var missing []desync.ChunkID
 	if mergedOpt.SafePruning {
 		ss, ok := s.(desync.SafePruneStore)
 		if !ok {
 			return fmt.Errorf("store '%s' does not support safe pruning", s)
 		}
-		return ss.SafePrune(ctx, ids, opt.finalize)
+		missing, err = ss.SafePrune(ctx, ids, opt.finalize)
+	} else {
+		missing, err = s.Prune(ctx, ids)
 	}
-	return s.Prune(ctx, ids)
+	if err != nil {
+		return err
+	}
+
+	if opt.reportMissing && len(missing) > 0 {
+		return reportMissingChunks(missing, indexEntries)
+	}
+	return nil
+}
+
+// reportMissingChunks prints a summary of chunks that are referenced by
+// indexes but absent from the store, then returns a non-nil error so the
+// command exits with a non-zero status.
+func reportMissingChunks(missing []desync.ChunkID, entries []indexEntry) error {
+	missingSet := make(map[desync.ChunkID]struct{}, len(missing))
+	for _, id := range missing {
+		missingSet[id] = struct{}{}
+	}
+
+	type indexReport struct {
+		name    string
+		total   int
+		missing []string
+	}
+	var affected []indexReport
+	for _, e := range entries {
+		var m []string
+		for id := range e.ids {
+			if _, absent := missingSet[id]; absent {
+				m = append(m, id.String())
+			}
+		}
+		if len(m) > 0 {
+			sort.Strings(m)
+			affected = append(affected, indexReport{
+				name:    e.name,
+				total:   len(e.ids),
+				missing: m,
+			})
+		}
+	}
+	sort.Slice(affected, func(i, j int) bool { return affected[i].name < affected[j].name })
+
+	fmt.Printf("Missing chunks: %d total, across %d index(es)\n\n", len(missing), len(affected))
+	for _, r := range affected {
+		fmt.Printf("%s: %d/%d chunks missing\n", r.name, len(r.missing), r.total)
+		fmt.Printf("  %s\n", strings.Join(r.missing, "\n  "))
+	}
+	return fmt.Errorf("%d missing chunk(s) detected", len(missing))
 }
