@@ -96,11 +96,18 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 	// ids maps each unique ChunkID to its uncompressed size (from the index).
 	// Also collect per-index entries when --report-missing is requested,
 	// and track the number of indexes and their total (pre-dedup) size.
+	// seenIndexes prevents double-counting when the same name appears in both
+	// positional args and the index store.
 	ids := make(map[desync.ChunkID]int64)
+	seenIndexes := make(map[string]struct{})
 	var numIndexes int
 	var totalIndexSize int64
 	var indexEntries []indexEntry
 	for _, name := range args {
+		if _, dup := seenIndexes[name]; dup {
+			continue
+		}
+		seenIndexes[name] = struct{}{}
 		c, err := readCaibxFile(name, opt.cmdStoreOptions)
 		if err != nil {
 			return err
@@ -138,6 +145,10 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 			return err
 		}
 		for _, name := range names {
+			if _, dup := seenIndexes[name]; dup {
+				continue
+			}
+			seenIndexes[name] = struct{}{}
 			idx, err := is.GetIndex(name)
 			if err != nil {
 				return err
