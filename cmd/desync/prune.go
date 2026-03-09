@@ -20,6 +20,7 @@ type pruneOptions struct {
 	finalize      bool
 	reportMissing bool
 	dryRun        bool
+	printFormat   string
 }
 
 func newPruneCommand(ctx context.Context) *cobra.Command {
@@ -48,6 +49,7 @@ from STDIN. Indexes can be provided as positional arguments, via --index-store, 
 	flags.BoolVar(&opt.finalize, "finalize", false, "delete already-marked chunks without marking new ones; requires --safe-pruning or safe-pruning enabled via config")
 	flags.BoolVar(&opt.reportMissing, "report-missing", false, "after pruning, report any chunks referenced by indexes but absent from the store")
 	flags.BoolVar(&opt.dryRun, "dry-run", false, "report what would be deleted without making any changes; cannot be combined with --yes")
+	flags.StringVarP(&opt.printFormat, "format", "f", "plain", "output format, plain or json")
 	addStoreOptions(&opt.cmdStoreOptions, flags)
 	return cmd
 }
@@ -216,10 +218,17 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		return err
 	}
 
-	printPruneStats(s, stats, mergedOpt.SafePruning, opt.dryRun, numIndexes, totalIndexSize)
+	var missingReport *missingReportJSON
+	if opt.reportMissing {
+		missingReport = buildMissingReport(missing, indexEntries)
+	}
 
-	if opt.reportMissing && len(missing) > 0 {
-		return reportMissingChunks(missing, indexEntries)
+	if err := printPruneStats(s, stats, mergedOpt.SafePruning, opt.dryRun, numIndexes, totalIndexSize, opt.printFormat, missingReport); err != nil {
+		return err
+	}
+
+	if missingReport != nil && missingReport.Total > 0 {
+		return fmt.Errorf("%d missing chunk(s) detected", missingReport.Total)
 	}
 	return nil
 }
@@ -266,74 +275,127 @@ func fmtChunkLine(css desync.ChunkSizeStats) string {
 	return s
 }
 
-// printPruneStats prints a summary of what was done (or would be done in dry-run mode).
-func printPruneStats(s desync.PruneStore, stats desync.PruneStats, safePruning bool, dryRun bool, numIndexes int, totalIndexSize int64) {
-	verb := "deleted"
-	if dryRun {
-		verb = "would be deleted"
-	}
-	if !safePruning {
-		fmt.Printf("%s %s from '%s'\n", fmtChunkLine(stats.Deletable), verb, s)
-		if stats.Kept.Count > 0 {
-			fmt.Printf("%s kept in '%s'\n", fmtChunkLine(stats.Kept), s)
-		}
-	} else {
-		fmt.Printf("Pruning '%s':\n", s)
-		fmt.Printf("  %s %s\n", fmtChunkLine(stats.Deletable), verb)
-		if stats.Prunable.Count > 0 {
-			markedVerb := "marked for deletion"
-			if dryRun {
-				markedVerb = "would be marked for deletion"
-			}
-			fmt.Printf("  %s %s\n", fmtChunkLine(stats.Prunable), markedVerb)
-		}
-		if stats.Protected.Count > 0 {
-			fmt.Printf("  %s protected by active writers\n", fmtChunkLine(stats.Protected))
-		}
-		if stats.Kept.Count > 0 {
-			fmt.Printf("  %s kept\n", fmtChunkLine(stats.Kept))
-		}
-	}
-	fmt.Printf("Total: %d index(es), %s\n", numIndexes, formatBytes(totalIndexSize))
+// missingIndexJSON holds the missing-chunk report for a single index.
+type missingIndexJSON struct {
+	Name          string   `json:"name"`
+	TotalChunks   int      `json:"total-chunks"`
+	MissingChunks []string `json:"missing-chunks"`
 }
 
-// reportMissingChunks prints a summary of chunks that are referenced by
-// indexes but absent from the store, then returns a non-nil error so the
-// command exits with a non-zero status.
-func reportMissingChunks(missing []desync.ChunkID, entries []indexEntry) error {
+// missingReportJSON is the missing-chunk section of the output.
+type missingReportJSON struct {
+	Total   int                `json:"total"`
+	Indexes []missingIndexJSON `json:"indexes"`
+}
+
+// pruneStatsJSON is the JSON representation of a prune run's output.
+type pruneStatsJSON struct {
+	Store          string                `json:"store"`
+	DryRun         bool                  `json:"dry-run"`
+	SafePruning    bool                  `json:"safe-pruning"`
+	Deletable  desync.ChunkSizeStats  `json:"deletable"`
+	Prunable   *desync.ChunkSizeStats `json:"prunable,omitempty"`
+	Protected  *desync.ChunkSizeStats `json:"protected,omitempty"`
+	Kept       desync.ChunkSizeStats  `json:"kept"`
+	NumIndexes     int                   `json:"num-indexes"`
+	TotalIndexSize int64                 `json:"total-index-size"`
+	Missing        *missingReportJSON    `json:"missing,omitempty"`
+}
+
+// buildMissingReport computes the missing-chunk report from the list of absent
+// IDs and the per-index entries collected during index loading.
+func buildMissingReport(missing []desync.ChunkID, entries []indexEntry) *missingReportJSON {
+	if len(missing) == 0 {
+		return &missingReportJSON{Indexes: []missingIndexJSON{}}
+	}
 	missingSet := make(map[desync.ChunkID]struct{}, len(missing))
 	for _, id := range missing {
 		missingSet[id] = struct{}{}
 	}
-
-	type indexReport struct {
-		name    string
-		total   int
-		missing []string
-	}
-	var affected []indexReport
+	var indexes []missingIndexJSON
 	for _, e := range entries {
-		var m []string
+		var chunks []string
 		for id := range e.ids {
 			if _, absent := missingSet[id]; absent {
-				m = append(m, id.String())
+				chunks = append(chunks, id.String())
 			}
 		}
-		if len(m) > 0 {
-			sort.Strings(m)
-			affected = append(affected, indexReport{
-				name:    e.name,
-				total:   len(e.ids),
-				missing: m,
+		if len(chunks) > 0 {
+			sort.Strings(chunks)
+			indexes = append(indexes, missingIndexJSON{
+				Name:          e.name,
+				TotalChunks:   len(e.ids),
+				MissingChunks: chunks,
 			})
 		}
 	}
-	sort.Slice(affected, func(i, j int) bool { return affected[i].name < affected[j].name })
+	sort.Slice(indexes, func(i, j int) bool { return indexes[i].Name < indexes[j].Name })
+	return &missingReportJSON{Total: len(missing), Indexes: indexes}
+}
 
-	fmt.Printf("Missing chunks: %d total, across %d index(es)\n\n", len(missing), len(affected))
-	for _, r := range affected {
-		fmt.Printf("%s: %d/%d chunks missing\n", r.name, len(r.missing), r.total)
-		fmt.Printf("  %s\n", strings.Join(r.missing, "\n  "))
+// nonZeroCSS returns a pointer to css if its Count is non-zero, nil otherwise.
+// Used to populate omitempty pointer fields in pruneStatsJSON.
+func nonZeroCSS(css desync.ChunkSizeStats) *desync.ChunkSizeStats {
+	if css.Count == 0 {
+		return nil
 	}
-	return fmt.Errorf("%d missing chunk(s) detected", len(missing))
+	return &css
+}
+
+// printPruneStats prints a summary of what was done (or would be done in dry-run mode).
+// missingReport is non-nil only when --report-missing is set.
+func printPruneStats(s desync.PruneStore, stats desync.PruneStats, safePruning bool, dryRun bool, numIndexes int, totalIndexSize int64, format string, missingReport *missingReportJSON) error {
+	switch format {
+	case "json":
+		return printJSON(stdout, pruneStatsJSON{
+			Store:          s.String(),
+			DryRun:         dryRun,
+			SafePruning:    safePruning,
+			Deletable:      stats.Deletable,
+			Prunable:       nonZeroCSS(stats.Prunable),
+			Protected:      nonZeroCSS(stats.Protected),
+			Kept:           stats.Kept,
+			NumIndexes:     numIndexes,
+			TotalIndexSize: totalIndexSize,
+			Missing:        missingReport,
+		})
+	case "plain":
+		verb := "deleted"
+		if dryRun {
+			verb = "would be deleted"
+		}
+		if !safePruning {
+			fmt.Printf("%s %s from '%s'\n", fmtChunkLine(stats.Deletable), verb, s)
+			if stats.Kept.Count > 0 {
+				fmt.Printf("%s kept in '%s'\n", fmtChunkLine(stats.Kept), s)
+			}
+		} else {
+			fmt.Printf("Pruning '%s':\n", s)
+			fmt.Printf("  %s %s\n", fmtChunkLine(stats.Deletable), verb)
+			if stats.Prunable.Count > 0 {
+				markedVerb := "marked for deletion"
+				if dryRun {
+					markedVerb = "would be marked for deletion"
+				}
+				fmt.Printf("  %s %s\n", fmtChunkLine(stats.Prunable), markedVerb)
+			}
+			if stats.Protected.Count > 0 {
+				fmt.Printf("  %s protected by active writers\n", fmtChunkLine(stats.Protected))
+			}
+			if stats.Kept.Count > 0 {
+				fmt.Printf("  %s kept\n", fmtChunkLine(stats.Kept))
+			}
+		}
+		fmt.Printf("Total: %d index(es), %s\n", numIndexes, formatBytes(totalIndexSize))
+		if missingReport != nil && missingReport.Total > 0 {
+			fmt.Printf("\nMissing chunks: %d total, across %d index(es)\n\n", missingReport.Total, len(missingReport.Indexes))
+			for _, r := range missingReport.Indexes {
+				fmt.Printf("%s: %d/%d chunks missing\n", r.Name, len(r.MissingChunks), r.TotalChunks)
+				fmt.Printf("  %s\n", strings.Join(r.MissingChunks, "\n  "))
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported output format %q", format)
+	}
 }
