@@ -31,7 +31,7 @@ from STDIN.`,
 	return cmd
 }
 func runVerifyIndex(ctx context.Context, opt verifyIndexOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	indexFile := args[0]
@@ -47,5 +47,5 @@ func runVerifyIndex(ctx context.Context, opt verifyIndexOptions, args []string) 
 	pb := desync.NewProgressBar("")
 
 	// Chop up the file into chunks and store them in the target store
-	return desync.VerifyIndex(ctx, dataFile, idx, opt.n, pb)
+	return desync.VerifyIndex(ctx, dataFile, idx, opt.N, pb)
 }

@@ -50,7 +50,7 @@ Use '-' to read the index from STDIN.`,
 }
 
 func runChop(ctx context.Context, opt chopOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	opt.store = cfg.ResolveStore(opt.store)
@@ -115,7 +115,7 @@ func runChop(ctx context.Context, opt chopOptions, args []string) error {
 
 	// Chop up the file into chunks and store them in the target store.
 	var sps desync.SafePruneStore
-	if opt.cmdStoreOptions.safePruning {
+	if opt.cmdStoreOptions.SafePruning {
 		if ps, ok := s.(desync.SafePruneStore); ok {
 			sps = ps
 		}
@@ -125,7 +125,7 @@ func runChop(ctx context.Context, opt chopOptions, args []string) error {
 		return err
 	}
 	mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
-	return desync.ChopFile(ctx, dataFile, chunks, s, opt.n, pb, sps, mergedOpt.SafePropagationTime)
+	return desync.ChopFile(ctx, dataFile, chunks, s, opt.N, pb, sps, mergedOpt.SafePropagationTime)
 }
 
 // Read a list of chunk IDs from a file. Blank lines are skipped.

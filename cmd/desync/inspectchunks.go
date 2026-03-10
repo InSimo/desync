@@ -38,7 +38,7 @@ desync inspect-chunks --store /mnt/store file.caibx inspect_result.json`,
 }
 
 func runInspectChunks(ctx context.Context, opt inspectChunksOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 

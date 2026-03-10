@@ -64,7 +64,7 @@ needing to restart the server. This can be done under load as well.
 	flags.StringVarP(&opt.cache, "cache", "c", "", "store to be used as cache")
 	flags.StringSliceVarP(&opt.listenAddresses, "listen", "l", []string{":http"}, "listen address")
 	flags.BoolVarP(&opt.writable, "writeable", "w", false, "support writing")
-	flags.BoolVar(&opt.skipVerify, "skip-verify-read", true, "don't verify chunk data read from upstream stores (faster)")
+	flags.BoolVar(&opt.SkipVerify, "skip-verify-read", true, "don't verify chunk data read from upstream stores (faster)")
 	flags.BoolVar(&opt.skipVerifyWrite, "skip-verify-write", true, "don't verify chunk data written to this server (faster)")
 	flags.BoolVarP(&opt.uncompressed, "uncompressed", "u", false, "serve uncompressed chunks")
 	flags.StringVar(&opt.logFile, "log", "", "request log file or - for STDOUT")
@@ -74,7 +74,7 @@ needing to restart the server. This can be done under load as well.
 }
 
 func runChunkServer(ctx context.Context, opt chunkServerOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	if err := opt.cmdServerOptions.validate(); err != nil {

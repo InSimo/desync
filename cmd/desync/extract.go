@@ -72,7 +72,7 @@ of aborting.`,
 }
 
 func runExtract(ctx context.Context, opt extractOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 
@@ -126,7 +126,7 @@ func runExtract(ctx context.Context, opt extractOptions, args []string) error {
 	} else if opt.regenerateInvalidSeeds {
 		invalidSeedAction = desync.InvalidSeedActionRegenerate
 	}
-	assembleOpt := desync.AssembleOptions{N: opt.n, InvalidSeedAction: invalidSeedAction}
+	assembleOpt := desync.AssembleOptions{N: opt.N, InvalidSeedAction: invalidSeedAction}
 
 	var stats *desync.ExtractStats
 	if opt.inPlace {

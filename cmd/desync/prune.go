@@ -61,7 +61,7 @@ type indexEntry struct {
 }
 
 func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	if opt.dryRun && opt.yes {

@@ -13,9 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/folbricht/desync"
 	"github.com/folbricht/desync/cmd/internal/desyncconfig"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -90,21 +88,12 @@ func main() {
 	}()
 
 	var (
-		storeURL            string
-		indexURL            string
-		cache               string
-		cacheRepair         bool
-		concurrency         int
-		chunkSize           string
-		errorRetry          int
-		clientCert          string
-		clientKey           string
-		caCert              string
-		trustInsecure       bool
-		errorRetryInterval  time.Duration
-		indexes             bool
-		safePruning         bool
-		safePropagationTime time.Duration
+		storeURL  string
+		indexURL  string
+		cache     string
+		chunkSize string
+		indexes   bool
+		storeOpt  desyncconfig.CmdStoreOptions
 	)
 
 	cmd := &cobra.Command{
@@ -161,38 +150,14 @@ Configure Git LFS to use this agent:
 					return fmt.Errorf("--store is required")
 				}
 
-				opt, err := cfg.GetStoreOptionsFor(resolvedStore)
-				if err != nil {
-					return err
-				}
-				opt.N = concurrency
-				opt.ErrorRetry = errorRetry
-				if cmd.Flags().Changed("client-cert") {
-					opt.ClientCert = clientCert
-				}
-				if cmd.Flags().Changed("client-key") {
-					opt.ClientKey = clientKey
-				}
-				if cmd.Flags().Changed("ca-cert") {
-					opt.CACert = caCert
-				}
-				if cmd.Flags().Changed("trust-insecure") {
-					opt.TrustInsecure = trustInsecure
-				}
-				if cmd.Flags().Changed("error-retry-base-interval") {
-					opt.ErrorRetryBaseInterval = errorRetryInterval
-				}
-
-				chunkStore, err := chunkStoreFromURL(resolvedStore, opt)
+				chunkStore, err := desyncconfig.WritableStore(resolvedStore, cfg, storeOpt)
 				if err != nil {
 					return err
 				}
 
-				// Build the read store used for downloads, optionally wrapping the
-				// chunk store with a local cache tier. readStore.Close() closes the
-				// full chain (chunkStore and, if present, the cache store).
-				readStore, err := buildReadStore(cmd, chunkStore, cache, cacheRepair,
-					concurrency, errorRetry, clientCert, clientKey, caCert, trustInsecure, errorRetryInterval)
+				// Build the read store for downloads, optionally wrapping the remote
+				// store with a local cache tier.
+				readStore, err := desyncconfig.MultiStoreWithCache(cfg, storeOpt, cache, resolvedStore)
 				if err != nil {
 					chunkStore.Close()
 					return err
@@ -202,42 +167,22 @@ Configure Git LFS to use this agent:
 					resolvedIndex, err = deriveIndexURL(resolvedStore)
 					if err != nil {
 						readStore.Close()
+						chunkStore.Close()
 						return err
 					}
 				}
 
-				idxOpt, err := cfg.GetStoreOptionsFor(resolvedIndex)
+				indexStore, err := desyncconfig.WritableIndexStore(resolvedIndex, cfg, storeOpt)
 				if err != nil {
 					readStore.Close()
-					return err
-				}
-				idxOpt.N = concurrency
-				idxOpt.ErrorRetry = errorRetry
-				if cmd.Flags().Changed("client-cert") {
-					idxOpt.ClientCert = clientCert
-				}
-				if cmd.Flags().Changed("client-key") {
-					idxOpt.ClientKey = clientKey
-				}
-				if cmd.Flags().Changed("ca-cert") {
-					idxOpt.CACert = caCert
-				}
-				if cmd.Flags().Changed("trust-insecure") {
-					idxOpt.TrustInsecure = trustInsecure
-				}
-				if cmd.Flags().Changed("error-retry-base-interval") {
-					idxOpt.ErrorRetryBaseInterval = errorRetryInterval
-				}
-
-				indexStore, err := indexStoreFromURL(resolvedIndex, idxOpt)
-				if err != nil {
-					readStore.Close()
+					chunkStore.Close()
 					return err
 				}
 
 				minChunk, avgChunk, maxChunk, err := parseChunkSizeParam(resolvedChunkSize)
 				if err != nil {
 					readStore.Close()
+					chunkStore.Close()
 					indexStore.Close()
 					return err
 				}
@@ -245,12 +190,12 @@ Configure Git LFS to use this agent:
 				agent.writeStore = chunkStore
 				agent.readStore = readStore
 				agent.indexWriteStore = indexStore
-				agent.n = concurrency
+				agent.n = storeOpt.N
 				agent.minChunk = minChunk
 				agent.avgChunk = avgChunk
 				agent.maxChunk = maxChunk
-				agent.safePruning = safePruning
-				agent.safePropagationTime = safePropagationTime
+				agent.safePruning = storeOpt.SafePruning
+				agent.safePropagationTime = storeOpt.SafePropagationTime
 				return nil
 			}
 			return agent.Run(ctx)
@@ -264,17 +209,7 @@ Configure Git LFS to use this agent:
 		"index store location (default: sibling 'index' directory of --store); same schemes as --store")
 	flags.StringVarP(&cache, "cache", "c", "",
 		"local chunk store used as download cache; chunks missing from the cache are fetched from --store and saved locally")
-	flags.BoolVar(&cacheRepair, "cache-repair", true,
-		"replace corrupt chunks in the cache by re-downloading them from --store")
-	flags.IntVarP(&concurrency, "concurrency", "n", 10, "number of concurrent goroutines")
 	flags.StringVarP(&chunkSize, "chunk-size", "m", "", "min:avg:max chunk size in KB (default 16:64:256)")
-	flags.IntVarP(&errorRetry, "error-retry", "e", desync.DefaultErrorRetry, "number of times to retry on network error")
-	flags.StringVar(&clientCert, "client-cert", "", "path to client certificate for TLS authentication")
-	flags.StringVar(&clientKey, "client-key", "", "path to client key for TLS authentication")
-	flags.StringVar(&caCert, "ca-cert", "", "CA certificate file to trust instead of OS trust store")
-	flags.BoolVarP(&trustInsecure, "trust-insecure", "t", false, "trust invalid certificates")
-	flags.DurationVarP(&errorRetryInterval, "error-retry-base-interval", "b",
-		desync.DefaultErrorRetryBaseInterval, "initial retry delay, increases linearly with each attempt")
 	flags.StringVar(&cfgFile, "config", "", "desync config file (default: $HOME/.config/desync/config.json)")
 	flags.StringVar(&cfgFromGit, "config-from-git", "",
 		"read desync config from a git object; %(remote) and %(operation) are replaced\n"+
@@ -284,11 +219,7 @@ Configure Git LFS to use this agent:
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
 			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")
-	flags.BoolVar(&safePruning, "safe-pruning", false,
-		"enable safe concurrent pruning protocol: after each upload, rescue written chunks\n"+
-			"so a concurrent 'desync prune --safe-pruning' cannot delete them (see doc/safe-pruning.md)")
-	flags.DurationVar(&safePropagationTime, "safe-propagation-time", desync.DefaultSafePropagationTime,
-		"max store write propagation delay for safe-pruning protocol")
+	desyncconfig.AddStoreOptions(&storeOpt, flags)
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)

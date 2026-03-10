@@ -98,6 +98,9 @@ type Agent struct {
 }
 
 func (a *Agent) Close() {
+	if a.writeStore != nil {
+		a.writeStore.Close()
+	}
 	if a.readStore != nil {
 		a.readStore.Close()
 	}

@@ -54,7 +54,7 @@ the output can be set to GNU tar, either an archive or STDOUT with '-'.
 }
 
 func runUntar(ctx context.Context, opt untarOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	opt.stores = cfg.ResolveStores(opt.stores)
@@ -124,5 +124,5 @@ func runUntar(ctx context.Context, opt untarOptions, args []string) error {
 		return err
 	}
 
-	return desync.UnTarIndex(ctx, fs, index, s, opt.n, desync.NewProgressBar("Unpacking "))
+	return desync.UnTarIndex(ctx, fs, index, s, opt.N, desync.NewProgressBar("Unpacking "))
 }

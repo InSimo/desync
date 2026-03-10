@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/folbricht/desync"
+	"github.com/folbricht/desync/cmd/internal/desyncconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +49,7 @@ file with --ignore-chunks <file>.`,
 }
 
 func runCache(ctx context.Context, opt cacheOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	opt.stores = cfg.ResolveStores(opt.stores)
@@ -101,7 +102,7 @@ func runCache(ctx context.Context, opt cacheOptions, args []string) error {
 		ids = append(ids, id)
 	}
 
-	s, err := multiStoreWithRouter(opt.cmdStoreOptions, opt.stores...)
+	s, err := desyncconfig.MultiStoreWithRouter(cfg, opt.cmdStoreOptions, opt.stores...)
 	if err != nil {
 		return err
 	}
@@ -117,5 +118,5 @@ func runCache(ctx context.Context, opt cacheOptions, args []string) error {
 	pb := desync.NewProgressBar("")
 
 	// Pull all the chunks, and load them into the cache in the process
-	return desync.Copy(ctx, ids, s, dst, opt.n, pb)
+	return desync.Copy(ctx, ids, s, dst, opt.N, pb)
 }

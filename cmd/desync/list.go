@@ -32,7 +32,7 @@ the index from STDIN.`,
 }
 
 func runList(ctx context.Context, opt listOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 

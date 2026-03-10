@@ -67,7 +67,7 @@ the input can be a tar file or a stream from STDIN with '-'.
 }
 
 func runTar(ctx context.Context, opt tarOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	opt.store = cfg.ResolveStore(opt.store)
@@ -154,7 +154,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 	// Read from the pipe, split the stream and store the chunks. This should
 	// complete when Tar is done and closes the pipe writer.
 	var sps desync.SafePruneStore
-	if opt.cmdStoreOptions.safePruning {
+	if opt.cmdStoreOptions.SafePruning {
 		if ps, ok := s.(desync.SafePruneStore); ok {
 			sps = ps
 		}
@@ -164,7 +164,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 		return err
 	}
 	mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
-	index, err := desync.ChunkStream(ctx, &c, s, opt.n, sps, mergedOpt.SafePropagationTime)
+	index, err := desync.ChunkStream(ctx, &c, s, opt.N, sps, mergedOpt.SafePropagationTime)
 	if err != nil {
 		return err
 	}

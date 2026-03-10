@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/folbricht/desync"
+	"github.com/folbricht/desync/cmd/internal/desyncconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -53,7 +54,7 @@ desync info --seed http://192.168.1.1/rootfs2.caibx --chunks-info chunks.json --
 }
 
 func runInfo(ctx context.Context, opt infoOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 
@@ -198,7 +199,7 @@ func runInfo(ctx context.Context, opt infoOptions, args []string) error {
 	results.Unique = len(deduped)
 
 	if len(opt.stores) > 0 {
-		store, err := multiStoreWithRouter(opt.cmdStoreOptions, opt.stores...)
+		store, err := desyncconfig.MultiStoreWithRouter(cfg, opt.cmdStoreOptions, opt.stores...)
 		if err != nil {
 			return err
 		}
@@ -206,7 +207,7 @@ func runInfo(ctx context.Context, opt infoOptions, args []string) error {
 		// Query the store in parallel for better performance
 		var wg sync.WaitGroup
 		ids := make(chan desync.ChunkID)
-		for i := 0; i < opt.n; i++ {
+		for i := 0; i < opt.N; i++ {
 			wg.Add(1)
 			go func() {
 				for id := range ids {

@@ -52,7 +52,7 @@ enables writing to this store.`,
 }
 
 func runIndexServer(ctx context.Context, opt indexServerOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	if err := opt.cmdServerOptions.validate(); err != nil {

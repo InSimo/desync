@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	"github.com/folbricht/desync"
+	"github.com/folbricht/desync/cmd/internal/desyncconfig"
 )
 
 func TestChunkStoreFromLocalPath(t *testing.T) {
 	dir := t.TempDir()
-	store, err := chunkStoreFromURL(dir, desync.StoreOptions{})
+	store, err := desyncconfig.WritableStore(dir, desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
 	if err != nil {
-		t.Fatalf("chunkStoreFromURL(%q): %v", dir, err)
+		t.Fatalf("WritableStore(%q): %v", dir, err)
 	}
 	defer store.Close()
 
@@ -38,9 +39,9 @@ func TestChunkStoreFromLocalPath(t *testing.T) {
 
 func TestIndexStoreFromLocalPath(t *testing.T) {
 	dir := t.TempDir()
-	store, err := indexStoreFromURL(dir, desync.StoreOptions{})
+	store, err := desyncconfig.WritableIndexStore(dir, desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
 	if err != nil {
-		t.Fatalf("indexStoreFromURL(%q): %v", dir, err)
+		t.Fatalf("WritableIndexStore(%q): %v", dir, err)
 	}
 	defer store.Close()
 
@@ -64,31 +65,31 @@ func TestIndexStoreFromLocalPath(t *testing.T) {
 }
 
 func TestChunkStoreSSHSchemeError(t *testing.T) {
-	_, err := chunkStoreFromURL("ssh://host/path", desync.StoreOptions{})
+	_, err := desyncconfig.WritableStore("ssh://host/path", desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
 	if err == nil {
 		t.Fatal("expected error for ssh:// chunk store, got nil")
 	}
-	if !strings.Contains(err.Error(), "read-only") {
-		t.Errorf("expected 'read-only' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "writing") {
+		t.Errorf("expected 'writing' in error, got: %v", err)
 	}
 }
 
 func TestIndexStoreSSHSchemeError(t *testing.T) {
-	_, err := indexStoreFromURL("ssh://host/path", desync.StoreOptions{})
+	_, err := desyncconfig.WritableIndexStore("ssh://host/path", desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
 	if err == nil {
 		t.Fatal("expected error for ssh:// index store, got nil")
 	}
 }
 
 func TestChunkStoreLocalPathNotExist(t *testing.T) {
-	_, err := chunkStoreFromURL("/nonexistent/path/does/not/exist", desync.StoreOptions{})
+	_, err := desyncconfig.WritableStore("/nonexistent/path/does/not/exist", desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
 	if err == nil {
 		t.Fatal("expected error for non-existent directory, got nil")
 	}
 }
 
 func TestIndexStoreLocalPathNotExist(t *testing.T) {
-	_, err := indexStoreFromURL("/nonexistent/path/does/not/exist", desync.StoreOptions{})
+	_, err := desyncconfig.WritableIndexStore("/nonexistent/path/does/not/exist", desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
 	if err == nil {
 		t.Fatal("expected error for non-existent directory, got nil")
 	}

@@ -71,7 +71,7 @@ needing to restart the server. This can be done under load as well.
 }
 
 func runMountIndex(ctx context.Context, opt mountIndexOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 
@@ -144,7 +144,7 @@ func runMountIndex(ctx context.Context, opt mountIndexOptions, args []string) er
 	}
 
 	// Mount it
-	return desync.MountIndex(ctx, idx, ifs, mountPoint, s, opt.n)
+	return desync.MountIndex(ctx, idx, ifs, mountPoint, s, opt.N)
 }
 
 // Reads the store-related command line options and returns the appropriate store.

@@ -44,7 +44,7 @@ to STDOUT.`,
 }
 
 func runMake(ctx context.Context, opt makeOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 
@@ -71,7 +71,7 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 
 	// Split up the file and create and index from it
 	pb := desync.NewProgressBar("Chunking ")
-	index, stats, err := desync.IndexFromFile(ctx, dataFile, opt.n, min, avg, max, pb)
+	index, stats, err := desync.IndexFromFile(ctx, dataFile, opt.N, min, avg, max, pb)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 	// Chop up the file into chunks and store them in the target store if a store was given.
 	if s != nil {
 		var sps desync.SafePruneStore
-		if opt.cmdStoreOptions.safePruning {
+		if opt.cmdStoreOptions.SafePruning {
 			if ps, ok := s.(desync.SafePruneStore); ok {
 				sps = ps
 			}
@@ -90,7 +90,7 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 		}
 		mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
 		pb := desync.NewProgressBar("Storing ")
-		if err := desync.ChopFile(ctx, dataFile, index.Chunks, s, opt.n, pb, sps, mergedOpt.SafePropagationTime); err != nil {
+		if err := desync.ChopFile(ctx, dataFile, index.Chunks, s, opt.N, pb, sps, mergedOpt.SafePropagationTime); err != nil {
 			return err
 		}
 	}

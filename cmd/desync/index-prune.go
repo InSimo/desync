@@ -44,7 +44,7 @@ STDIN (one per line).`,
 }
 
 func runIndexPrune(ctx context.Context, opt indexPruneOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	if opt.indexStore == "" {

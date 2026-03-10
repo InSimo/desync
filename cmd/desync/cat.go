@@ -50,7 +50,7 @@ Use '-' to read the index from STDIN.`,
 }
 
 func runCat(ctx context.Context, opt catOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 

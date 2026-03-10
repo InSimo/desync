@@ -47,7 +47,7 @@ a local directory.
 }
 
 func runMtree(ctx context.Context, opt mtreeOptions, args []string) error {
-	if err := opt.cmdStoreOptions.validate(); err != nil {
+	if err := opt.cmdStoreOptions.Validate(); err != nil {
 		return err
 	}
 	opt.stores = cfg.ResolveStores(opt.stores)
@@ -113,5 +113,5 @@ func runMtree(ctx context.Context, opt mtreeOptions, args []string) error {
 		return err
 	}
 
-	return desync.UnTarIndex(ctx, mtreeFS, index, s, opt.n, desync.NullProgressBar{})
+	return desync.UnTarIndex(ctx, mtreeFS, index, s, opt.N, desync.NullProgressBar{})
 }

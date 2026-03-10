@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/folbricht/desync"
+	"github.com/folbricht/desync/cmd/internal/desyncconfig"
 )
 
 func TestDeriveIndexURL(t *testing.T) {
@@ -283,17 +284,17 @@ func TestAgentUploadDownloadViaLocalURL(t *testing.T) {
 	indexDir := t.TempDir()
 	tmpDir := t.TempDir()
 
-	opt := desync.StoreOptions{}
+	opt := desyncconfig.CmdStoreOptions{}
 
-	chunkStore, err := chunkStoreFromURL(chunkDir, opt)
+	chunkStore, err := desyncconfig.WritableStore(chunkDir, desyncconfig.Config{}, opt)
 	if err != nil {
-		t.Fatalf("chunkStoreFromURL(%q): %v", chunkDir, err)
+		t.Fatalf("WritableStore(%q): %v", chunkDir, err)
 	}
 	defer chunkStore.Close()
 
-	indexStore, err := indexStoreFromURL(indexDir, opt)
+	indexStore, err := desyncconfig.WritableIndexStore(indexDir, desyncconfig.Config{}, opt)
 	if err != nil {
-		t.Fatalf("indexStoreFromURL(%q): %v", indexDir, err)
+		t.Fatalf("WritableIndexStore(%q): %v", indexDir, err)
 	}
 	defer indexStore.Close()
 
