@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/folbricht/desync"
-	"github.com/pkg/errors"
+	"github.com/folbricht/desync/cmd/internal/desyncconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -51,7 +48,7 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 	opt.store = cfg.ResolveStore(opt.store)
 	opt.chunkSize = cfg.ResolveChunkSize(opt.chunkSize)
 
-	min, avg, max, err := parseChunkSizeParam(opt.chunkSize)
+	min, avg, max, err := desyncconfig.ParseChunkSizeParam(opt.chunkSize)
 	if err != nil {
 		return err
 	}
@@ -103,25 +100,3 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 	return nil
 }
 
-func parseChunkSizeParam(s string) (min, avg, max uint64, err error) {
-	sizes := strings.Split(s, ":")
-	if len(sizes) != 3 {
-		return 0, 0, 0, fmt.Errorf("invalid chunk size '%s'", s)
-	}
-	num, err := strconv.Atoi(sizes[0])
-	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "min chunk size")
-	}
-	min = uint64(num) * 1024
-	num, err = strconv.Atoi(sizes[1])
-	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "avg chunk size")
-	}
-	avg = uint64(num) * 1024
-	num, err = strconv.Atoi(sizes[2])
-	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "max chunk size")
-	}
-	max = uint64(num) * 1024
-	return
-}

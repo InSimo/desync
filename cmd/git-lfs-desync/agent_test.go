@@ -61,7 +61,7 @@ func TestDeriveIndexURL(t *testing.T) {
 }
 
 func TestParseChunkSizeParam(t *testing.T) {
-	min, avg, max, err := parseChunkSizeParam("16:64:256")
+	min, avg, max, err := desyncconfig.ParseChunkSizeParam("16:64:256")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestParseChunkSizeParam(t *testing.T) {
 		t.Errorf("unexpected sizes: min=%d avg=%d max=%d", min, avg, max)
 	}
 
-	_, _, _, err = parseChunkSizeParam("bad")
+	_, _, _, err = desyncconfig.ParseChunkSizeParam("bad")
 	if err == nil {
 		t.Error("expected error for invalid chunk size param")
 	}

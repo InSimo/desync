@@ -143,7 +143,7 @@ func (c Config) ResolveIndexStore(cli string) string {
 
 // ResolveChunkSize returns cli if non-empty, otherwise c.Defaults.ChunkSize,
 // otherwise DefaultChunkSize. The return value is always a valid non-empty
-// min:avg:max string suitable for passing to parseChunkSizeParam.
+// min:avg:max string suitable for passing to ParseChunkSizeParam.
 func (c Config) ResolveChunkSize(cli string) string {
 	if cli != "" {
 		return cli

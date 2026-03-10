@@ -15,7 +15,6 @@ import (
 	"syscall"
 
 	"github.com/folbricht/desync/cmd/internal/desyncconfig"
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
@@ -179,7 +178,7 @@ Configure Git LFS to use this agent:
 					return err
 				}
 
-				minChunk, avgChunk, maxChunk, err := parseChunkSizeParam(resolvedChunkSize)
+				minChunk, avgChunk, maxChunk, err := desyncconfig.ParseChunkSizeParam(resolvedChunkSize)
 				if err != nil {
 					readStore.Close()
 					chunkStore.Close()
@@ -253,27 +252,3 @@ func runIndexes(args []string, r io.Reader, w io.Writer) error {
 	return scanner.Err()
 }
 
-func parseChunkSizeParam(s string) (min, avg, max uint64, err error) {
-	sizes := strings.Split(s, ":")
-	if len(sizes) != 3 {
-		return 0, 0, 0, fmt.Errorf("invalid chunk size %q, expected min:avg:max", s)
-	}
-	parseInt := func(str, label string) (uint64, error) {
-		var n int
-		_, scanErr := fmt.Sscan(str, &n)
-		if scanErr != nil {
-			return 0, errors.Wrap(scanErr, label+" chunk size")
-		}
-		return uint64(n) * 1024, nil
-	}
-	if min, err = parseInt(sizes[0], "min"); err != nil {
-		return
-	}
-	if avg, err = parseInt(sizes[1], "avg"); err != nil {
-		return
-	}
-	if max, err = parseInt(sizes[2], "max"); err != nil {
-		return
-	}
-	return
-}
