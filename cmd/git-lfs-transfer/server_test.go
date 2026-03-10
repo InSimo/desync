@@ -586,6 +586,25 @@ func TestUnknownCommand(t *testing.T) {
 	require.Equal(t, "status 400", status)
 }
 
+// --- git repo validation tests ---
+
+func TestValidateGitRepo_Valid(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	require.NoError(t, validateGitRepo(repoDir))
+}
+
+func TestValidateGitRepo_NotARepo(t *testing.T) {
+	dir := t.TempDir()
+	err := validateGitRepo(dir)
+	require.Error(t, err)
+}
+
+func TestValidateGitRepo_NonExistent(t *testing.T) {
+	err := validateGitRepo("/nonexistent/path/that/cannot/exist")
+	require.Error(t, err)
+}
+
 // --- OID validation tests ---
 
 func TestValidOID(t *testing.T) {

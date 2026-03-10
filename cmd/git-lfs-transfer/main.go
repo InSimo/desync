@@ -49,6 +49,10 @@ func run() error {
 		return fmt.Errorf("resolving path %q: %w", repoPath, err)
 	}
 
+	if err := validateGitRepo(absPath); err != nil {
+		return fmt.Errorf("not a git repository %q: %w", repoPath, err)
+	}
+
 	cfg, err := resolveConfig(absPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -194,6 +198,17 @@ func resolveConfig(repoPath string) (cmdshared.Config, error) {
 	cfg.Defaults.Stores = []string{filepath.Join(repoPath, "desync-lfs", "chunks")}
 	cfg.Defaults.IndexStore = filepath.Join(repoPath, "desync-lfs", "index")
 	return cfg, nil
+}
+
+// validateGitRepo returns an error if absPath is not a git repository.
+func validateGitRepo(absPath string) error {
+	cmd := exec.Command("git", "-C", absPath, "rev-parse", "--git-dir")
+	if out, err := cmd.Output(); err != nil {
+		return fmt.Errorf("git rev-parse --git-dir: %w", err)
+	} else if strings.TrimSpace(string(out)) == "" {
+		return fmt.Errorf("git rev-parse returned empty output")
+	}
+	return nil
 }
 
 // gitConfigValue runs `git -C repoPath config <key>` and returns the trimmed
