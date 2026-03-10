@@ -91,6 +91,19 @@ func run() error {
 	var cmdOpt cmdshared.CmdStoreOptions
 	cmdOpt.N = 10
 
+	// Ensure local store directories exist (created on first use).
+	if err := ensureLocalDir(tc.Store); err != nil {
+		return fmt.Errorf("creating store directory: %w", err)
+	}
+	if err := ensureLocalDir(tc.IndexStore); err != nil {
+		return fmt.Errorf("creating index store directory: %w", err)
+	}
+	if tc.Cache != "" {
+		if err := ensureLocalDir(tc.Cache); err != nil {
+			return fmt.Errorf("creating cache directory: %w", err)
+		}
+	}
+
 	// Open the write store (for uploads).
 	writeStore, err := cmdshared.WritableStore(tc.Store, cfg, cmdOpt)
 	if err != nil {
@@ -234,6 +247,16 @@ func resolveStorePath(location, basePath string) string {
 // expandPathTemplate replaces %(path) with the repo path value.
 func expandPathTemplate(s, repoPath string) string {
 	return strings.ReplaceAll(s, "%(path)", repoPath)
+}
+
+// ensureLocalDir creates the directory if the location is a local path.
+// URLs and existing directories are left untouched.
+func ensureLocalDir(location string) error {
+	u, err := url.Parse(location)
+	if err == nil && len(u.Scheme) > 1 {
+		return nil // URL with scheme — nothing to create
+	}
+	return os.MkdirAll(location, 0755)
 }
 
 func fileExists(path string) bool {
