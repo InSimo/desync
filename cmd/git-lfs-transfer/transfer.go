@@ -111,6 +111,13 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 		return s.w.WriteErrorStatus(400, fmt.Sprintf("invalid OID %q", oid))
 	}
 
+	if size > maxObjectSize {
+		if hasDelim {
+			s.drainBinaryData()
+		}
+		return s.w.WriteErrorStatus(400, fmt.Sprintf("object too large: %d bytes exceeds limit of %d", size, maxObjectSize))
+	}
+
 	// Receive the binary data into a temp file.
 	tmpFile, err := os.CreateTemp(s.tmpDir, "git-lfs-transfer-put-*")
 	if err != nil {

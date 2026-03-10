@@ -586,6 +586,82 @@ func TestUnknownCommand(t *testing.T) {
 	require.Equal(t, "status 400", status)
 }
 
+// --- size validation tests ---
+
+func TestParseSize(t *testing.T) {
+	cases := []struct {
+		input   string
+		want    int64
+		wantErr bool
+	}{
+		{"0", 0, false},
+		{"1", 1, false},
+		{"1073741824", 1 << 30, false},
+		{"-1", 0, true},
+		{"-999", 0, true},
+		{"abc", 0, true},
+		{"", 0, true},
+	}
+	for _, tc := range cases {
+		args := map[string]string{"size": tc.input}
+		got, err := parseSize(args)
+		if tc.wantErr {
+			require.Error(t, err, "parseSize(%q) should error", tc.input)
+		} else {
+			require.NoError(t, err, "parseSize(%q) should not error", tc.input)
+			require.Equal(t, tc.want, got)
+		}
+	}
+	// Missing key.
+	_, err := parseSize(map[string]string{})
+	require.Error(t, err)
+}
+
+func TestPutObjectNegativeSize(t *testing.T) {
+	srv := testServer(t, "upload")
+	oid := strings.Repeat("aa", 32)
+
+	out := runSession(t, srv, func(w *pktline.Writer) {
+		w.WritePacketText("version 1")
+		w.WriteFlush()
+		w.WritePacketText("put-object " + oid)
+		w.WritePacketText("size=-1")
+		w.WriteDelim()
+		w.WriteFlush()
+		w.WritePacketText("quit")
+		w.WriteFlush()
+	})
+
+	r := pktline.NewReader(bytes.NewReader(out))
+	skipCapAndVersion(t, r)
+	status, err := r.ReadPacketText()
+	require.NoError(t, err)
+	require.Equal(t, "status 400", status)
+}
+
+func TestPutObjectTooLarge(t *testing.T) {
+	srv := testServer(t, "upload")
+	oid := strings.Repeat("bb", 32)
+	tooBig := maxObjectSize + 1
+
+	out := runSession(t, srv, func(w *pktline.Writer) {
+		w.WritePacketText("version 1")
+		w.WriteFlush()
+		w.WritePacketText("put-object " + oid)
+		w.WritePacketText(fmt.Sprintf("size=%d", tooBig))
+		w.WriteDelim()
+		w.WriteFlush()
+		w.WritePacketText("quit")
+		w.WriteFlush()
+	})
+
+	r := pktline.NewReader(bytes.NewReader(out))
+	skipCapAndVersion(t, r)
+	status, err := r.ReadPacketText()
+	require.NoError(t, err)
+	require.Equal(t, "status 400", status)
+}
+
 // --- git repo validation tests ---
 
 func TestValidateGitRepo_Valid(t *testing.T) {

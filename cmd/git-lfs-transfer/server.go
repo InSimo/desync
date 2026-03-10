@@ -167,13 +167,25 @@ func (s *Server) readArgs() (map[string]string, bool, error) {
 	}
 }
 
-// parseSize extracts and validates the "size" argument.
+// maxObjectSize is the maximum accepted LFS object size (100 GiB).  Uploads
+// that declare a larger size are rejected before any data is received.
+const maxObjectSize int64 = 100 * 1024 * 1024 * 1024
+
+// parseSize extracts and validates the "size" argument.  It returns an error
+// for missing, non-numeric, or negative values; callers enforce upper bounds.
 func parseSize(args map[string]string) (int64, error) {
 	sizeStr, ok := args["size"]
 	if !ok {
 		return 0, fmt.Errorf("missing required 'size' argument")
 	}
-	return strconv.ParseInt(sizeStr, 10, 64)
+	n, err := strconv.ParseInt(sizeStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size %q: %w", sizeStr, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("size must not be negative")
+	}
+	return n, nil
 }
 
 // oidIndexName returns the sharded index name for a Git LFS OID.
