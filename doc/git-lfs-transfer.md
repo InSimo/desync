@@ -221,6 +221,139 @@ When `safe-pruning` is enabled in the config, the server participates in the saf
 
 See [safe-pruning.md](safe-pruning.md) for details on the protocol.
 
+## Local Testing with Docker (SSH)
+
+> **Warning:** The Docker container started below uses a throwaway SSH key with no passphrase and a default SSH server configuration that is not hardened for production use. Keep it bound to `localhost` and tear it down when you are done testing.
+
+The following steps reproduce the full upload/download cycle using an ephemeral Docker container running OpenSSH and our `git-lfs-transfer` binary, testing the plain-SSH deployment model described in [Server Setup](#server-setup).
+
+### 1. Build the binary
+
+Cross-compile a static binary for the container:
+
+```sh
+CGO_ENABLED=0 GOOS=linux go build -o /tmp/git-lfs-transfer ./cmd/git-lfs-transfer
+```
+
+### 2. Generate a throwaway SSH key pair
+
+```sh
+ssh-keygen -t ed25519 -f /tmp/lfs-test-key -N "" -q
+```
+
+### 3. Start an SSH-enabled container
+
+```sh
+docker run -d \
+  --name lfs-ssh-test \
+  -p 2222:22 \
+  alpine:latest sh -c '
+    apk add --no-cache openssh git git-lfs &&
+    adduser -D -s /bin/sh git &&
+    passwd -u git &&
+    mkdir -p /home/git/.ssh &&
+    ssh-keygen -A &&
+    /usr/sbin/sshd -D -e
+  '
+```
+
+Copy the binary and SSH key into the container:
+
+```sh
+docker cp /tmp/git-lfs-transfer lfs-ssh-test:/usr/local/bin/git-lfs-transfer
+docker exec lfs-ssh-test chmod +x /usr/local/bin/git-lfs-transfer
+docker cp /tmp/lfs-test-key.pub lfs-ssh-test:/home/git/.ssh/authorized_keys
+docker exec lfs-ssh-test chown -R git:git /home/git/.ssh
+docker exec lfs-ssh-test chmod 700 /home/git/.ssh
+docker exec lfs-ssh-test chmod 600 /home/git/.ssh/authorized_keys
+```
+
+### 4. Create a bare repository on the server
+
+```sh
+docker exec -u git lfs-ssh-test git init --bare /home/git/test-repo.git
+```
+
+### 5. Set up a test repository and push two files
+
+The two test files share a 3 MB block of pseudo-random data, followed by 1 MB of different compressible data each. This demonstrates both deduplication (shared chunks stored once) and compression (compressible chunks shrink on disk).
+
+```sh
+mkdir /tmp/lfs-ssh-repo && cd /tmp/lfs-ssh-repo
+git init
+git lfs install --local
+git config core.sshCommand \
+    "ssh -i /tmp/lfs-test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+git lfs track "*.bin"
+git add .gitattributes
+git commit -m "Track .bin files with LFS"
+
+# Create a 3 MB shared block of pseudo-random data (deterministic seed).
+python3 -c "
+import random, sys
+random.seed(42)
+sys.stdout.buffer.write(bytes(random.getrandbits(8) for _ in range(3*1024*1024)))
+" > /tmp/shared_block
+
+# file_a = shared 3 MB + 1 MB of zeros
+cat /tmp/shared_block > file_a.bin
+dd if=/dev/zero bs=1M count=1 2>/dev/null >> file_a.bin
+
+# file_b = shared 3 MB + 1 MB of repeated text
+cat /tmp/shared_block > file_b.bin
+python3 -c "
+import sys
+line = b'The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs.\n'
+sys.stdout.buffer.write((line * (1024*1024 // len(line) + 1))[:1024*1024])
+" >> file_b.bin
+
+git add file_a.bin
+git commit -m "Add file_a"
+
+git remote add origin ssh://git@localhost:2222/home/git/test-repo.git
+git push origin master
+
+git add file_b.bin
+git commit -m "Add file_b"
+git push origin master
+```
+
+Git LFS automatically derives the SSH endpoint from the `origin` remote URL and invokes `git-lfs-transfer` on the server via SSH. The convention-based store directories (`desync-lfs/chunks` and `desync-lfs/index`) are created automatically on first upload.
+
+### 6. Verify compression and deduplication
+
+```sh
+docker exec lfs-ssh-test find /home/git/test-repo.git/desync-lfs/chunks/ -name "*.cacnk" | wc -l
+# → ~57 chunks (not ~104) — shared chunks stored only once
+
+docker exec lfs-ssh-test du -sh /home/git/test-repo.git/desync-lfs/chunks/
+# → ~3.3 MB on disk for 8 MB of raw data — compressible regions shrink
+```
+
+Without deduplication, two 4 MB files would produce roughly twice as many chunks. The shared 3 MB region produces ~47 identical chunks that are stored only once. The zeros and repeated text compress well, so the total on-disk size is well under half the raw input.
+
+### 7. Clone and verify download
+
+```sh
+GIT_SSH_COMMAND="ssh -i /tmp/lfs-test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+    git clone ssh://git@localhost:2222/home/git/test-repo.git /tmp/lfs-ssh-clone
+
+# Verify integrity — both files must match the originals
+sha256sum /tmp/lfs-ssh-clone/file_a.bin /tmp/lfs-ssh-clone/file_b.bin
+sha256sum /tmp/lfs-ssh-repo/file_a.bin /tmp/lfs-ssh-repo/file_b.bin
+```
+
+### 8. Cleanup
+
+```sh
+docker rm -f lfs-ssh-test
+rm -rf /tmp/lfs-ssh-repo /tmp/lfs-ssh-clone /tmp/shared_block \
+       /tmp/lfs-test-key /tmp/lfs-test-key.pub /tmp/git-lfs-transfer
+```
+
+---
+
 ## Differences from git-lfs-desync
 
 | Aspect              | `git-lfs-desync` (client)                        | `git-lfs-transfer` (server)                      |
