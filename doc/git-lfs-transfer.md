@@ -46,27 +46,26 @@ The server resolves configuration in this order:
 
 ### Config File Format
 
-The config file uses the same JSON format as the main desync config (see the project README for the full schema), with these additional top-level keys specific to `git-lfs-transfer`:
+The config file uses the same JSON format as the main desync `config.json` (see the project README for the full schema). The relevant fields are:
 
-| Key                       | Required | Default                          | Description                                                                                             |
-| ------------------------- | -------- | -------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `store`                   | yes      | —                                | Chunk store location. See [Supported Backends](#supported-backends).                                    |
-| `index-store`             | no       | derived from `store`             | Index store location. If omitted, derived by replacing the last path segment of `store` with `index`.   |
-| `cache`                   | no       | —                                | Local chunk cache for downloads. Chunks are fetched from `store` on cache miss and saved locally.       |
-| `chunk-size`              | no       | `16:64:256`                      | Min:avg:max chunk size in KB.                                                                           |
-| `digest`                  | no       | `sha512-256`                     | Hash algorithm for chunk identification: `sha512-256` or `sha256`.                                      |
-| `safe-pruning`            | no       | `false`                          | Enable the safe concurrent pruning protocol on uploads. See [Safe Pruning](#safe-pruning).              |
-| `safe-propagation-time`   | no       | `1s`                             | Max store write propagation delay for the safe pruning protocol. Go duration format (e.g. `1s`, `30s`). |
-
-Safe pruning options (`safe-pruning`, `safe-propagation-time`) can also be set per-store via `store-options`, and S3 credentials are configured in `s3-credentials` — both following the standard desync config format.
+- **`defaults.stores`** — single-element array with the chunk store location (required). See [Supported Backends](#supported-backends).
+- **`defaults.index-store`** — index store location. If omitted, derived by replacing the last path segment of the store with `index`.
+- **`defaults.cache`** — local chunk cache for downloads.
+- **`defaults.chunk-size`** — min:avg:max chunk size in KB (default `16:64:256`).
+- **`defaults.digest`** — hash algorithm: `sha512-256` (default) or `sha256`.
+- **`store-options.<url>.safe-pruning`** — enable the safe concurrent pruning protocol on uploads. See [Safe Pruning](#safe-pruning).
+- **`store-options.<url>.safe-propagation-time`** — max store write propagation delay for safe pruning. Go duration format, default `1s`.
+- **`s3-credentials`** — S3 credentials per endpoint.
 
 Example:
 
 ```json
 {
-  "store": "s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/",
-  "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/",
-  "cache": "/var/cache/desync/chunks",
+  "defaults": {
+    "stores": ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"],
+    "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/",
+    "cache": "/var/cache/desync/chunks"
+  },
   "s3-credentials": {
     "https://s3.amazonaws.com": {
       "access-key": "AKIAIOSFODNN7EXAMPLE",
@@ -88,8 +87,10 @@ Store paths in the config file support `%(path)` template expansion, which is re
 
 ```json
 {
-  "store": "%(path)/desync-lfs/chunks",
-  "index-store": "%(path)/desync-lfs/index"
+  "defaults": {
+    "stores": ["%(path)/desync-lfs/chunks"],
+    "index-store": "%(path)/desync-lfs/index"
+  }
 }
 ```
 
@@ -99,7 +100,9 @@ Relative local paths in the config file are resolved against the `<path>` argume
 
 ```json
 {
-  "store": "desync-lfs/chunks"
+  "defaults": {
+    "stores": ["desync-lfs/chunks"]
+  }
 }
 ```
 
@@ -136,8 +139,10 @@ Place a `desync-lfs.json` in the repository directory:
 ```sh
 cat > /git/myrepo.git/desync-lfs.json << 'EOF'
 {
-  "store": "/data/lfs/chunks",
-  "index-store": "/data/lfs/index"
+  "defaults": {
+    "stores": ["/data/lfs/chunks"],
+    "index-store": "/data/lfs/index"
+  }
 }
 EOF
 ```
@@ -151,8 +156,10 @@ Place a `desync-lfs.json` in a common parent directory. For example, if reposito
 ```sh
 cat > /git/desync-lfs.json << 'EOF'
 {
-  "store": "%(path)/desync-lfs/chunks",
-  "index-store": "%(path)/desync-lfs/index"
+  "defaults": {
+    "stores": ["%(path)/desync-lfs/chunks"],
+    "index-store": "%(path)/desync-lfs/index"
+  }
 }
 EOF
 ```
@@ -166,7 +173,9 @@ Place the config at `/etc/desync/desync-lfs.json` as a fallback for all reposito
 ```sh
 cat > /etc/desync/desync-lfs.json << 'EOF'
 {
-  "store": "s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/",
+  "defaults": {
+    "stores": ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"]
+  },
   "s3-credentials": {
     "https://s3.amazonaws.com": {
       "access-key": "AKIAIOSFODNN7EXAMPLE",
