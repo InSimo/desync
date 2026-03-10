@@ -2,12 +2,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -37,12 +35,18 @@ func expandGitObjectName(template, remote, operation string) string {
 
 func initConfig(gitObjectName string) error {
 	if gitObjectName != "" {
-		out, err := exec.Command("git", "cat-file", "--textconv", gitObjectName).Output()
+		var (
+			found bool
+			err   error
+		)
+		cfg, found, err = cmdshared.LoadConfigFromGitObject("", gitObjectName)
 		if err != nil {
 			return fmt.Errorf("reading config from git object %q: %w", gitObjectName, err)
 		}
-		cfg, err = cmdshared.LoadConfigFromReader(bytes.NewReader(out))
-		return err
+		if !found {
+			return fmt.Errorf("git object %q not found", gitObjectName)
+		}
+		return nil
 	}
 	var err error
 	cfg, cfgFile, err = cmdshared.LoadConfig(cfgFile)

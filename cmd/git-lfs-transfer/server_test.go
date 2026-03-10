@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -430,6 +431,139 @@ func TestResolveConfigPathTemplate(t *testing.T) {
 
 	require.Equal(t, fmt.Sprintf("s3+https://bucket/%s/chunks/", repoDir), cfg.ResolveStore(""))
 	require.Equal(t, fmt.Sprintf("s3+https://bucket/%s/index/", repoDir), cfg.ResolveIndexStore(""))
+}
+
+// --- git config key tests ---
+
+// initGitRepo runs "git init" in dir with a dummy identity so commits work.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	cmds := [][]string{
+		{"git", "init", dir},
+		{"git", "-C", dir, "config", "user.email", "test@test.com"},
+		{"git", "-C", dir, "config", "user.name", "Test"},
+	}
+	for _, args := range cmds {
+		require.NoError(t, exec.Command(args[0], args[1:]...).Run())
+	}
+}
+
+// gitSetConfig sets a git config key in dir.
+func gitSetConfig(t *testing.T, dir, key, value string) {
+	t.Helper()
+	require.NoError(t, exec.Command("git", "-C", dir, "config", key, value).Run())
+}
+
+func TestResolveConfigGitConfigPath_Relative(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	gitSetConfig(t, repoDir, "desync-lfs.config.path", "myconfig.json")
+
+	configContent := `{"defaults": {"stores": ["/custom/chunks"], "index-store": "/custom/index"}}`
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "myconfig.json"), []byte(configContent), 0644))
+
+	cfg, err := resolveConfig(repoDir)
+	require.NoError(t, err)
+	require.Equal(t, "/custom/chunks", cfg.ResolveStore(""))
+	require.Equal(t, "/custom/index", cfg.ResolveIndexStore(""))
+}
+
+func TestResolveConfigGitConfigPath_Absolute(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	cfgFile := filepath.Join(t.TempDir(), "absolute.json")
+	configContent := `{"defaults": {"stores": ["/abs/chunks"], "index-store": "/abs/index"}}`
+	require.NoError(t, os.WriteFile(cfgFile, []byte(configContent), 0644))
+	gitSetConfig(t, repoDir, "desync-lfs.config.path", cfgFile)
+
+	cfg, err := resolveConfig(repoDir)
+	require.NoError(t, err)
+	require.Equal(t, "/abs/chunks", cfg.ResolveStore(""))
+	require.Equal(t, "/abs/index", cfg.ResolveIndexStore(""))
+}
+
+func TestResolveConfigGitConfigPath_WalkUp(t *testing.T) {
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repos", "myrepo.git")
+	require.NoError(t, os.MkdirAll(repoDir, 0755))
+	initGitRepo(t, repoDir)
+	gitSetConfig(t, repoDir, "desync-lfs.config.path", "custom.json")
+
+	// Place the file in a parent directory, not repoDir itself.
+	configContent := `{"defaults": {"stores": ["/walked/chunks"], "index-store": "/walked/index"}}`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "custom.json"), []byte(configContent), 0644))
+
+	cfg, err := resolveConfig(repoDir)
+	require.NoError(t, err)
+	require.Equal(t, "/walked/chunks", cfg.ResolveStore(""))
+}
+
+func TestResolveConfigGitConfigObject_Found(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	configContent := `{"defaults": {"stores": ["/git/obj/chunks"], "index-store": "/git/obj/index"}}`
+	cfgPath := filepath.Join(repoDir, "desync-lfs.json")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(configContent), 0644))
+	require.NoError(t, exec.Command("git", "-C", repoDir, "add", "desync-lfs.json").Run())
+	require.NoError(t, exec.Command("git", "-C", repoDir, "commit", "-m", "add config").Run())
+
+	gitSetConfig(t, repoDir, "desync-lfs.config.object", "HEAD:desync-lfs.json")
+
+	cfg, err := resolveConfig(repoDir)
+	require.NoError(t, err)
+	require.Equal(t, "/git/obj/chunks", cfg.ResolveStore(""))
+	require.Equal(t, "/git/obj/index", cfg.ResolveIndexStore(""))
+}
+
+func TestResolveConfigGitConfigObject_NotFound_FallsBackToPath(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	// Point at an object that doesn't exist.
+	gitSetConfig(t, repoDir, "desync-lfs.config.object", "HEAD:nonexistent.json")
+
+	// Provide a regular config file to fall back to.
+	configContent := `{"defaults": {"stores": ["/fallback/chunks"], "index-store": "/fallback/index"}}`
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, configFileName), []byte(configContent), 0644))
+
+	cfg, err := resolveConfig(repoDir)
+	require.NoError(t, err)
+	require.Equal(t, "/fallback/chunks", cfg.ResolveStore(""))
+}
+
+func TestResolveConfigGitConfigObject_TakesPrecedenceOverPath(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	// Commit the object config.
+	objContent := `{"defaults": {"stores": ["/from/object/chunks"], "index-store": "/from/object/index"}}`
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "desync-lfs.json"), []byte(objContent), 0644))
+	require.NoError(t, exec.Command("git", "-C", repoDir, "add", "desync-lfs.json").Run())
+	require.NoError(t, exec.Command("git", "-C", repoDir, "commit", "-m", "add config").Run())
+
+	// Also write a different file on disk that the path key points to.
+	pathContent := `{"defaults": {"stores": ["/from/path/chunks"], "index-store": "/from/path/index"}}`
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "other.json"), []byte(pathContent), 0644))
+
+	gitSetConfig(t, repoDir, "desync-lfs.config.object", "HEAD:desync-lfs.json")
+	gitSetConfig(t, repoDir, "desync-lfs.config.path", "other.json")
+
+	cfg, err := resolveConfig(repoDir)
+	require.NoError(t, err)
+	// Object must win.
+	require.Equal(t, "/from/object/chunks", cfg.ResolveStore(""))
+}
+
+func TestResolveConfigNoGitRepo(t *testing.T) {
+	// Plain temp dir — not a git repo. gitConfigValue should return "" silently.
+	repoDir := t.TempDir()
+	configContent := `{"defaults": {"stores": ["/plain/chunks"], "index-store": "/plain/index"}}`
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, configFileName), []byte(configContent), 0644))
+
+	cfg, err := resolveConfig(repoDir)
+	require.NoError(t, err)
+	require.Equal(t, "/plain/chunks", cfg.ResolveStore(""))
 }
 
 func TestUnknownCommand(t *testing.T) {

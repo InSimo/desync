@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -131,18 +132,48 @@ func run() error {
 
 // resolveConfig finds and loads the transfer configuration.
 //
-// Lookup order:
-//  1. Walk up from repoPath looking for desync-lfs.json.
-//  2. Global fallback: /etc/desync/desync-lfs.json.
-//  3. Convention: <repoPath>/desync-lfs/{chunks,index}.
+// Resolution order:
+//  1. desync-lfs.config.object git config key — read config from a git object.
+//     Falls through if the key is unset or the object is absent in the repo.
+//  2. desync-lfs.config.path git config key — overrides the filename to search.
+//     Default filename is "desync-lfs.json".
+//  3. Walk up from repoPath looking for the config filename.
+//  4. Global fallback: /etc/desync/<filename>.
+//  5. Convention-based: <repoPath>/desync-lfs/{chunks,index}.
 //
 // The config file uses the same format as the main desync config.json.
 // Relative store paths in the config are resolved against repoPath.
 func resolveConfig(repoPath string) (cmdshared.Config, error) {
-	// 1. Walk up from repoPath.
+	// 1. desync-lfs.config.object — read config from a git object.
+	if objectRef := gitConfigValue(repoPath, "desync-lfs.config.object"); objectRef != "" {
+		cfg, found, err := cmdshared.LoadConfigFromGitObject(repoPath, objectRef)
+		if err != nil {
+			return cmdshared.Config{}, fmt.Errorf("git object config %q: %w", objectRef, err)
+		}
+		if found {
+			return applyConfigDefaults(cfg, repoPath, objectRef)
+		}
+		// Object absent in repo — fall through to path-based strategy.
+	}
+
+	// 2. desync-lfs.config.path — override the config filename.
+	configName := configFileName
+	if p := gitConfigValue(repoPath, "desync-lfs.config.path"); p != "" {
+		configName = p
+	}
+
+	// Absolute path: use directly.
+	if filepath.IsAbs(configName) {
+		if !fileExists(configName) {
+			return cmdshared.Config{}, fmt.Errorf("config file not found: %s", configName)
+		}
+		return loadConfig(configName, repoPath)
+	}
+
+	// 3. Walk up from repoPath.
 	dir := repoPath
 	for {
-		candidate := filepath.Join(dir, configFileName)
+		candidate := filepath.Join(dir, configName)
 		if fileExists(candidate) {
 			return loadConfig(candidate, repoPath)
 		}
@@ -153,17 +184,27 @@ func resolveConfig(repoPath string) (cmdshared.Config, error) {
 		dir = parent
 	}
 
-	// 2. Global fallback.
-	globalConfig := filepath.Join("/etc", "desync", configFileName)
-	if fileExists(globalConfig) {
+	// 4. Global fallback.
+	if globalConfig := filepath.Join("/etc", "desync", configName); fileExists(globalConfig) {
 		return loadConfig(globalConfig, repoPath)
 	}
 
-	// 3. Convention-based: <repoPath>/desync-lfs/{chunks,index}.
+	// 5. Convention-based: <repoPath>/desync-lfs/{chunks,index}.
 	var cfg cmdshared.Config
 	cfg.Defaults.Stores = []string{filepath.Join(repoPath, "desync-lfs", "chunks")}
 	cfg.Defaults.IndexStore = filepath.Join(repoPath, "desync-lfs", "index")
 	return cfg, nil
+}
+
+// gitConfigValue runs `git -C repoPath config <key>` and returns the trimmed
+// value, or "" if the key is unset, the directory is not a git repo, or git
+// is not available.
+func gitConfigValue(repoPath, key string) string {
+	out, err := exec.Command("git", "-C", repoPath, "config", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func loadConfig(configPath, repoPath string) (cmdshared.Config, error) {
@@ -177,12 +218,17 @@ func loadConfig(configPath, repoPath string) (cmdshared.Config, error) {
 	if err != nil {
 		return cmdshared.Config{}, fmt.Errorf("%s: %w", configPath, err)
 	}
+	return applyConfigDefaults(cfg, repoPath, configPath)
+}
 
+// applyConfigDefaults validates and post-processes a freshly loaded Config:
+// expands %(path) templates, resolves relative store paths, and derives the
+// index store URL when absent.  source is used only in error messages.
+func applyConfigDefaults(cfg cmdshared.Config, repoPath, source string) (cmdshared.Config, error) {
 	if len(cfg.Defaults.Stores) == 0 {
-		return cfg, fmt.Errorf("config %s: 'defaults.stores' is required", configPath)
+		return cfg, fmt.Errorf("config %s: 'defaults.stores' is required", source)
 	}
 
-	// Expand %(path) templates before resolving paths.
 	cfg.Defaults.Stores[0] = expandPathTemplate(cfg.Defaults.Stores[0], repoPath)
 	if cfg.Defaults.IndexStore != "" {
 		cfg.Defaults.IndexStore = expandPathTemplate(cfg.Defaults.IndexStore, repoPath)
@@ -191,11 +237,11 @@ func loadConfig(configPath, repoPath string) (cmdshared.Config, error) {
 		cfg.Defaults.Cache = expandPathTemplate(cfg.Defaults.Cache, repoPath)
 	}
 
-	// Resolve relative local paths against repoPath.
 	cfg.Defaults.Stores[0] = resolveStorePath(cfg.Defaults.Stores[0], repoPath)
 	if cfg.Defaults.IndexStore != "" {
 		cfg.Defaults.IndexStore = resolveStorePath(cfg.Defaults.IndexStore, repoPath)
 	} else {
+		var err error
 		cfg.Defaults.IndexStore, err = cmdshared.DeriveIndexURL(cfg.Defaults.Stores[0])
 		if err != nil {
 			return cfg, fmt.Errorf("deriving index store from %q: %w", cfg.Defaults.Stores[0], err)

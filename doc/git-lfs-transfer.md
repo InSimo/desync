@@ -40,9 +40,20 @@ The same backends supported by desync are available:
 
 The server resolves configuration in this order:
 
-1. **Walk up from `<path>`** — Starting at the `<path>` argument (the repository path passed by the SSH command), walk up parent directories looking for a `desync-lfs.json` file. The first one found is used.
-2. **Global fallback** — If no config file is found in the directory tree, look for `/etc/desync/desync-lfs.json`.
-3. **Convention-based** — If no config file exists at all, use `<path>/desync-lfs/chunks` as the chunk store and `<path>/desync-lfs/index` as the index store.
+1. **`desync-lfs.config.object` git config key** — If the repository at `<path>` has this key set (e.g. `_desync:config.json`), the config is read from that git object via `git cat-file --textconv`. If the object is absent, resolution continues to the next step.
+2. **`desync-lfs.config.path` git config key** — If set, overrides the config filename to search for. The value may be an absolute path (used directly) or a relative filename (searched by walking up directories, same as step 3). Defaults to `desync-lfs.json`.
+3. **Walk up from `<path>`** — Walk up parent directories looking for the config filename. The first match is used.
+4. **Global fallback** — If no config file is found in the directory tree, look for `/etc/desync/<filename>`.
+5. **Convention-based** — If no config file exists at all, use `<path>/desync-lfs/chunks` as the chunk store and `<path>/desync-lfs/index` as the index store.
+
+The git config keys are read with `git -C <path> config <key>`. If `<path>` is not a git repository or git is not available, the keys are silently ignored and resolution continues from step 3.
+
+To set these keys for a repository:
+
+```sh
+git -C /git/myrepo.git config desync-lfs.config.object '_desync:config.json'
+git -C /git/myrepo.git config desync-lfs.config.path '/etc/myorg/lfs-config.json'
+```
 
 ### Config File Format
 

@@ -1,11 +1,13 @@
 package cmdshared
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -177,6 +179,30 @@ func SetDigestAlgorithm(algorithm string) error {
 		return fmt.Errorf("invalid digest algorithm '%s'", algorithm)
 	}
 	return nil
+}
+
+// LoadConfigFromGitObject reads desync config JSON from a git object via
+// `git cat-file --textconv <objectRef>`. When repoDir is non-empty the command
+// is run with `-C repoDir`; an empty repoDir means use the process working
+// directory (suitable for git-lfs-desync which runs inside the user's repo).
+//
+// Returns (cfg, false, nil) when git exits non-zero (object absent or not a
+// git repo), so the caller can fall back gracefully.
+// A real error (exec failure, JSON parse error) is returned as err.
+func LoadConfigFromGitObject(repoDir, objectRef string) (Config, bool, error) {
+	args := []string{"cat-file", "--textconv", objectRef}
+	if repoDir != "" {
+		args = append([]string{"-C", repoDir}, args...)
+	}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return Config{}, false, nil // object not found; caller falls back
+	}
+	cfg, err := LoadConfigFromReader(bytes.NewReader(out))
+	if err != nil {
+		return Config{}, true, fmt.Errorf("config object %q: %w", objectRef, err)
+	}
+	return cfg, true, nil
 }
 
 // LoadConfigFromReader JSON-decodes a Config from r.
