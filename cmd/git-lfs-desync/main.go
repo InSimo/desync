@@ -14,11 +14,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	"github.com/spf13/cobra"
 )
 
-var cfg desyncconfig.Config
+var cfg cmdshared.Config
 var cfgFile string
 var cfgFromGit string
 var digestAlgorithm string
@@ -43,11 +43,11 @@ func initConfig(gitObjectName string) error {
 		if err != nil {
 			return fmt.Errorf("reading config from git object %q: %w", gitObjectName, err)
 		}
-		cfg, err = desyncconfig.LoadConfigFromReader(bytes.NewReader(out))
+		cfg, err = cmdshared.LoadConfigFromReader(bytes.NewReader(out))
 		return err
 	}
 	var err error
-	cfg, cfgFile, err = desyncconfig.LoadConfig(cfgFile)
+	cfg, cfgFile, err = cmdshared.LoadConfig(cfgFile)
 	return err
 }
 
@@ -92,7 +92,7 @@ func main() {
 		cache     string
 		chunkSize string
 		indexes   bool
-		storeOpt  desyncconfig.CmdStoreOptions
+		storeOpt  cmdshared.CmdStoreOptions
 	)
 
 	cmd := &cobra.Command{
@@ -137,7 +137,7 @@ Configure Git LFS to use this agent:
 				if err := initConfig(gitObjectName); err != nil {
 					return err
 				}
-				if err := desyncconfig.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
+				if err := cmdshared.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
 					return err
 				}
 
@@ -149,14 +149,14 @@ Configure Git LFS to use this agent:
 					return fmt.Errorf("--store is required")
 				}
 
-				chunkStore, err := desyncconfig.WritableStore(resolvedStore, cfg, storeOpt)
+				chunkStore, err := cmdshared.WritableStore(resolvedStore, cfg, storeOpt)
 				if err != nil {
 					return err
 				}
 
 				// Build the read store for downloads, optionally wrapping the remote
 				// store with a local cache tier.
-				readStore, err := desyncconfig.MultiStoreWithCache(cfg, storeOpt, cache, resolvedStore)
+				readStore, err := cmdshared.MultiStoreWithCache(cfg, storeOpt, cache, resolvedStore)
 				if err != nil {
 					chunkStore.Close()
 					return err
@@ -171,14 +171,14 @@ Configure Git LFS to use this agent:
 					}
 				}
 
-				indexStore, err := desyncconfig.WritableIndexStore(resolvedIndex, cfg, storeOpt)
+				indexStore, err := cmdshared.WritableIndexStore(resolvedIndex, cfg, storeOpt)
 				if err != nil {
 					readStore.Close()
 					chunkStore.Close()
 					return err
 				}
 
-				minChunk, avgChunk, maxChunk, err := desyncconfig.ParseChunkSizeParam(resolvedChunkSize)
+				minChunk, avgChunk, maxChunk, err := cmdshared.ParseChunkSizeParam(resolvedChunkSize)
 				if err != nil {
 					readStore.Close()
 					chunkStore.Close()
@@ -218,7 +218,7 @@ Configure Git LFS to use this agent:
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
 			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")
-	desyncconfig.AddStoreOptions(&storeOpt, flags)
+	cmdshared.AddStoreOptions(&storeOpt, flags)
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)

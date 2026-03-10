@@ -1,4 +1,4 @@
-package desyncconfig
+package cmdshared
 
 import (
 	"fmt"

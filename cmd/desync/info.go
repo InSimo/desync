@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	"github.com/spf13/cobra"
 )
 
@@ -199,7 +199,7 @@ func runInfo(ctx context.Context, opt infoOptions, args []string) error {
 	results.Unique = len(deduped)
 
 	if len(opt.stores) > 0 {
-		store, err := desyncconfig.MultiStoreWithRouter(cfg, opt.cmdStoreOptions, opt.stores...)
+		store, err := cmdshared.MultiStoreWithRouter(cfg, opt.cmdStoreOptions, opt.stores...)
 		if err != nil {
 			return err
 		}

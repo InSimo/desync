@@ -9,14 +9,14 @@ import (
 	"path/filepath"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 // Type aliases so no other file in the package needs changes.
-type Config = desyncconfig.Config
-type S3Creds = desyncconfig.S3Creds
+type Config = cmdshared.Config
+type S3Creds = cmdshared.S3Creds
 
 func newConfigCommand(ctx context.Context) *cobra.Command {
 	var write bool
@@ -75,7 +75,7 @@ var cfgFile string
 // that's not in the file will retain its default values.
 func initConfig() {
 	var err error
-	cfg, cfgFile, err = desyncconfig.LoadConfig(cfgFile)
+	cfg, cfgFile, err = cmdshared.LoadConfig(cfgFile)
 	if err != nil {
 		die(err)
 	}
@@ -85,7 +85,7 @@ func initConfig() {
 var digestAlgorithm string
 
 func setDigestAlgorithm() {
-	if err := desyncconfig.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
+	if err := cmdshared.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
 		die(err)
 	}
 }

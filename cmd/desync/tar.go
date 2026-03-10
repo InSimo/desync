@@ -9,7 +9,7 @@ import (
 	"runtime"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	"github.com/spf13/cobra"
 )
 
@@ -136,7 +136,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 	defer s.Close()
 
 	// Prepare the chunker
-	min, avg, max, err := desyncconfig.ParseChunkSizeParam(opt.chunkSize)
+	min, avg, max, err := cmdshared.ParseChunkSizeParam(opt.chunkSize)
 	if err != nil {
 		return err
 	}

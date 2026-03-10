@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	minio "github.com/minio/minio-go/v6"
 	"github.com/pkg/errors"
 )
@@ -20,7 +20,7 @@ import (
 // cacheLocation - Place of the local store used for caching, can be blank
 // storeLocations - URLs or paths to remote or local stores that should be queried in order
 func MultiStoreWithCache(cmdOpt cmdStoreOptions, cacheLocation string, storeLocations ...string) (desync.Store, error) {
-	return desyncconfig.MultiStoreWithCache(cfg, cmdOpt, cacheLocation, storeLocations...)
+	return cmdshared.MultiStoreWithCache(cfg, cmdOpt, cacheLocation, storeLocations...)
 }
 
 // WritableStore is used to parse a store location from the command line for
@@ -41,7 +41,7 @@ func WritableStore(location string, cmdOpt cmdStoreOptions) (desync.WriteStore, 
 
 // Parse a single store URL or path and return an initialized instance of it
 func storeFromLocation(location string, cmdOpt cmdStoreOptions) (desync.Store, error) {
-	return desyncconfig.StoreFromLocation(location, cfg, cmdOpt)
+	return cmdshared.StoreFromLocation(location, cfg, cmdOpt)
 }
 
 func readCaibxFile(location string, cmdOpt cmdStoreOptions) (c desync.Index, err error) {
@@ -163,7 +163,7 @@ func indexStoreFromLocation(location string, cmdOpt cmdStoreOptions) (desync.Ind
 // store root. Unlike indexStoreFromLocation, the location is not split into a store root
 // and index name — the full location IS the store root.
 func openIndexStoreFromRoot(location string, cmdOpt cmdStoreOptions) (desync.IndexStore, error) {
-	return desyncconfig.IndexStoreFromLocation(location, cfg, cmdOpt)
+	return cmdshared.IndexStoreFromLocation(location, cfg, cmdOpt)
 }
 
 // storeFile defines the structure of a file that can be used to pass in the stores

@@ -3,16 +3,16 @@ package main
 import (
 	"errors"
 
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	"github.com/spf13/pflag"
 )
 
-// cmdStoreOptions is an alias for the shared type in desyncconfig.
-type cmdStoreOptions = desyncconfig.CmdStoreOptions
+// cmdStoreOptions is an alias for the shared type in cmdshared.
+type cmdStoreOptions = cmdshared.CmdStoreOptions
 
 // addStoreOptions registers common store option flags on f and links them to o.
 func addStoreOptions(o *cmdStoreOptions, f *pflag.FlagSet) {
-	desyncconfig.AddStoreOptions(o, f)
+	cmdshared.AddStoreOptions(o, f)
 }
 
 // cmdServerOptions hold command line options used in HTTP servers.

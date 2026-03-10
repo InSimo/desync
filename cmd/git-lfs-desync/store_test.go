@@ -6,12 +6,12 @@ import (
 	"testing"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 )
 
 func TestChunkStoreFromLocalPath(t *testing.T) {
 	dir := t.TempDir()
-	store, err := desyncconfig.WritableStore(dir, desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
+	store, err := cmdshared.WritableStore(dir, cmdshared.Config{}, cmdshared.CmdStoreOptions{})
 	if err != nil {
 		t.Fatalf("WritableStore(%q): %v", dir, err)
 	}
@@ -39,7 +39,7 @@ func TestChunkStoreFromLocalPath(t *testing.T) {
 
 func TestIndexStoreFromLocalPath(t *testing.T) {
 	dir := t.TempDir()
-	store, err := desyncconfig.WritableIndexStore(dir, desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
+	store, err := cmdshared.WritableIndexStore(dir, cmdshared.Config{}, cmdshared.CmdStoreOptions{})
 	if err != nil {
 		t.Fatalf("WritableIndexStore(%q): %v", dir, err)
 	}
@@ -65,7 +65,7 @@ func TestIndexStoreFromLocalPath(t *testing.T) {
 }
 
 func TestChunkStoreSSHSchemeError(t *testing.T) {
-	_, err := desyncconfig.WritableStore("ssh://host/path", desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
+	_, err := cmdshared.WritableStore("ssh://host/path", cmdshared.Config{}, cmdshared.CmdStoreOptions{})
 	if err == nil {
 		t.Fatal("expected error for ssh:// chunk store, got nil")
 	}
@@ -75,21 +75,21 @@ func TestChunkStoreSSHSchemeError(t *testing.T) {
 }
 
 func TestIndexStoreSSHSchemeError(t *testing.T) {
-	_, err := desyncconfig.WritableIndexStore("ssh://host/path", desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
+	_, err := cmdshared.WritableIndexStore("ssh://host/path", cmdshared.Config{}, cmdshared.CmdStoreOptions{})
 	if err == nil {
 		t.Fatal("expected error for ssh:// index store, got nil")
 	}
 }
 
 func TestChunkStoreLocalPathNotExist(t *testing.T) {
-	_, err := desyncconfig.WritableStore("/nonexistent/path/does/not/exist", desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
+	_, err := cmdshared.WritableStore("/nonexistent/path/does/not/exist", cmdshared.Config{}, cmdshared.CmdStoreOptions{})
 	if err == nil {
 		t.Fatal("expected error for non-existent directory, got nil")
 	}
 }
 
 func TestIndexStoreLocalPathNotExist(t *testing.T) {
-	_, err := desyncconfig.WritableIndexStore("/nonexistent/path/does/not/exist", desyncconfig.Config{}, desyncconfig.CmdStoreOptions{})
+	_, err := cmdshared.WritableIndexStore("/nonexistent/path/does/not/exist", cmdshared.Config{}, cmdshared.CmdStoreOptions{})
 	if err == nil {
 		t.Fatal("expected error for non-existent directory, got nil")
 	}

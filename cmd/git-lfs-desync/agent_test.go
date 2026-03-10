@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 )
 
 func TestDeriveIndexURL(t *testing.T) {
@@ -61,7 +61,7 @@ func TestDeriveIndexURL(t *testing.T) {
 }
 
 func TestParseChunkSizeParam(t *testing.T) {
-	min, avg, max, err := desyncconfig.ParseChunkSizeParam("16:64:256")
+	min, avg, max, err := cmdshared.ParseChunkSizeParam("16:64:256")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestParseChunkSizeParam(t *testing.T) {
 		t.Errorf("unexpected sizes: min=%d avg=%d max=%d", min, avg, max)
 	}
 
-	_, _, _, err = desyncconfig.ParseChunkSizeParam("bad")
+	_, _, _, err = cmdshared.ParseChunkSizeParam("bad")
 	if err == nil {
 		t.Error("expected error for invalid chunk size param")
 	}
@@ -284,15 +284,15 @@ func TestAgentUploadDownloadViaLocalURL(t *testing.T) {
 	indexDir := t.TempDir()
 	tmpDir := t.TempDir()
 
-	opt := desyncconfig.CmdStoreOptions{}
+	opt := cmdshared.CmdStoreOptions{}
 
-	chunkStore, err := desyncconfig.WritableStore(chunkDir, desyncconfig.Config{}, opt)
+	chunkStore, err := cmdshared.WritableStore(chunkDir, cmdshared.Config{}, opt)
 	if err != nil {
 		t.Fatalf("WritableStore(%q): %v", chunkDir, err)
 	}
 	defer chunkStore.Close()
 
-	indexStore, err := desyncconfig.WritableIndexStore(indexDir, desyncconfig.Config{}, opt)
+	indexStore, err := cmdshared.WritableIndexStore(indexDir, cmdshared.Config{}, opt)
 	if err != nil {
 		t.Fatalf("WritableIndexStore(%q): %v", indexDir, err)
 	}

@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +38,7 @@ func newChunkCommand(ctx context.Context) *cobra.Command {
 
 func runChunk(ctx context.Context, opt chunkOptions, args []string) error {
 	opt.chunkSize = cfg.ResolveChunkSize(opt.chunkSize)
-	min, avg, max, err := desyncconfig.ParseChunkSizeParam(opt.chunkSize)
+	min, avg, max, err := cmdshared.ParseChunkSizeParam(opt.chunkSize)
 	if err != nil {
 		return err
 	}

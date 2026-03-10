@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	"github.com/spf13/cobra"
 )
 
@@ -102,7 +102,7 @@ func runCache(ctx context.Context, opt cacheOptions, args []string) error {
 		ids = append(ids, id)
 	}
 
-	s, err := desyncconfig.MultiStoreWithRouter(cfg, opt.cmdStoreOptions, opt.stores...)
+	s, err := cmdshared.MultiStoreWithRouter(cfg, opt.cmdStoreOptions, opt.stores...)
 	if err != nil {
 		return err
 	}

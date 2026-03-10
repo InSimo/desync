@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/desyncconfig"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +48,7 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 	opt.store = cfg.ResolveStore(opt.store)
 	opt.chunkSize = cfg.ResolveChunkSize(opt.chunkSize)
 
-	min, avg, max, err := desyncconfig.ParseChunkSizeParam(opt.chunkSize)
+	min, avg, max, err := cmdshared.ParseChunkSizeParam(opt.chunkSize)
 	if err != nil {
 		return err
 	}
