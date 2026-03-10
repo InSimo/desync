@@ -22,7 +22,7 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	}
 	_ = args // id, token — not used
 
-	if len(oid) < 4 {
+	if !validOID(oid) {
 		return s.w.WriteErrorStatus(404, fmt.Sprintf("invalid OID %q", oid))
 	}
 
@@ -103,7 +103,7 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 		return s.w.WriteErrorStatus(400, err.Error())
 	}
 
-	if len(oid) < 4 {
+	if !validOID(oid) {
 		// Drain any data.
 		if hasDelim {
 			s.drainBinaryData()
@@ -199,7 +199,7 @@ func (s *Server) handleVerifyObject(_ context.Context, oid string) error {
 		return s.w.WriteErrorStatus(400, err.Error())
 	}
 
-	if len(oid) < 4 {
+	if !validOID(oid) {
 		return s.w.WriteErrorStatus(404, fmt.Sprintf("invalid OID %q", oid))
 	}
 

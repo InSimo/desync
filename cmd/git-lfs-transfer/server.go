@@ -179,6 +179,21 @@ func parseSize(args map[string]string) (int64, error) {
 // oidIndexName returns the sharded index name for a Git LFS OID.
 var oidIndexName = cmdshared.OidIndexName
 
+// validOID reports whether oid is a valid Git LFS SHA-256 object identifier:
+// exactly 64 lowercase hexadecimal characters.  This is checked before using
+// the OID as a filesystem path component to prevent path traversal attacks.
+func validOID(oid string) bool {
+	if len(oid) != 64 {
+		return false
+	}
+	for _, c := range oid {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 // indexTotalSize returns the total file size represented by an index.
 func indexTotalSize(idx desync.Index) int64 {
 	if len(idx.Chunks) == 0 {

@@ -586,6 +586,131 @@ func TestUnknownCommand(t *testing.T) {
 	require.Equal(t, "status 400", status)
 }
 
+// --- OID validation tests ---
+
+func TestValidOID(t *testing.T) {
+	cases := []struct {
+		oid   string
+		valid bool
+	}{
+		// Valid: exactly 64 lowercase hex chars.
+		{strings.Repeat("a", 64), true},
+		{strings.Repeat("0", 64), true},
+		{"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", true},
+		// Wrong length.
+		{"", false},
+		{strings.Repeat("a", 63), false},
+		{strings.Repeat("a", 65), false},
+		// Uppercase not allowed.
+		{strings.Repeat("A", 64), false},
+		{"E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855", false},
+		// Path traversal attempts.
+		{"../../etc/passwd" + strings.Repeat("a", 48), false},
+		{strings.Repeat(".", 64), false},
+		{strings.Repeat("/", 64), false},
+		// Non-hex chars.
+		{strings.Repeat("g", 64), false},
+		{strings.Repeat("z", 64), false},
+	}
+	for _, tc := range cases {
+		if got := validOID(tc.oid); got != tc.valid {
+			t.Errorf("validOID(%q) = %v, want %v", tc.oid, got, tc.valid)
+		}
+	}
+}
+
+func TestGetObjectInvalidOID(t *testing.T) {
+	srv := testServer(t, "download")
+
+	for _, badOID := range []string{"", "short", "../../etc/passwd" + strings.Repeat("a", 48), strings.Repeat("G", 64)} {
+		out := runSession(t, srv, func(w *pktline.Writer) {
+			w.WritePacketText("version 1")
+			w.WriteFlush()
+			w.WritePacketText("get-object " + badOID)
+			w.WriteFlush()
+			w.WritePacketText("quit")
+			w.WriteFlush()
+		})
+		r := pktline.NewReader(bytes.NewReader(out))
+		skipCapAndVersion(t, r)
+		status, err := r.ReadPacketText()
+		require.NoError(t, err)
+		require.Equal(t, "status 404", status, "expected 404 for invalid OID %q", badOID)
+	}
+}
+
+func TestPutObjectInvalidOID(t *testing.T) {
+	srv := testServer(t, "upload")
+
+	data := []byte("some data")
+	for _, badOID := range []string{"", "short", "../../etc/shadow" + strings.Repeat("a", 48), strings.Repeat("G", 64)} {
+		out := runSession(t, srv, func(w *pktline.Writer) {
+			w.WritePacketText("version 1")
+			w.WriteFlush()
+			w.WritePacketText("put-object " + badOID)
+			w.WritePacketText(fmt.Sprintf("size=%d", len(data)))
+			w.WriteDelim()
+			w.WriteBinaryPacket(data)
+			w.WriteFlush()
+			w.WritePacketText("quit")
+			w.WriteFlush()
+		})
+		r := pktline.NewReader(bytes.NewReader(out))
+		skipCapAndVersion(t, r)
+		status, err := r.ReadPacketText()
+		require.NoError(t, err)
+		require.Equal(t, "status 400", status, "expected 400 for invalid OID %q", badOID)
+	}
+}
+
+func TestVerifyObjectInvalidOID(t *testing.T) {
+	srv := testServer(t, "upload")
+
+	for _, badOID := range []string{"", "short", strings.Repeat("G", 64)} {
+		out := runSession(t, srv, func(w *pktline.Writer) {
+			w.WritePacketText("version 1")
+			w.WriteFlush()
+			w.WritePacketText("verify-object " + badOID)
+			w.WritePacketText("size=10")
+			w.WriteFlush()
+			w.WritePacketText("quit")
+			w.WriteFlush()
+		})
+		r := pktline.NewReader(bytes.NewReader(out))
+		skipCapAndVersion(t, r)
+		status, err := r.ReadPacketText()
+		require.NoError(t, err)
+		require.Equal(t, "status 404", status, "expected 404 for invalid OID %q", badOID)
+	}
+}
+
+func TestBatchInvalidOIDReturnsError(t *testing.T) {
+	srv := testServer(t, "upload")
+
+	validOIDStr := strings.Repeat("ab", 32)
+	badOIDStr := "../../etc/passwd" + strings.Repeat("a", 48) // 64 chars but contains non-hex
+
+	out := runSession(t, srv, func(w *pktline.Writer) {
+		w.WritePacketText("version 1")
+		w.WriteFlush()
+		w.WritePacketText("batch")
+		w.WriteDelim()
+		w.WritePacketText(fmt.Sprintf("%s 100", badOIDStr))
+		w.WritePacketText(fmt.Sprintf("%s 100", validOIDStr))
+		w.WriteFlush()
+		w.WritePacketText("quit")
+		w.WriteFlush()
+	})
+
+	r := pktline.NewReader(bytes.NewReader(out))
+	skipCapAndVersion(t, r)
+
+	// Whole batch must fail with 400 when any OID is invalid.
+	status, err := r.ReadPacketText()
+	require.NoError(t, err)
+	require.Equal(t, "status 400", status)
+}
+
 // --- helpers ---
 
 // uploadTestObject uploads data through the server and returns OID and size.

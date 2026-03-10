@@ -31,6 +31,7 @@ func (s *Server) handleBatch(_ context.Context, _ string) error {
 	}
 	var entries []oidEntry
 
+	var invalidOID string
 	if hasDelim {
 		for {
 			data, err := s.r.ReadPacket()
@@ -45,8 +46,15 @@ func (s *Server) handleBatch(_ context.Context, _ string) error {
 			if len(parts) < 2 {
 				continue
 			}
+			if !validOID(parts[0]) && invalidOID == "" {
+				invalidOID = parts[0]
+			}
 			entries = append(entries, oidEntry{oid: parts[0], size: parts[1]})
 		}
+	}
+
+	if invalidOID != "" {
+		return s.w.WriteErrorStatus(400, fmt.Sprintf("invalid OID %q", invalidOID))
 	}
 
 	// Write response header.
@@ -75,9 +83,6 @@ func (s *Server) handleBatch(_ context.Context, _ string) error {
 // batchAction determines the action for a single OID based on the operation
 // and whether the object's index already exists.
 func (s *Server) batchAction(oid string) string {
-	if len(oid) < 4 {
-		return "noop"
-	}
 	indexName := oidIndexName(oid)
 	_, err := s.indexStore.GetIndex(indexName)
 	exists := err == nil
