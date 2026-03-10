@@ -6,11 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -51,29 +49,8 @@ func initConfig(gitObjectName string) error {
 	return err
 }
 
-// deriveIndexURL derives an index store location from a chunk store location.
-// For URLs (scheme length > 1): replaces the last path segment with "index/".
-//   e.g. s3+https://host/bucket/chunks/ → s3+https://host/bucket/index/
-// For plain filesystem paths: returns a sibling "index" directory.
-//   e.g. /path/to/chunks → /path/to/index,  chunks → index
-func deriveIndexURL(storeURL string) (string, error) {
-	u, err := url.Parse(storeURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid store URL %q: %w", storeURL, err)
-	}
-	// len(Scheme) <= 1 catches empty scheme (plain paths) and Windows drive letters (e.g. "C").
-	// filepath.Clean normalises the path before Dir so a trailing slash is stripped first.
-	if len(u.Scheme) <= 1 {
-		return filepath.Join(filepath.Dir(filepath.Clean(storeURL)), "index"), nil
-	}
-	p := strings.TrimSuffix(u.Path, "/")
-	idx := strings.LastIndex(p, "/")
-	if idx < 0 {
-		return "", fmt.Errorf("cannot derive index URL from %q: no path separator", storeURL)
-	}
-	u.Path = p[:idx+1] + "index/"
-	return u.String(), nil
-}
+// deriveIndexURL is a package-local alias for cmdshared.DeriveIndexURL.
+var deriveIndexURL = cmdshared.DeriveIndexURL
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())

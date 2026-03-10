@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/folbricht/desync"
+	"github.com/folbricht/desync/cmd/internal/cmdshared"
 )
 
 // LFS custom transfer protocol message types.
@@ -67,14 +68,8 @@ const probeIndexName = "0000/000000000000000000000000000000000000000000000000000
 
 var probeChunkID = desync.ChunkID{} // zero value
 
-// oidIndexName converts a Git LFS OID to the index file name used in the
-// desync index store. The first 4 characters of the OID are used as a
-// sharding prefix directory to avoid flat-directory hot spots:
-//
-//	"abc123def456..." → "abc1/abc123def456....caibx"
-func oidIndexName(oid string) string {
-	return oid[0:4] + "/" + oid + ".caibx"
-}
+// oidIndexName is a package-local alias for cmdshared.OidIndexName.
+var oidIndexName = cmdshared.OidIndexName
 
 // Agent implements the Git LFS custom transfer agent protocol.
 type Agent struct {
