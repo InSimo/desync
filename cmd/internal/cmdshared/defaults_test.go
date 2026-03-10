@@ -100,13 +100,32 @@ func TestResolveChunkSize(t *testing.T) {
 	}
 }
 
+func TestResolveCache(t *testing.T) {
+	cfg := Config{Defaults: Defaults{Cache: "/default/cache"}}
+
+	// CLI value wins
+	if got := cfg.ResolveCache("/cli/cache"); got != "/cli/cache" {
+		t.Fatalf("expected /cli/cache, got %s", got)
+	}
+	// Empty CLI falls back to config default
+	if got := cfg.ResolveCache(""); got != "/default/cache" {
+		t.Fatalf("expected /default/cache, got %s", got)
+	}
+	// Both empty → empty string (no cache)
+	empty := Config{}
+	if got := empty.ResolveCache(""); got != "" {
+		t.Fatalf("expected empty, got %s", got)
+	}
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	const json = `{
 		"defaults": {
 			"digest": "sha256",
 			"stores": ["/store/a", "/store/b"],
 			"index-store": "/index/a",
-			"chunk-size": "8:32:128"
+			"chunk-size": "8:32:128",
+			"cache": "/cache/a"
 		}
 	}`
 	cfg, err := LoadConfigFromReader(strings.NewReader(json))
@@ -124,5 +143,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.Defaults.ChunkSize != "8:32:128" {
 		t.Fatalf("expected 8:32:128, got %s", cfg.Defaults.ChunkSize)
+	}
+	if cfg.Defaults.Cache != "/cache/a" {
+		t.Fatalf("expected /cache/a, got %s", cfg.Defaults.Cache)
 	}
 }

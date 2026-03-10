@@ -207,6 +207,7 @@ func MultiStoreWithRouter(cfg Config, cmdOpt CmdStoreOptions, storeLocations ...
 // the cache (each gets its own per-location config options merged on top).
 // Each store location may contain "|" to form a FailoverGroup.
 func MultiStoreWithCache(cfg Config, cmdOpt CmdStoreOptions, cacheLocation string, storeLocations ...string) (desync.Store, error) {
+	cacheLocation = cfg.ResolveCache(cacheLocation)
 	store, err := MultiStoreWithRouter(cfg, cmdOpt, storeLocations...)
 	if err != nil {
 		return nil, err

@@ -264,6 +264,7 @@ Available configuration values:
   - `index-store` - Default index store location used when `--index-store` is not provided. Currently only used by `git-lfs-desync`.
   - `digest` - Default digest algorithm (`sha512-256` or `sha256`). Equivalent to passing `--digest` on every invocation. Must match the algorithm used when the store was originally written.
   - `chunk-size` - Default chunking parameters in `min:avg:max` format (kilobytes), e.g. `"16:64:256"`. Equivalent to passing `--chunk-size` on every invocation.
+  - `cache` - Default store location used when `--cache` is not provided on the command line. Applies to all commands that accept `--cache`: `extract`, `cat`, `untar`, `mtree`, `chunk-server`, `mount-index` (transparent read-through cache), `cache` (destination store to populate), and `info` (store to query for chunk presence).
 
 #### Example config
 
@@ -314,7 +315,8 @@ Available configuration values:
     "stores": ["/path/to/local/store"],
     "index-store": "/path/to/local/index",
     "digest": "sha512-256",
-    "chunk-size": "16:64:256"
+    "chunk-size": "16:64:256",
+    "cache": "/path/to/local/cache"
   }
 }
 ```

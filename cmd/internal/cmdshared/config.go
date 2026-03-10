@@ -38,6 +38,7 @@ type Defaults struct {
 	Stores     []string `json:"stores,omitempty"`
 	IndexStore string   `json:"index-store,omitempty"`
 	ChunkSize  string   `json:"chunk-size,omitempty"`
+	Cache      string   `json:"cache,omitempty"`
 }
 
 // Config is used to hold the global tool configuration. It's used to customize
@@ -139,6 +140,15 @@ func (c Config) ResolveIndexStore(cli string) string {
 		return cli
 	}
 	return c.Defaults.IndexStore
+}
+
+// ResolveCache returns cli if non-empty, otherwise c.Defaults.Cache.
+// An empty return value means no cache is configured.
+func (c Config) ResolveCache(cli string) string {
+	if cli != "" {
+		return cli
+	}
+	return c.Defaults.Cache
 }
 
 // ResolveChunkSize returns cli if non-empty, otherwise c.Defaults.ChunkSize,

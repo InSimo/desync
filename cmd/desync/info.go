@@ -59,6 +59,7 @@ func runInfo(ctx context.Context, opt infoOptions, args []string) error {
 	}
 
 	opt.stores = cfg.ResolveStores(opt.stores)
+	opt.cache = cfg.ResolveCache(opt.cache)
 
 	// Read the index
 	c, err := readCaibxFile(args[0], opt.cmdStoreOptions)
