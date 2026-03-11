@@ -49,6 +49,10 @@ type Config struct {
 	S3Credentials map[string]S3Creds             `json:"s3-credentials"`
 	StoreOptions  map[string]desync.StoreOptions `json:"store-options"`
 	Defaults      Defaults                       `json:"defaults,omitempty"`
+	// DesyncLFS, when explicitly set to false in desync-lfs.json, activates the
+	// escape hatch: git-lfs-transfer delegates to the binary named by the
+	// "desync-lfs.transfer.exec" git config key instead of handling the request.
+	DesyncLFS *bool `json:"desync-lfs,omitempty"`
 }
 
 // GetS3CredentialsFor attempts to find creds and region for an S3 location in the

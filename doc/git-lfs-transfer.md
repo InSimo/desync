@@ -235,6 +235,48 @@ The index name for an LFS OID is `<oid[0:4]>/<oid>.caibx`. This sharding scheme 
 | `verify-object`   | Confirms an object exists and its size matches (404 if missing, 409 if size mismatch).        |
 | `quit`            | Graceful shutdown.                                                                            |
 
+## Escape Hatch / Delegation
+
+In some deployments a single `git-lfs-transfer` binary serves many repositories, but a subset of those repositories should use a different LFS implementation. The escape hatch lets you opt out of desync handling on a per-repository basis and forward the session to an alternate binary.
+
+### Triggering the Escape Hatch
+
+Either of the following is sufficient to activate the escape hatch for a repository:
+
+**Git config key** (per-repository, no config file required):
+
+```sh
+git -C /git/myrepo.git config desync-lfs false
+```
+
+**JSON config key** (in `desync-lfs.json`):
+
+```json
+{
+  "desync-lfs": false
+}
+```
+
+When the JSON trigger is used, the file is still located via the normal [config resolution order](#config-file-resolution). Setting `"desync-lfs": false` in a shared parent-directory config disables desync handling for every repository that inherits that config.
+
+The git config key is evaluated before the JSON config is loaded, so it takes effect even when config loading would otherwise fail.
+
+### Configuring a Delegate
+
+When the escape hatch is triggered, `git-lfs-transfer` looks for the `desync-lfs.transfer.exec` git config key. If it is set, the specified binary is executed with the same command-line arguments (`<path> <operation>`) and with stdin/stdout/stderr inherited — handing the pkt-line session off seamlessly:
+
+```sh
+git -C /git/myrepo.git config desync-lfs.transfer.exec /usr/local/bin/git-lfs-transfer-other
+```
+
+On Unix the current process is replaced via `execve(2)` (zero overhead, no intermediate buffering). On Windows a child process is started and its exit code is forwarded.
+
+### Rejection When No Delegate Is Configured
+
+If the escape hatch is triggered but `desync-lfs.transfer.exec` is not set — or if executing the delegate fails — `git-lfs-transfer` performs the minimum pkt-line handshake and sends a `403` error response to the client before exiting non-zero. The git LFS client will display the error message from the server.
+
+A `403` from the pure-SSH transfer protocol also signals to the Git LFS client that it should not use the SSH adapter for this repository. The client will then fall back to its other transport mechanisms in order: the `git-lfs-authenticate` SSH helper (if available on the server), and finally the HTTPS endpoint derived from the remote URL. This means you can use the rejection path to silently redirect a repository to a different LFS backend — for example an HTTPS-based LFS server — without any client-side reconfiguration.
+
 ## Safe Pruning
 
 When `safe-pruning` is enabled in the config, the server participates in the safe concurrent pruning protocol during uploads. This prevents data loss when `desync prune --safe-pruning` runs concurrently with uploads.

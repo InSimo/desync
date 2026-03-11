@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/folbricht/desync/cmd/internal/cmdshared"
+	"github.com/folbricht/desync/cmd/internal/pktline"
 )
 
 const configFileName = "desync-lfs.json"
@@ -57,9 +58,25 @@ func run() error {
 		return fmt.Errorf("not a git repository %q: %w", repoPath, err)
 	}
 
+	// Escape hatch: check git config trigger before loading JSON config so that
+	// a per-repo opt-out works even when the config file is shared/global.
+	gitDisabled := gitConfigValue(absPath, "desync-lfs") == "false"
+
 	cfg, err := resolveConfig(absPath)
 	if err != nil {
+		if gitDisabled {
+			// Config load failed but the git config already opted out — try to
+			// delegate anyway rather than surfacing a config error.
+			return tryDelegate(absPath)
+		}
 		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// JSON config trigger: "desync-lfs": false in desync-lfs.json.
+	cfgDisabled := cfg.DesyncLFS != nil && !*cfg.DesyncLFS
+
+	if gitDisabled || cfgDisabled {
+		return tryDelegate(absPath)
 	}
 
 	storeURL := cfg.ResolveStore("")
@@ -324,4 +341,41 @@ func ensureLocalDir(location string) error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// tryDelegate handles the escape hatch. It looks up the "desync-lfs.transfer.exec"
+// git config key and replaces the current process with that binary (Unix) or
+// runs it as a child and exits with its code (Windows). If no delegate is
+// configured, or if exec fails, it sends a protocol-level 403 rejection to the
+// client and returns an error.
+func tryDelegate(repoPath string) error {
+	execPath := gitConfigValue(repoPath, "desync-lfs.transfer.exec")
+	if execPath != "" {
+		if err := execDelegate(execPath, os.Args, os.Environ()); err != nil {
+			// execDelegate only returns on failure (Unix exec error or Windows
+			// process-start error).
+			return rejectAndExit(fmt.Sprintf("delegate %q failed: %v", execPath, err))
+		}
+		// Unreachable on Unix (process replaced). On Windows execDelegate calls
+		// os.Exit so we never get here either.
+		return nil
+	}
+	return rejectAndExit("desync LFS is disabled for this repository and no delegate is configured (set desync-lfs.transfer.exec in git config)")
+}
+
+// rejectAndExit performs the minimum pkt-line handshake required to deliver a
+// 403 error to the client, then returns an error so main exits non-zero.
+// Write errors are swallowed — delivering the rejection is best-effort.
+func rejectAndExit(msg string) error {
+	w := pktline.NewWriter(os.Stdout)
+	r := pktline.NewReader(os.Stdin)
+	// Advertise version=1 — client expects this first.
+	_ = w.WritePacketText("version=1")
+	_ = w.WriteFlush()
+	// Drain the client's "version 1" line and its trailing flush (best-effort).
+	_, _ = r.ReadPacketText()
+	_, _ = r.ReadPacket()
+	// Send the protocol-level rejection.
+	_ = w.WriteErrorStatus(403, msg)
+	return fmt.Errorf("%s", msg)
 }
