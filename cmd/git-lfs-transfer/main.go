@@ -281,6 +281,11 @@ func loadConfig(configPath, repoPath string) (cmdshared.Config, error) {
 // expands %(path) templates, resolves relative store paths, and derives the
 // index store URL when absent.  source is used only in error messages.
 func applyConfigDefaults(cfg cmdshared.Config, repoPath, source string) (cmdshared.Config, error) {
+	// If desync-lfs is explicitly disabled, stores are not needed: the caller
+	// will delegate to another binary (escape hatch).
+	if cfg.DesyncLFS != nil && !*cfg.DesyncLFS {
+		return cfg, nil
+	}
 	if len(cfg.Defaults.Stores) == 0 {
 		return cfg, fmt.Errorf("config %s: 'defaults.stores' is required", source)
 	}
