@@ -128,7 +128,6 @@ func run() error {
 		maxChunk:     maxChunk,
 		safePruning:  storeOpts.SafePruning,
 		safePropTime: storeOpts.SafePropagationTime,
-		tmpDir:       os.TempDir(),
 		logDir:       filepath.Join(absPath, "desync-lfs", "logs"),
 	}
 

@@ -7,14 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/folbricht/desync"
 	"github.com/folbricht/desync/cmd/internal/pktline"
 )
 
 // handleGetObject retrieves an LFS object by OID: looks up its desync index,
-// assembles the file from chunks, and streams the result back to the client.
+// and streams the reassembled content directly from the chunk store without
+// buffering to a temporary file.  The exact object size is computed from the
+// index before any chunks are fetched, so the size header is sent first.
 func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	args, _, err := s.readArgs()
 	if err != nil {
@@ -32,38 +35,9 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 		return s.w.WriteErrorStatus(404, fmt.Sprintf("object %s not found", oid))
 	}
 
-	// Assemble the file to a temporary location.
-	tmpFile, err := os.CreateTemp(s.tmpDir, "git-lfs-transfer-get-*")
-	if err != nil {
-		s.logf("get-object %s: creating temp file: %v", oid, err)
-		return s.w.WriteErrorStatus(500, "internal error")
-	}
-	tmpName := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(tmpName)
+	size := indexTotalSize(idx)
 
-	opts := desync.AssembleOptions{N: s.n}
-	if _, err := desync.AssembleFile(ctx, tmpName, idx, s.readStore, nil, opts); err != nil {
-		s.logf("get-object %s: assembling: %v", oid, err)
-		return s.w.WriteErrorStatus(500, "internal error")
-	}
-
-	// Open and stat the assembled file.
-	f, err := os.Open(tmpName)
-	if err != nil {
-		s.logf("get-object %s: opening assembled file: %v", oid, err)
-		return s.w.WriteErrorStatus(500, "internal error")
-	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil {
-		s.logf("get-object %s: stat assembled file: %v", oid, err)
-		return s.w.WriteErrorStatus(500, "internal error")
-	}
-	size := fi.Size()
-
-	// Send success response with size, then stream the data.
+	// Send success response with size before fetching any chunk data.
 	if err := s.w.WriteStatus(200); err != nil {
 		return err
 	}
@@ -74,20 +48,30 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 		return err
 	}
 
-	// Stream file content as pkt-line binary packets.
-	buf := make([]byte, pktline.MaxPayload)
-	for {
-		n, readErr := f.Read(buf)
-		if n > 0 {
-			if err := s.w.WriteBinaryPacket(buf[:n]); err != nil {
+	// Stream chunks sequentially.  A desync chunk can be larger than
+	// pktline.MaxPayload (~64 KiB), so split each one into multiple packets.
+	// Any error after the 200 response has been sent cannot be reported as a
+	// protocol error; we close the connection by returning it to the caller.
+	for _, c := range idx.Chunks {
+		chunk, err := s.readStore.GetChunk(c.ID)
+		if err != nil {
+			s.logf("get-object %s: fetching chunk %s: %v", oid, c.ID, err)
+			return fmt.Errorf("get-object %s: fetching chunk: %w", oid, err)
+		}
+		data, err := chunk.Data()
+		if err != nil {
+			s.logf("get-object %s: decompressing chunk %s: %v", oid, c.ID, err)
+			return fmt.Errorf("get-object %s: decompressing chunk: %w", oid, err)
+		}
+		for len(data) > 0 {
+			n := pktline.MaxPayload
+			if n > len(data) {
+				n = len(data)
+			}
+			if err := s.w.WriteBinaryPacket(data[:n]); err != nil {
 				return err
 			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return readErr
+			data = data[n:]
 		}
 	}
 
@@ -96,6 +80,10 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 
 // handlePutObject receives an LFS object from the client, chunks it using
 // desync, stores the chunks, and stores the index keyed by OID.
+//
+// Data is streamed through an io.Pipe into ChunkStream without buffering to a
+// temporary file.  The SHA-256 of the received bytes is computed in parallel
+// via io.MultiWriter and verified against the OID before the index is stored.
 func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 	args, hasDelim, err := s.readArgs()
 	if err != nil {
@@ -108,7 +96,6 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 	}
 
 	if !validOID(oid) {
-		// Drain any data.
 		if hasDelim {
 			s.drainBinaryData()
 		}
@@ -122,80 +109,84 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 		return s.w.WriteErrorStatus(400, fmt.Sprintf("object too large: %d bytes exceeds limit of %d", size, maxObjectSize))
 	}
 
-	// Receive the binary data into a temp file.
-	tmpFile, err := os.CreateTemp(s.tmpDir, "git-lfs-transfer-put-*")
-	if err != nil {
-		if hasDelim {
-			s.drainBinaryData()
-		}
-		s.logf("put-object %s: creating temp file: %v", oid, err)
-		return s.w.WriteErrorStatus(500, "internal error")
-	}
-	tmpName := tmpFile.Name()
-	defer os.Remove(tmpName)
-
+	// The goroutine reads pkt-line binary packets from stdin and writes them
+	// to both the pipe (for chunking) and the hasher (for OID verification).
+	// If the pipe write fails (ChunkStream stopped reading), it drains stdin
+	// so the command loop can continue cleanly.
 	hasher := sha256.New()
 	var received int64
 
-	if hasDelim {
+	pr, pw := io.Pipe()
+	g, _ := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		defer pw.Close()
+		if !hasDelim {
+			return nil
+		}
 		for {
 			data, readErr := s.r.ReadRawPacket()
 			if errors.Is(readErr, pktline.ErrFlush) {
-				break
+				return nil
 			}
 			if readErr != nil {
-				tmpFile.Close()
-				return fmt.Errorf("reading put-object data: %w", readErr)
+				return readErr
 			}
-			n, writeErr := tmpFile.Write(data)
-			if writeErr != nil {
-				tmpFile.Close()
-				return fmt.Errorf("writing temp file: %w", writeErr)
+			if _, writeErr := pw.Write(data); writeErr != nil {
+				// ChunkStream stopped reading; drain stdin before returning.
+				s.drainBinaryData()
+				return nil
 			}
-			hasher.Write(data[:n])
-			received += int64(n)
+			hasher.Write(data)
+			received += int64(len(data))
 		}
-	}
-	tmpFile.Close()
+	})
 
-	// Verify size.
-	if received != size {
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("size mismatch: expected %d, received %d", size, received))
-	}
-
-	// Verify OID (SHA-256 of content).
-	actualOID := hex.EncodeToString(hasher.Sum(nil))
-	if actualOID != oid {
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("OID mismatch: expected %s, got %s", oid, actualOID))
-	}
-
-	// Chunk the file and build the index.
-	idx, _, err := desync.IndexFromFile(ctx, tmpName, s.n, s.minChunk, s.avgChunk, s.maxChunk, desync.NullProgressBar{})
-	if err != nil {
-		s.logf("put-object %s: chunking: %v", oid, err)
-		return s.w.WriteErrorStatus(500, "internal error")
-	}
-
-	// Store the chunks.
 	var sps desync.SafePruneStore
 	if s.safePruning {
 		if sp, ok := s.writeStore.(desync.SafePruneStore); ok {
 			sps = sp
 		}
 	}
-	if err := desync.ChopFile(ctx, tmpName, idx.Chunks, s.writeStore, s.n, desync.NullProgressBar{}, sps, s.safePropTime); err != nil {
-		s.logf("put-object %s: storing chunks: %v", oid, err)
+
+	chunker, chunkerErr := desync.NewChunker(pr, s.minChunk, s.avgChunk, s.maxChunk)
+	var idx desync.Index
+	var chunkStreamErr error
+	if chunkerErr == nil {
+		idx, chunkStreamErr = desync.ChunkStream(ctx, &chunker, s.writeStore, s.n, sps, s.safePropTime)
+	}
+
+	// Close the read end of the pipe so the goroutine unblocks if it is
+	// waiting on a pw.Write() that ChunkStream is no longer consuming.
+	pr.CloseWithError(io.ErrClosedPipe)
+	if goroutineErr := g.Wait(); goroutineErr != nil {
+		return fmt.Errorf("reading put-object data: %w", goroutineErr)
+	}
+
+	if chunkerErr != nil {
+		s.logf("put-object %s: creating chunker: %v", oid, chunkerErr)
+		return s.w.WriteErrorStatus(500, "internal error")
+	}
+	if chunkStreamErr != nil {
+		s.logf("put-object %s: storing chunks: %v", oid, chunkStreamErr)
 		return s.w.WriteErrorStatus(500, "internal error")
 	}
 
-	// Store the index.
+	// Verify declared size and content hash before committing the index.
+	// Any chunks already stored without a matching index are orphaned and
+	// will be reclaimed by the safe-pruning protocol.
+	if received != size {
+		return s.w.WriteErrorStatus(400, fmt.Sprintf("size mismatch: expected %d, received %d", size, received))
+	}
+	if actualOID := hex.EncodeToString(hasher.Sum(nil)); actualOID != oid {
+		return s.w.WriteErrorStatus(400, fmt.Sprintf("OID mismatch: expected %s, got %s", oid, actualOID))
+	}
+
 	indexName := oidIndexName(oid)
 	if err := s.indexStore.StoreIndex(indexName, idx); err != nil {
 		s.logf("put-object %s: storing index: %v", oid, err)
 		return s.w.WriteErrorStatus(500, "internal error")
 	}
 
-	// Success.
 	if err := s.w.WriteStatus(200); err != nil {
 		return err
 	}

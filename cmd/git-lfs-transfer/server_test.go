@@ -41,7 +41,6 @@ func testServer(t *testing.T, operation string) *Server {
 		minChunk:   16 * 1024,
 		avgChunk:   64 * 1024,
 		maxChunk:   256 * 1024,
-		tmpDir:     t.TempDir(),
 	}
 }
 

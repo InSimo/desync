@@ -33,8 +33,6 @@ type Server struct {
 	r *pktline.Reader
 	w *pktline.Writer
 
-	tmpDir string
-
 	// logDir is the directory for per-session error log files.  Empty
 	// disables logging (e.g. in tests).  The log file and directory are
 	// created lazily on the first error so that error-free sessions leave
