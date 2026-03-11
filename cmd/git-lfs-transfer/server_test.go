@@ -847,6 +847,95 @@ func TestBatchInvalidOIDReturnsError(t *testing.T) {
 	require.Equal(t, "status 400", status)
 }
 
+func TestBatchShortLineReturnsError(t *testing.T) {
+	srv := testServer(t, "upload")
+	validOIDStr := strings.Repeat("ab", 32)
+
+	out := runSession(t, srv, func(w *pktline.Writer) {
+		w.WritePacketText("version 1")
+		w.WriteFlush()
+		w.WritePacketText("batch")
+		w.WriteDelim()
+		w.WritePacketText(validOIDStr) // missing size field
+		w.WriteFlush()
+		w.WritePacketText("quit")
+		w.WriteFlush()
+	})
+
+	r := pktline.NewReader(bytes.NewReader(out))
+	skipCapAndVersion(t, r)
+	status, err := r.ReadPacketText()
+	require.NoError(t, err)
+	require.Equal(t, "status 400", status)
+}
+
+func TestBatchNegativeSizeReturnsError(t *testing.T) {
+	srv := testServer(t, "upload")
+	validOIDStr := strings.Repeat("cd", 32)
+
+	out := runSession(t, srv, func(w *pktline.Writer) {
+		w.WritePacketText("version 1")
+		w.WriteFlush()
+		w.WritePacketText("batch")
+		w.WriteDelim()
+		w.WritePacketText(fmt.Sprintf("%s -1", validOIDStr))
+		w.WriteFlush()
+		w.WritePacketText("quit")
+		w.WriteFlush()
+	})
+
+	r := pktline.NewReader(bytes.NewReader(out))
+	skipCapAndVersion(t, r)
+	status, err := r.ReadPacketText()
+	require.NoError(t, err)
+	require.Equal(t, "status 400", status)
+}
+
+func TestBatchNonNumericSizeReturnsError(t *testing.T) {
+	srv := testServer(t, "upload")
+	validOIDStr := strings.Repeat("ef", 32)
+
+	out := runSession(t, srv, func(w *pktline.Writer) {
+		w.WritePacketText("version 1")
+		w.WriteFlush()
+		w.WritePacketText("batch")
+		w.WriteDelim()
+		w.WritePacketText(fmt.Sprintf("%s notanumber", validOIDStr))
+		w.WriteFlush()
+		w.WritePacketText("quit")
+		w.WriteFlush()
+	})
+
+	r := pktline.NewReader(bytes.NewReader(out))
+	skipCapAndVersion(t, r)
+	status, err := r.ReadPacketText()
+	require.NoError(t, err)
+	require.Equal(t, "status 400", status)
+}
+
+func TestBatchValidSizeSucceeds(t *testing.T) {
+	srv := testServer(t, "upload")
+	validOIDStr := strings.Repeat("12", 32)
+
+	out := runSession(t, srv, func(w *pktline.Writer) {
+		w.WritePacketText("version 1")
+		w.WriteFlush()
+		w.WritePacketText("batch")
+		w.WriteDelim()
+		w.WritePacketText(fmt.Sprintf("%s 0", validOIDStr))
+		w.WritePacketText(fmt.Sprintf("%s 1024", validOIDStr))
+		w.WriteFlush()
+		w.WritePacketText("quit")
+		w.WriteFlush()
+	})
+
+	r := pktline.NewReader(bytes.NewReader(out))
+	skipCapAndVersion(t, r)
+	status, err := r.ReadPacketText()
+	require.NoError(t, err)
+	require.Equal(t, "status 200", status)
+}
+
 // --- helpers ---
 
 // uploadTestObject uploads data through the server and returns OID and size.

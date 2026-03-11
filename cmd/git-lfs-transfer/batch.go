@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/folbricht/desync/cmd/internal/pktline"
@@ -27,11 +28,12 @@ func (s *Server) handleBatch(_ context.Context, _ string) error {
 
 	type oidEntry struct {
 		oid  string
-		size string
+		size int64
 	}
 	var entries []oidEntry
 
 	var invalidOID string
+	var malformedEntry string // first malformed size or short line
 	if hasDelim {
 		for {
 			data, err := s.r.ReadPacket()
@@ -43,18 +45,34 @@ func (s *Server) handleBatch(_ context.Context, _ string) error {
 			}
 			line := string(data)
 			parts := strings.Fields(line)
+			if len(parts) == 0 {
+				continue // skip blank lines silently
+			}
 			if len(parts) < 2 {
+				if malformedEntry == "" {
+					malformedEntry = line
+				}
 				continue
 			}
 			if !validOID(parts[0]) && invalidOID == "" {
 				invalidOID = parts[0]
 			}
-			entries = append(entries, oidEntry{oid: parts[0], size: parts[1]})
+			size, parseErr := strconv.ParseInt(parts[1], 10, 64)
+			if parseErr != nil || size < 0 {
+				if malformedEntry == "" {
+					malformedEntry = parts[1]
+				}
+				continue
+			}
+			entries = append(entries, oidEntry{oid: parts[0], size: size})
 		}
 	}
 
 	if invalidOID != "" {
 		return s.w.WriteErrorStatus(400, fmt.Sprintf("invalid OID %q", invalidOID))
+	}
+	if malformedEntry != "" {
+		return s.w.WriteErrorStatus(400, fmt.Sprintf("malformed batch entry %q", malformedEntry))
 	}
 
 	// Write response header.
@@ -71,7 +89,7 @@ func (s *Server) handleBatch(_ context.Context, _ string) error {
 	// Check each OID and respond with the appropriate action.
 	for _, e := range entries {
 		action := s.batchAction(e.oid)
-		line := fmt.Sprintf("%s %s %s", e.oid, e.size, action)
+		line := fmt.Sprintf("%s %d %s", e.oid, e.size, action)
 		if err := s.w.WritePacketText(line); err != nil {
 			return err
 		}
