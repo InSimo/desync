@@ -44,6 +44,10 @@ func run() error {
 		cancel()
 	}()
 
+	if containsParentRef(repoPath) {
+		return fmt.Errorf("path %q contains parent directory reference", repoPath)
+	}
+
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return fmt.Errorf("resolving path %q: %w", repoPath, err)
@@ -205,6 +209,19 @@ func resolveConfig(repoPath string) (cmdshared.Config, error) {
 	cfg.Defaults.Stores = []string{filepath.Join(repoPath, "desync-lfs", "chunks")}
 	cfg.Defaults.IndexStore = filepath.Join(repoPath, "desync-lfs", "index")
 	return cfg, nil
+}
+
+// containsParentRef reports whether path contains a ".." component that would
+// traverse to a parent directory.  The check runs on the raw (unresolved) path
+// so that traversal attempts are rejected before filepath.Abs silently resolves
+// them.
+func containsParentRef(path string) bool {
+	for _, elem := range strings.Split(filepath.ToSlash(path), "/") {
+		if elem == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // validateGitRepo returns an error if absPath is not a git repository.

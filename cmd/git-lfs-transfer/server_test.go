@@ -722,6 +722,30 @@ func TestValidateGitRepo_NonExistent(t *testing.T) {
 	require.Error(t, err)
 }
 
+// --- parent-ref path validation tests ---
+
+func TestContainsParentRef(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/srv/repos/foo.git", false},
+		{"relative/path", false},
+		{"my..repo", false},  // ".." inside a component name — not a traversal
+		{".hidden", false},   // single dot prefix — not a traversal
+		{"../sibling", true},
+		{"foo/../bar", true},
+		{"foo/bar/../..", true},
+		{"..", true},
+		{"foo/../../etc/passwd", true},
+	}
+	for _, tc := range cases {
+		if got := containsParentRef(tc.path); got != tc.want {
+			t.Errorf("containsParentRef(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 // --- OID validation tests ---
 
 func TestValidOID(t *testing.T) {
