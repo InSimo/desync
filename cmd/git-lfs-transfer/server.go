@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +34,38 @@ type Server struct {
 	w *pktline.Writer
 
 	tmpDir string
+
+	// logDir is the directory for per-session error log files.  Empty
+	// disables logging (e.g. in tests).  The log file and directory are
+	// created lazily on the first error so that error-free sessions leave
+	// no files behind.
+	logDir          string
+	logFile         *os.File // opened lazily by logf
+	logPath         string   // set when logFile is opened
+	hasLoggedErrors bool
+}
+
+// logf writes an internal error message to a per-session log file, creating
+// the file (and its directory) on first use.  It is a no-op when logDir is
+// empty, and silently swallows OS errors to avoid masking the original error.
+func (s *Server) logf(format string, args ...any) {
+	if s.logFile == nil {
+		if s.logDir == "" {
+			return
+		}
+		if err := os.MkdirAll(s.logDir, 0755); err != nil {
+			return
+		}
+		logName := time.Now().UTC().Format("20060102T150405.000000000") + ".log"
+		s.logPath = filepath.Join(s.logDir, logName)
+		f, err := os.OpenFile(s.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+		if err != nil {
+			return
+		}
+		s.logFile = f
+	}
+	fmt.Fprintf(s.logFile, format+"\n", args...)
+	s.hasLoggedErrors = true
 }
 
 func (s *Server) Run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {

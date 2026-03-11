@@ -586,6 +586,48 @@ func TestUnknownCommand(t *testing.T) {
 	require.Equal(t, "status 400", status)
 }
 
+// --- error logging tests ---
+
+func TestServerLogf(t *testing.T) {
+	srv := testServer(t, "upload")
+	srv.logDir = t.TempDir()
+
+	require.False(t, srv.hasLoggedErrors)
+	require.Nil(t, srv.logFile)
+
+	srv.logf("test error %d: %v", 42, "something failed")
+
+	require.True(t, srv.hasLoggedErrors)
+	require.NotNil(t, srv.logFile)
+	require.NotEmpty(t, srv.logPath)
+
+	content, err := os.ReadFile(srv.logPath)
+	require.NoError(t, err)
+	require.Contains(t, string(content), "test error 42: something failed")
+}
+
+func TestServerLogfNoDir_NoOp(t *testing.T) {
+	srv := testServer(t, "upload")
+	// logDir is empty — must not create any file or panic.
+	srv.logf("this should be silently ignored")
+	require.False(t, srv.hasLoggedErrors)
+	require.Nil(t, srv.logFile)
+}
+
+func TestServerLogfNoFileCreatedOnSuccess(t *testing.T) {
+	// A successful session with logDir set must leave no files behind.
+	logDir := t.TempDir()
+	srv := testServer(t, "upload")
+	srv.logDir = logDir
+
+	// No errors logged — logFile should remain nil.
+	require.Nil(t, srv.logFile)
+
+	entries, err := os.ReadDir(logDir)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
 // --- size validation tests ---
 
 func TestParseSize(t *testing.T) {

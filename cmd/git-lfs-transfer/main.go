@@ -129,9 +129,17 @@ func run() error {
 		safePruning:  storeOpts.SafePruning,
 		safePropTime: storeOpts.SafePropagationTime,
 		tmpDir:       os.TempDir(),
+		logDir:       filepath.Join(absPath, "desync-lfs", "logs"),
 	}
 
-	return srv.Run(ctx, os.Stdin, os.Stdout)
+	runErr := srv.Run(ctx, os.Stdin, os.Stdout)
+	if srv.logFile != nil {
+		srv.logFile.Close()
+	}
+	if srv.hasLoggedErrors {
+		fmt.Fprintf(os.Stderr, "Errors logged to %s\n", srv.logPath)
+	}
+	return runErr
 }
 
 // resolveConfig finds and loads the transfer configuration.

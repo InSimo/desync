@@ -35,7 +35,8 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	// Assemble the file to a temporary location.
 	tmpFile, err := os.CreateTemp(s.tmpDir, "git-lfs-transfer-get-*")
 	if err != nil {
-		return s.w.WriteErrorStatus(500, fmt.Sprintf("creating temp file: %v", err))
+		s.logf("get-object %s: creating temp file: %v", oid, err)
+		return s.w.WriteErrorStatus(500, "internal error")
 	}
 	tmpName := tmpFile.Name()
 	tmpFile.Close()
@@ -43,19 +44,22 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 
 	opts := desync.AssembleOptions{N: s.n}
 	if _, err := desync.AssembleFile(ctx, tmpName, idx, s.readStore, nil, opts); err != nil {
-		return s.w.WriteErrorStatus(500, fmt.Sprintf("assembling object %s: %v", oid, err))
+		s.logf("get-object %s: assembling: %v", oid, err)
+		return s.w.WriteErrorStatus(500, "internal error")
 	}
 
 	// Open and stat the assembled file.
 	f, err := os.Open(tmpName)
 	if err != nil {
-		return s.w.WriteErrorStatus(500, fmt.Sprintf("opening assembled file: %v", err))
+		s.logf("get-object %s: opening assembled file: %v", oid, err)
+		return s.w.WriteErrorStatus(500, "internal error")
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil {
-		return s.w.WriteErrorStatus(500, fmt.Sprintf("stat assembled file: %v", err))
+		s.logf("get-object %s: stat assembled file: %v", oid, err)
+		return s.w.WriteErrorStatus(500, "internal error")
 	}
 	size := fi.Size()
 
@@ -124,7 +128,8 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 		if hasDelim {
 			s.drainBinaryData()
 		}
-		return s.w.WriteErrorStatus(500, fmt.Sprintf("creating temp file: %v", err))
+		s.logf("put-object %s: creating temp file: %v", oid, err)
+		return s.w.WriteErrorStatus(500, "internal error")
 	}
 	tmpName := tmpFile.Name()
 	defer os.Remove(tmpName)
@@ -167,7 +172,8 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 	// Chunk the file and build the index.
 	idx, _, err := desync.IndexFromFile(ctx, tmpName, s.n, s.minChunk, s.avgChunk, s.maxChunk, desync.NullProgressBar{})
 	if err != nil {
-		return s.w.WriteErrorStatus(500, fmt.Sprintf("chunking object %s: %v", oid, err))
+		s.logf("put-object %s: chunking: %v", oid, err)
+		return s.w.WriteErrorStatus(500, "internal error")
 	}
 
 	// Store the chunks.
@@ -178,13 +184,15 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 		}
 	}
 	if err := desync.ChopFile(ctx, tmpName, idx.Chunks, s.writeStore, s.n, desync.NullProgressBar{}, sps, s.safePropTime); err != nil {
-		return s.w.WriteErrorStatus(500, fmt.Sprintf("storing chunks for %s: %v", oid, err))
+		s.logf("put-object %s: storing chunks: %v", oid, err)
+		return s.w.WriteErrorStatus(500, "internal error")
 	}
 
 	// Store the index.
 	indexName := oidIndexName(oid)
 	if err := s.indexStore.StoreIndex(indexName, idx); err != nil {
-		return s.w.WriteErrorStatus(500, fmt.Sprintf("storing index for %s: %v", oid, err))
+		s.logf("put-object %s: storing index: %v", oid, err)
+		return s.w.WriteErrorStatus(500, "internal error")
 	}
 
 	// Success.
