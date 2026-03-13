@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/folbricht/desync/cmd/internal/pktline"
 )
 
@@ -18,7 +20,7 @@ import (
 //
 // For upload: objects without an existing index get action "upload"; already-
 // indexed objects get "noop".
-func (s *Server) handleBatch(_ context.Context, _ string) error {
+func (s *Server) handleBatch(ctx context.Context, _ string) error {
 	// Read arguments until delim-pkt, then OID lines until flush-pkt.
 	args, hasDelim, err := s.readArgs()
 	if err != nil {
@@ -86,10 +88,34 @@ func (s *Server) handleBatch(_ context.Context, _ string) error {
 		return err
 	}
 
-	// Check each OID and respond with the appropriate action.
-	for _, e := range entries {
-		action := s.batchAction(e.oid)
-		line := fmt.Sprintf("%s %d %s", e.oid, e.size, action)
+	// Check each OID in parallel (up to s.n concurrent workers) and collect
+	// actions in entry order.  Results are stored by index — no mutex needed
+	// since each goroutine writes to a unique position.
+	actions := make([]string, len(entries))
+	if len(entries) > 0 {
+		g, gCtx := errgroup.WithContext(ctx)
+		sem := make(chan struct{}, s.n)
+		for i, e := range entries {
+			i, e := i, e
+			g.Go(func() error {
+				select {
+				case sem <- struct{}{}:
+				case <-gCtx.Done():
+					return gCtx.Err()
+				}
+				defer func() { <-sem }()
+				actions[i] = s.batchAction(e.oid)
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return err
+		}
+	}
+
+	// Write responses in original entry order.
+	for i, e := range entries {
+		line := fmt.Sprintf("%s %d %s", e.oid, e.size, actions[i])
 		if err := s.w.WritePacketText(line); err != nil {
 			return err
 		}
@@ -102,8 +128,7 @@ func (s *Server) handleBatch(_ context.Context, _ string) error {
 // and whether the object's index already exists.
 func (s *Server) batchAction(oid string) string {
 	indexName := oidIndexName(oid)
-	_, err := s.indexStore.GetIndex(indexName)
-	exists := err == nil
+	exists, _ := s.indexStore.HasIndex(indexName)
 
 	switch s.operation {
 	case "download":
