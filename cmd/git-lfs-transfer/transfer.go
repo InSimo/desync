@@ -48,21 +48,43 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 		return err
 	}
 
-	// Stream chunks sequentially.  A desync chunk can be larger than
-	// pktline.MaxPayload (~64 KiB), so split each one into multiple packets.
+	// Prefetch and decompress chunks in parallel (up to s.n concurrent
+	// workers), then stream them to the client in index order.  Each chunk
+	// gets its own result channel so the consumer reads results in the
+	// original order while workers run ahead.  Memory is bounded to ~s.n
+	// decompressed chunks in flight.
+	//
 	// Any error after the 200 response has been sent cannot be reported as a
 	// protocol error; we close the connection by returning it to the caller.
-	for _, c := range idx.Chunks {
-		chunk, err := s.readStore.GetChunk(c.ID)
-		if err != nil {
-			s.logf("get-object %s: fetching chunk %s: %v", oid, c.ID, err)
-			return fmt.Errorf("get-object %s: fetching chunk: %w", oid, err)
+	type prefetched struct {
+		data []byte
+		err  error
+	}
+	pending := make([]chan prefetched, len(idx.Chunks))
+	sem := make(chan struct{}, s.n)
+	for i, c := range idx.Chunks {
+		ch := make(chan prefetched, 1)
+		pending[i] = ch
+		id := c.ID
+		sem <- struct{}{} // acquire slot (blocks if s.n workers busy)
+		go func() {
+			defer func() { <-sem }()
+			chunk, err := s.readStore.GetChunk(id)
+			if err != nil {
+				ch <- prefetched{err: err}
+				return
+			}
+			data, err := chunk.Data()
+			ch <- prefetched{data: data, err: err}
+		}()
+	}
+	for i, ch := range pending {
+		pc := <-ch
+		if pc.err != nil {
+			s.logf("get-object %s: chunk %d: %v", oid, i, pc.err)
+			return fmt.Errorf("get-object %s: chunk error: %w", oid, pc.err)
 		}
-		data, err := chunk.Data()
-		if err != nil {
-			s.logf("get-object %s: decompressing chunk %s: %v", oid, c.ID, err)
-			return fmt.Errorf("get-object %s: decompressing chunk: %w", oid, err)
-		}
+		data := pc.data
 		for len(data) > 0 {
 			n := pktline.MaxPayload
 			if n > len(data) {
