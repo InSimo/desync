@@ -215,8 +215,11 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 	return s.w.WriteFlush()
 }
 
-// handleVerifyObject confirms an object exists and its size matches.
-func (s *Server) handleVerifyObject(_ context.Context, oid string) error {
+// handleVerifyObject confirms an object exists, its size matches, and all
+// chunks referenced by its index are present in the store.  The chunk check
+// uses HasChunk (a cheap HEAD/stat operation) and runs up to s.n checks in
+// parallel to keep latency low even for objects with many chunks.
+func (s *Server) handleVerifyObject(ctx context.Context, oid string) error {
 	args, _, err := s.readArgs()
 	if err != nil {
 		return err
@@ -241,6 +244,43 @@ func (s *Server) handleVerifyObject(_ context.Context, oid string) error {
 	if actualSize != size {
 		return s.w.WriteErrorStatus(409, fmt.Sprintf("size mismatch for %s: expected %d, got %d",
 			oid, size, actualSize))
+	}
+
+	// Verify that every chunk referenced by the index exists in the store.
+	// Deduplicate first — the same chunk ID can appear many times in an index.
+	seen := make(map[desync.ChunkID]struct{}, len(idx.Chunks))
+	var unique []desync.ChunkID
+	for _, c := range idx.Chunks {
+		if _, ok := seen[c.ID]; !ok {
+			seen[c.ID] = struct{}{}
+			unique = append(unique, c.ID)
+		}
+	}
+
+	g, gCtx := errgroup.WithContext(ctx)
+	sem := make(chan struct{}, s.n)
+	for _, id := range unique {
+		id := id
+		g.Go(func() error {
+			select {
+			case sem <- struct{}{}:
+			case <-gCtx.Done():
+				return gCtx.Err()
+			}
+			defer func() { <-sem }()
+			has, err := s.readStore.HasChunk(id)
+			if err != nil {
+				return fmt.Errorf("checking chunk %s: %w", id, err)
+			}
+			if !has {
+				return fmt.Errorf("missing chunk %s", id)
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		s.logf("verify-object %s: %v", oid, err)
+		return s.w.WriteErrorStatus(404, fmt.Sprintf("object %s incomplete: %v", oid, err))
 	}
 
 	if err := s.w.WriteStatus(200); err != nil {

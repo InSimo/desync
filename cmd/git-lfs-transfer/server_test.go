@@ -349,6 +349,61 @@ func TestVerifyObjectNotFound(t *testing.T) {
 	require.Equal(t, "status 404", status)
 }
 
+func TestVerifyObjectMissingChunk(t *testing.T) {
+	chunkDir := t.TempDir()
+	indexDir := t.TempDir()
+
+	chunkStore, err := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { chunkStore.Close() })
+
+	indexStore, err := desync.NewLocalIndexStore(indexDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { indexStore.Close() })
+
+	srv := &Server{
+		operation:  "upload",
+		writeStore: chunkStore,
+		readStore:  chunkStore,
+		indexStore: indexStore,
+		n:          2,
+		minChunk:   16 * 1024,
+		avgChunk:   64 * 1024,
+		maxChunk:   256 * 1024,
+	}
+
+	data := []byte("verify missing chunk test data that should be somewhat long")
+	oid, size := uploadTestObject(t, srv, data)
+
+	// Read the index to find a chunk ID, then delete that chunk from disk.
+	idx, err := indexStore.GetIndex(oidIndexName(oid))
+	require.NoError(t, err)
+	require.NotEmpty(t, idx.Chunks)
+
+	victimID := idx.Chunks[0].ID
+	sID := victimID.String()
+	chunkFile := filepath.Join(chunkDir, sID[0:4], sID+".cacnk")
+	require.NoError(t, os.Remove(chunkFile))
+
+	// verify-object should now return 404 (incomplete — missing chunk).
+	out := runSession(t, srv, func(w *pktline.Writer) {
+		w.WritePacketText("version 1")
+		w.WriteFlush()
+		w.WritePacketText(fmt.Sprintf("verify-object %s", oid))
+		w.WritePacketText(fmt.Sprintf("size=%d", size))
+		w.WriteFlush()
+		w.WritePacketText("quit")
+		w.WriteFlush()
+	})
+
+	r := pktline.NewReader(bytes.NewReader(out))
+	skipCapAndVersion(t, r)
+
+	status, err := r.ReadPacketText()
+	require.NoError(t, err)
+	require.Equal(t, "status 404", status)
+}
+
 func TestResolveConfigWalk(t *testing.T) {
 	// Create a directory structure with a config file in a parent.
 	root := t.TempDir()
