@@ -36,11 +36,12 @@ const DefaultChunkSize = "16:64:256"
 // Defaults holds config-file defaults for CLI flags that users often want to
 // set once rather than on every invocation.
 type Defaults struct {
-	Digest     string   `json:"digest,omitempty"`
-	Stores     []string `json:"stores,omitempty"`
-	IndexStore string   `json:"index-store,omitempty"`
-	ChunkSize  string   `json:"chunk-size,omitempty"`
-	Cache      string   `json:"cache,omitempty"`
+	Digest      string   `json:"digest,omitempty"`
+	Stores      []string `json:"stores,omitempty"`
+	IndexStore  string   `json:"index-store,omitempty"`
+	ChunkSize   string   `json:"chunk-size,omitempty"`
+	Cache       string   `json:"cache,omitempty"`
+	Concurrency int      `json:"concurrency,omitempty"`
 }
 
 // Config is used to hold the global tool configuration. It's used to customize

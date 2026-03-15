@@ -97,6 +97,9 @@ func run() error {
 
 	var cmdOpt cmdshared.CmdStoreOptions
 	cmdOpt.N = 10
+	if cfg.Defaults.Concurrency > 0 {
+		cmdOpt.N = cfg.Defaults.Concurrency
+	}
 
 	// Ensure local store directories exist (created on first use).
 	if err := ensureLocalDir(storeURL); err != nil {
