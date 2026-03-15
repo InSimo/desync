@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	minio "github.com/minio/minio-go/v6"
 	"github.com/minio/minio-go/v6/pkg/credentials"
@@ -64,6 +66,21 @@ func NewS3StoreBase(u *url.URL, s3Creds *credentials.Credentials, region string,
 	if err != nil {
 		return s, errors.Wrap(err, u.String())
 	}
+
+	// Configure HTTP connection pooling. The default http.Transport uses
+	// MaxIdleConnsPerHost=2, which causes constant connection churn under
+	// concurrent chunk operations. Size the pool to match the configured
+	// concurrency (opt.N) so connections are reused across requests.
+	poolSize := opt.N
+	if poolSize < 4 {
+		poolSize = 4
+	}
+	s.client.SetCustomTransport(&http.Transport{
+		MaxIdleConnsPerHost: poolSize,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	})
+
 	return s, nil
 }
 
