@@ -1,1 +1,9 @@
 dist/
+
+# Built binaries (go build output in repo root)
+/desync
+/git-lfs-desync
+/git-lfs-transfer
+
+# Experiment working directory
+/tmp/
