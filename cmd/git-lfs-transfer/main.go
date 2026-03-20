@@ -11,8 +11,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/folbricht/desync/cmd/internal/cmdshared"
-	"github.com/folbricht/desync/cmd/internal/pktline"
+	"github.com/folbricht/desync/cmd/shared/cmdshared"
+	"github.com/folbricht/desync/cmd/shared/pktline"
 )
 
 const configFileName = "desync-lfs.json"

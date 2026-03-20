@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/cmdshared"
-	"github.com/folbricht/desync/cmd/internal/pktline"
+	"github.com/folbricht/desync/cmd/shared/cmdshared"
+	"github.com/folbricht/desync/cmd/shared/pktline"
 )
 
 // Server implements the Git LFS SSH transfer protocol (git-lfs-transfer).

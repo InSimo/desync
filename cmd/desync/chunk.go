@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/cmdshared"
+	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/spf13/cobra"
 )
 

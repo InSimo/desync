@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/cmdshared"
+	"github.com/folbricht/desync/cmd/shared/cmdshared"
 )
 
 func TestDeriveIndexURL(t *testing.T) {

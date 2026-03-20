@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/cmdshared"
+	"github.com/folbricht/desync/cmd/shared/cmdshared"
 )
 
 func TestChunkStoreFromLocalPath(t *testing.T) {

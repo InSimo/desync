@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/cmdshared"
+	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	minio "github.com/minio/minio-go/v6"
 	"github.com/pkg/errors"
 )

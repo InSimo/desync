@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/folbricht/desync/cmd/internal/pktline"
+	"github.com/folbricht/desync/cmd/shared/pktline"
 )
 
 // handleBatch implements the "batch" command. It reads OID+size lines from the

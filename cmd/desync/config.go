@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/cmdshared"
+	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )

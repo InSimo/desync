@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/pktline"
+	"github.com/folbricht/desync/cmd/shared/pktline"
 )
 
 // handleGetObject retrieves an LFS object by OID: looks up its desync index,

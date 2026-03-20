@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/internal/pktline"
+	"github.com/folbricht/desync/cmd/shared/pktline"
 	"github.com/stretchr/testify/require"
 )
 
