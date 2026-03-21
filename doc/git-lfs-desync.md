@@ -412,7 +412,7 @@ git-lfs-desync --indexes \
 ### Notes
 
 - `--indexes` mode does not read any store configuration. `--store`, `--config`, and all other store-related flags are ignored.
-- The index name format is `<first-4-chars-of-oid>/<oid>.caibx`, matching how `git-lfs-desync` stores indexes during upload.
+- The index name format is `<oid[0:2]>/<oid[2:4]>/<oid[4:]>.caibx`, matching how `git-lfs-desync` stores indexes during upload and Forgejo's `Pointer.RelativePath()` convention.
 
 ---
 

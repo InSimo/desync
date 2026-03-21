@@ -218,10 +218,10 @@ The storage layout is identical to [`git-lfs-desync`](git-lfs-desync.md), making
   <xx>/<64-hex-chars>.cacnk     # compressed chunks (sharded by first 2 hex chars)
 
 <index-store>/
-  <xxxx>/<oid>.caibx             # index per LFS object (sharded by first 4 OID chars)
+  <xx>/<yy>/<rest>.caibx         # index per LFS object (sharded by first 2+2 OID chars)
 ```
 
-The index name for an LFS OID is `<oid[0:4]>/<oid>.caibx`. This sharding scheme matches the layout used by `git-lfs-desync`, so files uploaded by either tool can be downloaded by the other.
+The index name for an LFS OID is `<oid[0:2]>/<oid[2:4]>/<oid[4:]>.caibx`. This sharding scheme matches the layout used by `git-lfs-desync` and Forgejo's `Pointer.RelativePath()`, so files uploaded by any tool can be downloaded by the others.
 
 ## Protocol Commands
 
