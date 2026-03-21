@@ -123,9 +123,15 @@ func (s GCIndexStore) DeleteIndexes(ctx context.Context, names []string) error {
 	return nil
 }
 
-// ListIndexes returns the names of all indexes in the store, relative to the store root.
-func (s GCIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
-	query := &storage.Query{Prefix: s.prefix}
+// ListIndexes returns the names of indexes in the store, relative to the
+// store root. If prefix is non-empty, only indexes under that subdirectory
+// are returned.
+func (s GCIndexStore) ListIndexes(ctx context.Context, prefix string) ([]string, error) {
+	listPrefix := s.prefix
+	if prefix != "" {
+		listPrefix = s.prefix + prefix + "/"
+	}
+	query := &storage.Query{Prefix: listPrefix}
 	it := s.client.Objects(ctx, query)
 	var names []string
 	for {

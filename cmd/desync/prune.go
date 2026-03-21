@@ -142,7 +142,7 @@ func runPrune(ctx context.Context, opt pruneOptions, args []string) error {
 		if !ok {
 			return fmt.Errorf("index store '%s' does not support listing indexes", opt.indexStore)
 		}
-		names, err := lis.ListIndexes(ctx)
+		names, err := lis.ListIndexes(ctx, "")
 		if err != nil {
 			return err
 		}

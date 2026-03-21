@@ -91,9 +91,15 @@ func (s *SFTPIndexStore) DeleteIndexes(ctx context.Context, names []string) erro
 	return nil
 }
 
-// ListIndexes returns the names of all indexes in the store, relative to the store root.
-func (s *SFTPIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
-	walker := s.client.Walk(strings.TrimSuffix(s.path, "/"))
+// ListIndexes returns the names of indexes in the store, relative to the
+// store root. If prefix is non-empty, only indexes under that subdirectory
+// are returned.
+func (s *SFTPIndexStore) ListIndexes(ctx context.Context, prefix string) ([]string, error) {
+	walkRoot := strings.TrimSuffix(s.path, "/")
+	if prefix != "" {
+		walkRoot = walkRoot + "/" + prefix
+	}
+	walker := s.client.Walk(walkRoot)
 	var names []string
 	for walker.Step() {
 		if err := walker.Err(); err != nil {

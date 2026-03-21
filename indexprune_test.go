@@ -52,7 +52,7 @@ func (s *mockIndexPruneStore) String() string { return "mockIndexPruneStore" }
 
 // ListableIndexStore
 
-func (s *mockIndexPruneStore) ListIndexes(_ context.Context) ([]string, error) {
+func (s *mockIndexPruneStore) ListIndexes(_ context.Context, _ string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	names := make([]string, 0, len(s.indexes))

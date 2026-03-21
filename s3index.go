@@ -92,12 +92,18 @@ func (s S3IndexStore) DeleteIndexes(ctx context.Context, names []string) error {
 	return firstErr
 }
 
-// ListIndexes returns the names of all indexes in the store, relative to the store root.
-func (s S3IndexStore) ListIndexes(ctx context.Context) ([]string, error) {
+// ListIndexes returns the names of indexes in the store, relative to the
+// store root. If prefix is non-empty, only indexes under that subdirectory
+// are returned.
+func (s S3IndexStore) ListIndexes(ctx context.Context, prefix string) ([]string, error) {
 	doneCh := make(chan struct{})
 	defer close(doneCh)
+	listPrefix := s.prefix
+	if prefix != "" {
+		listPrefix = s.prefix + prefix + "/"
+	}
 	var names []string
-	for object := range s.client.ListObjectsV2(s.bucket, s.prefix, true, doneCh) {
+	for object := range s.client.ListObjectsV2(s.bucket, listPrefix, true, doneCh) {
 		if object.Err != nil {
 			return nil, object.Err
 		}

@@ -112,10 +112,12 @@ type IndexWriteStore interface {
 	StoreIndex(name string, idx Index) error
 }
 
-// ListableIndexStore is implemented by index stores that support listing all
-// stored indexes.
+// ListableIndexStore is implemented by index stores that support listing
+// stored indexes. The prefix parameter restricts results to a subdirectory
+// (e.g. "ab/cd"); pass "" to list all indexes. Returned names are always
+// relative to the store root (i.e. full index names), regardless of prefix.
 type ListableIndexStore interface {
-	ListIndexes(ctx context.Context) ([]string, error)
+	ListIndexes(ctx context.Context, prefix string) ([]string, error)
 }
 
 // IndexPruneStore is implemented by index stores that support deleting indexes.

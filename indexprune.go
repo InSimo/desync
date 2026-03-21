@@ -22,7 +22,7 @@ func commonSafePruneIndexes(ctx context.Context, keep map[string]struct{}, s Saf
 		return err
 	}
 
-	names, err := s.ListIndexes(ctx)
+	names, err := s.ListIndexes(ctx, "")
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func commonSafePruneIndexes(ctx context.Context, keep map[string]struct{}, s Saf
 // s.DeleteIndexes so that backends can issue a single batch request where
 // supported.
 func commonPruneIndexes(ctx context.Context, keep map[string]struct{}, s IndexPruneStore) error {
-	names, err := s.ListIndexes(ctx)
+	names, err := s.ListIndexes(ctx, "")
 	if err != nil {
 		return err
 	}

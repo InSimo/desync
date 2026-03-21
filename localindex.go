@@ -108,10 +108,16 @@ func (s LocalIndexStore) DeleteIndexes(ctx context.Context, names []string) erro
 	return nil
 }
 
-// ListIndexes returns the relative paths of all index files in the store.
-func (s LocalIndexStore) ListIndexes(ctx context.Context) ([]string, error) {
+// ListIndexes returns the relative paths of index files in the store,
+// always relative to the store root. If prefix is non-empty, only indexes
+// under that subdirectory are returned.
+func (s LocalIndexStore) ListIndexes(ctx context.Context, prefix string) ([]string, error) {
+	walkRoot := s.Path
+	if prefix != "" {
+		walkRoot = filepath.Join(s.Path, filepath.FromSlash(prefix))
+	}
 	var names []string
-	err := filepath.WalkDir(s.Path, func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(walkRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
