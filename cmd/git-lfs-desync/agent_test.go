@@ -689,9 +689,9 @@ func TestOIDIndexName(t *testing.T) {
 		oid  string
 		want string
 	}{
-		{"abc123def456", "abc1/abc123def456.caibx"},
-		{"0000111122223333", "0000/0000111122223333.caibx"},
-		{"deadbeefcafe1234", "dead/deadbeefcafe1234.caibx"},
+		{"abc123def456", "ab/c1/23def456.caibx"},
+		{"0000111122223333", "00/00/111122223333.caibx"},
+		{"deadbeefcafe1234", "de/ad/beefcafe1234.caibx"},
 	}
 	for _, c := range cases {
 		got := oidIndexName(c.oid)
@@ -763,7 +763,7 @@ func TestLocalIndexStoreSharding(t *testing.T) {
 	}
 
 	// Assert the index is stored at the sharded path, not flat.
-	shardedPath := filepath.Join(indexDir, oid[0:4], oid+".caibx")
+	shardedPath := filepath.Join(indexDir, oid[0:2], oid[2:4], oid[4:]+".caibx")
 	if _, err := os.Stat(shardedPath); err != nil {
 		t.Errorf("index not found at sharded path %q: %v", shardedPath, err)
 	}
@@ -946,7 +946,7 @@ func TestRunIndexesFromArgs(t *testing.T) {
 		t.Fatalf("runIndexes: %v", err)
 	}
 	got := buf.String()
-	want := "abc1/abc123def456.caibx\ndead/dead0000cafe1234.caibx\n"
+	want := "ab/c1/23def456.caibx\nde/ad/0000cafe1234.caibx\n"
 	if got != want {
 		t.Errorf("runIndexes output = %q, want %q", got, want)
 	}
@@ -964,7 +964,7 @@ func TestRunIndexesFromStdin(t *testing.T) {
 		t.Fatalf("runIndexes: %v", err)
 	}
 	got := buf.String()
-	want := "abc1/abc123def4560000.caibx\ndead/deadbeef00001234.caibx\ncafe/cafe00001111abcd.caibx\n"
+	want := "ab/c1/23def4560000.caibx\nde/ad/beef00001234.caibx\nca/fe/00001111abcd.caibx\n"
 	if got != want {
 		t.Errorf("runIndexes output = %q, want %q", got, want)
 	}
