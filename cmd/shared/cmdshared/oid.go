@@ -8,9 +8,10 @@ import (
 )
 
 // OidIndexName returns the sharded index name for a Git LFS OID.
-// The format is "<first-4-chars>/<oid>.caibx".
+// The format is "<oid[0:2]>/<oid[2:4]>/<oid[4:]>.caibx", matching
+// Forgejo's Pointer.RelativePath() convention (2-char/2-char/rest).
 func OidIndexName(oid string) string {
-	return oid[0:4] + "/" + oid + ".caibx"
+	return oid[0:2] + "/" + oid[2:4] + "/" + oid[4:] + ".caibx"
 }
 
 // DeriveIndexURL derives an index store location from a chunk store location.
