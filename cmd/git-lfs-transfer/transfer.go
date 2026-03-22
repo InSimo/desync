@@ -58,13 +58,10 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	}
 
 	// Prefetch and decompress chunks in parallel (up to s.n concurrent
-	// workers), then stream them to the client in index order.  Uses a
-	// fixed-size ring of result channels (2 × s.n) instead of allocating
-	// one channel per chunk — for a 23 GB file with 64 KB chunks that
-	// avoids ~360K channel allocations.
-	//
-	// Memory is bounded to ~s.n decompressed chunks in flight (the
-	// semaphore controls the worker count).
+	// workers), then stream them to the client in index order.  Each chunk
+	// gets its own result channel so the consumer reads results in the
+	// original order while workers run ahead.  Memory is bounded to ~s.n
+	// decompressed chunks in flight.
 	//
 	// Any error after the 200 response has been sent cannot be reported as a
 	// protocol error; we close the connection by returning it to the caller.
@@ -72,52 +69,26 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 		data []byte
 		err  error
 	}
-	windowSize := s.n * 2
-	if windowSize < 2 {
-		windowSize = 2
-	}
-	ring := make([]chan prefetched, windowSize)
-	for i := range ring {
-		ring[i] = make(chan prefetched, 1)
-	}
+	pending := make([]chan prefetched, len(idx.Chunks))
 	sem := make(chan struct{}, s.n)
-
-	// Producer: launch prefetch goroutines, reusing ring slots.
-	prodErr := make(chan error, 1)
-	go func() {
-		for i, c := range idx.Chunks {
-			slot := i % windowSize
-			// Wait for the consumer to drain this ring slot before reusing it.
-			// For the first windowSize chunks this is a no-op (channels are empty).
-			if i >= windowSize {
-				// The consumer must have read ring[slot] by now; drain any
-				// leftover (shouldn't happen, but be safe).
-				select {
-				case <-ring[slot]:
-				default:
-				}
+	for i, c := range idx.Chunks {
+		ch := make(chan prefetched, 1)
+		pending[i] = ch
+		id := c.ID
+		sem <- struct{}{} // acquire slot (blocks if s.n workers busy)
+		go func() {
+			defer func() { <-sem }()
+			chunk, err := s.readStore.GetChunk(id)
+			if err != nil {
+				ch <- prefetched{err: err}
+				return
 			}
-			id := c.ID
-			ch := ring[slot]
-			sem <- struct{}{} // acquire worker slot (blocks if s.n busy)
-			go func() {
-				defer func() { <-sem }()
-				chunk, err := s.readStore.GetChunk(id)
-				if err != nil {
-					ch <- prefetched{err: err}
-					return
-				}
-				data, err := chunk.Data()
-				ch <- prefetched{data: data, err: err}
-			}()
-		}
-		prodErr <- nil
-	}()
-
-	// Consumer: read results in index order from the ring.
-	for i := range idx.Chunks {
-		slot := i % windowSize
-		pc := <-ring[slot]
+			data, err := chunk.Data()
+			ch <- prefetched{data: data, err: err}
+		}()
+	}
+	for i, ch := range pending {
+		pc := <-ch
 		if pc.err != nil {
 			s.logf("get-object %s: chunk %d: %v", oid, i, pc.err)
 			return fmt.Errorf("get-object %s: chunk error: %w", oid, pc.err)
@@ -134,7 +105,6 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 			data = data[n:]
 		}
 	}
-	<-prodErr // wait for producer goroutine to finish
 
 	return s.w.WriteFlush()
 }
