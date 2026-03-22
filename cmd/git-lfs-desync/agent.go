@@ -143,15 +143,21 @@ func (a *Agent) run(ctx context.Context, r io.Reader) error {
 	}
 }
 
+// runLoop processes transfer events from git-lfs one at a time.
+//
+// The Git LFS custom transfer protocol is always serial per process:
+// git-lfs sends one transfer request and waits for the completion
+// response before sending the next.  With concurrent=true, git-lfs
+// achieves parallelism by spawning N agent processes, each handling
+// one object at a time.  Cross-process coordination (memory limits)
+// is handled by the bytelimit gate, not by in-process concurrency.
 func (a *Agent) runLoop(ctx context.Context, dec *json.Decoder, concurrentTransfers int) error {
-	sem := make(chan struct{}, concurrentTransfers)
-	var wg sync.WaitGroup
+	_ = concurrentTransfers // informational only; not used for in-process concurrency
 
 	for {
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
 			// EOF — git-lfs closed stdin without "terminate".
-			wg.Wait()
 			return nil
 		}
 		var base struct {
@@ -162,21 +168,11 @@ func (a *Agent) runLoop(ctx context.Context, dec *json.Decoder, concurrentTransf
 		}
 
 		switch base.Event {
-		case "upload", "download":
-			wg.Add(1)
-			sem <- struct{}{} // backpressure: blocks if at capacity
-			ev := base.Event
-			go func(msg json.RawMessage) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if ev == "upload" {
-					a.handleUpload(ctx, msg)
-				} else {
-					a.handleDownload(ctx, msg)
-				}
-			}(raw)
+		case "upload":
+			a.handleUpload(ctx, raw)
+		case "download":
+			a.handleDownload(ctx, raw)
 		case "terminate":
-			wg.Wait()
 			return nil
 		default:
 			// ignore unknown events
