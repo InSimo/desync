@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/folbricht/desync"
+	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 )
 
@@ -83,6 +84,7 @@ type Agent struct {
 	tmpDir              string
 	safePruning         bool
 	safePropagationTime time.Duration
+	gate            *bytelimit.Gate // cross-process in-flight byte limit; may be nil
 	enc             *json.Encoder
 	mu              sync.Mutex
 	// setup is called once from handleInit with remote and operation from the
@@ -239,6 +241,16 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 		return
 	}
 
+	// Acquire in-flight byte slot (blocks if over the cross-process limit).
+	if a.gate != nil {
+		slot, err := a.gate.Acquire(ctx, req.Size)
+		if err != nil {
+			a.sendComplete(req.OID, "", fmt.Errorf("in-flight limit: %w", err))
+			return
+		}
+		defer slot.Release()
+	}
+
 	// Chunk the file and build an index.
 	pb := &lfsProgressBar{agent: a, oid: req.OID, totalBytes: req.Size}
 	idx, _, err := desync.IndexFromFile(ctx, req.Path, a.n, a.minChunk, a.avgChunk, a.maxChunk, pb)
@@ -283,6 +295,16 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		a.sendComplete(req.OID, "", fmt.Errorf("parsing download request: %w", err))
 		return
+	}
+
+	// Acquire in-flight byte slot (blocks if over the cross-process limit).
+	if a.gate != nil {
+		slot, err := a.gate.Acquire(ctx, req.Size)
+		if err != nil {
+			a.sendComplete(req.OID, "", fmt.Errorf("in-flight limit: %w", err))
+			return
+		}
+		defer slot.Release()
 	}
 
 	// Fetch the index from the S3 index store.

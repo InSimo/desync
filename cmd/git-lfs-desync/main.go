@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/spf13/cobra"
 )
@@ -68,12 +69,13 @@ func main() {
 	}()
 
 	var (
-		storeURL  string
-		indexURL  string
-		cache     string
-		chunkSize string
-		indexes   bool
-		storeOpt  cmdshared.CmdStoreOptions
+		storeURL     string
+		indexURL     string
+		cache        string
+		chunkSize    string
+		indexes      bool
+		maxInFlight  int64
+		storeOpt     cmdshared.CmdStoreOptions
 	)
 
 	cmd := &cobra.Command{
@@ -110,7 +112,15 @@ Configure Git LFS to use this agent:
 				return runIndexes(args, os.Stdin, os.Stdout)
 			}
 
-			agent := &Agent{tmpDir: os.TempDir()}
+			// Open the cross-process in-flight byte gate.  A limit of 0
+			// disables admission control.
+			gate, err := bytelimit.OpenGate(maxInFlight)
+			if err != nil {
+				return fmt.Errorf("opening in-flight byte gate: %w", err)
+			}
+			defer gate.Close()
+
+			agent := &Agent{tmpDir: os.TempDir(), gate: gate}
 			defer agent.Close()
 
 			agent.setup = func(remote, operation string) error {
@@ -196,6 +206,10 @@ Configure Git LFS to use this agent:
 			"with values from the LFS init message (e.g. %(remote)/_desync:config.json);\n"+
 			"%(remote) defaults to \"origin\" when the remote is not available (e.g. smudge filter during git clone)")
 	flags.StringVar(&digestAlgorithm, "digest", "", "digest algorithm, sha512-256 or sha256 (default sha512-256)")
+	flags.Int64Var(&maxInFlight, "max-in-flight", 2*1024*1024*1024,
+		"maximum total bytes allowed in-flight across all concurrent agent processes;\n"+
+			"limits memory usage when git-lfs spawns multiple agents (concurrent=true);\n"+
+			"set to 0 to disable the limit (default 2 GB)")
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
 			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")

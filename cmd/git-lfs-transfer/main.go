@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/folbricht/desync/cmd/shared/pktline"
 )
@@ -141,6 +142,19 @@ func run() error {
 	}
 	defer indexStore.Close()
 
+	// Open the cross-process in-flight byte gate.  The limit is read from
+	// config (defaults.max-in-flight) or the DESYNC_MAX_INFLIGHT env var.
+	// A limit of 0 disables admission control.
+	maxInFlight := cfg.ResolveMaxInFlight(0)
+	var gate *bytelimit.Gate
+	if maxInFlight > 0 {
+		gate, err = bytelimit.OpenGate(maxInFlight)
+		if err != nil {
+			return fmt.Errorf("opening in-flight byte gate: %w", err)
+		}
+		defer gate.Close()
+	}
+
 	srv := &Server{
 		operation:    operation,
 		writeStore:   writeStore,
@@ -152,6 +166,7 @@ func run() error {
 		maxChunk:     maxChunk,
 		safePruning:  storeOpts.SafePruning,
 		safePropTime: storeOpts.SafePropagationTime,
+		gate:         gate,
 		logDir:       filepath.Join(absPath, "desync-lfs", "logs"),
 	}
 

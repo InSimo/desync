@@ -37,6 +37,15 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 
 	size := indexTotalSize(idx)
 
+	// Acquire in-flight byte slot (blocks if over the cross-process limit).
+	if s.gate != nil {
+		slot, err := s.gate.Acquire(ctx, int64(size))
+		if err != nil {
+			return s.w.WriteErrorStatus(503, fmt.Sprintf("in-flight limit: %v", err))
+		}
+		defer slot.Release()
+	}
+
 	// Send success response with size before fetching any chunk data.
 	if err := s.w.WriteStatus(200); err != nil {
 		return err
@@ -129,6 +138,18 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 			s.drainBinaryData()
 		}
 		return s.w.WriteErrorStatus(400, fmt.Sprintf("object too large: %d bytes exceeds limit of %d", size, maxObjectSize))
+	}
+
+	// Acquire in-flight byte slot (blocks if over the cross-process limit).
+	if s.gate != nil {
+		slot, err := s.gate.Acquire(ctx, size)
+		if err != nil {
+			if hasDelim {
+				s.drainBinaryData()
+			}
+			return s.w.WriteErrorStatus(503, fmt.Sprintf("in-flight limit: %v", err))
+		}
+		defer slot.Release()
 	}
 
 	// The goroutine reads pkt-line binary packets from stdin and writes them

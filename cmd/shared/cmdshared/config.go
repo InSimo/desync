@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ type Defaults struct {
 	ChunkSize   string   `json:"chunk-size,omitempty"`
 	Cache       string   `json:"cache,omitempty"`
 	Concurrency int      `json:"concurrency,omitempty"`
+	MaxInFlight int64    `json:"max-in-flight,omitempty"`
 }
 
 // Config is used to hold the global tool configuration. It's used to customize
@@ -169,6 +171,24 @@ func (c Config) ResolveChunkSize(cli string) string {
 		return c.Defaults.ChunkSize
 	}
 	return DefaultChunkSize
+}
+
+// ResolveMaxInFlight returns cli if non-zero, otherwise c.Defaults.MaxInFlight,
+// otherwise the DESYNC_MAX_INFLIGHT environment variable (parsed as bytes),
+// otherwise 0 (disabled).
+func (c Config) ResolveMaxInFlight(cli int64) int64 {
+	if cli != 0 {
+		return cli
+	}
+	if c.Defaults.MaxInFlight != 0 {
+		return c.Defaults.MaxInFlight
+	}
+	if env := os.Getenv("DESYNC_MAX_INFLIGHT"); env != "" {
+		if v, err := strconv.ParseInt(env, 10, 64); err == nil {
+			return v
+		}
+	}
+	return 0
 }
 
 // SetDigestAlgorithm sets the global desync.Digest to the algorithm named by
