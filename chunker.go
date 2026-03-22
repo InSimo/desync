@@ -172,13 +172,13 @@ func NewChunker(r io.Reader, min, avg, max uint64) (Chunker, error) {
 	}, nil
 }
 
-// Make a new buffer with 10*max bytes and copy anything that may be leftover
+// Make a new buffer with 4*max bytes and copy anything that may be leftover
 // from before into it, then fill it up with new bytes. Don't fail on EOF.
 func (c *Chunker) fillBuffer() (n int, err error) {
 	if c.hitEOF { // We won't get anymore here, no need for more allocations
 		return
 	}
-	size := 10 * c.max
+	size := 4 * c.max
 	// Reuse the backing buffer if it has sufficient capacity
 	var buf []byte
 	if uint64(cap(c.backingBuf)) >= size {
