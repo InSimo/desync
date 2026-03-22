@@ -4,6 +4,7 @@ package bytelimit
 
 import (
 	"fmt"
+	"os/user"
 	"syscall"
 	"unsafe"
 )
@@ -25,10 +26,15 @@ const (
 	processQueryInfo   = 0x0400      // PROCESS_QUERY_LIMITED_INFORMATION
 )
 
-// shmMapName is the name of the shared memory mapping object.
-// "Local\" prefix scopes it to the current session — sufficient for
-// git operations which all run in the same user session.
-const shmMapName = "Local\\desync-inflight"
+// shmMapName returns the named mapping object scoped to the current user.
+// "Local\" prefix scopes it to the current session.
+func shmMapName() string {
+	name := "Local\\desync-inflight"
+	if u, err := user.Current(); err == nil {
+		name += "-" + u.Uid
+	}
+	return name
+}
 
 // windowsMapping holds the handle for cleanup.
 var windowsMapping struct {
@@ -36,7 +42,7 @@ var windowsMapping struct {
 }
 
 func openSharedMem() ([]byte, error) {
-	namePtr, err := syscall.UTF16PtrFromString(shmMapName)
+	namePtr, err := syscall.UTF16PtrFromString(shmMapName())
 	if err != nil {
 		return nil, err
 	}

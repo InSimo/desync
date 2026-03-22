@@ -4,13 +4,17 @@ package bytelimit
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
 )
 
-// shmName is the shared memory file name.
-const shmName = "desync-inflight"
+// shmName returns the shared memory file name, scoped to the current user
+// to avoid cross-user permission issues.
+func shmName() string {
+	return fmt.Sprintf("desync-inflight-%d", os.Getuid())
+}
 
 // shmDir returns the directory for the shared memory file.
 // On Linux, /dev/shm is a tmpfs mount.  On macOS and other systems,
@@ -27,7 +31,7 @@ func shmDir() string {
 // processes running as different users (e.g. git user on a server) can
 // share the same region.
 func openSharedMem() ([]byte, error) {
-	path := filepath.Join(shmDir(), shmName)
+	path := filepath.Join(shmDir(), shmName())
 
 	// Try to open an existing file first (works even if we're not the
 	// owner, as long as it was created with 0666).
