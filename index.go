@@ -6,7 +6,6 @@ import (
 	"crypto"
 	"fmt"
 	"math"
-	"slices"
 	"sync"
 	"time"
 
@@ -149,15 +148,20 @@ type ChunkerInterface interface {
 
 func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration) (Index, error) {
 	type chunkJob struct {
-		num   int
-		start uint64
-		b     []byte
+		num     int
+		start   uint64
+		b       []byte
+		poolBuf *[]byte // original pool buffer (may be larger than b)
 	}
 	var (
 		mu      sync.Mutex
 		in      = make(chan chunkJob)
 		results = make(map[int]IndexChunk)
 	)
+
+	// Pool for chunk data buffers.  Reduces GC pressure by recycling the
+	// byte slices that are cloned from the chunker's backing buffer.
+	var chunkBufPool sync.Pool
 
 	g, gCtx := errgroup.WithContext(ctx)
 	var s *ChunkStorage
@@ -191,6 +195,12 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 				if err := s.StoreChunk(chunk); err != nil {
 					return err
 				}
+
+				// Return the buffer to the pool now that StoreChunk is done.
+				if c.poolBuf != nil {
+					*c.poolBuf = (*c.poolBuf)[:0]
+					chunkBufPool.Put(c.poolBuf)
+				}
 			}
 			return nil
 		})
@@ -213,14 +223,27 @@ loop:
 		// Copy the buffer before sending it to workers. The chunker
 		// reuses its internal backing buffer across fillBuffer() calls,
 		// so the slice returned by Next() may be overwritten by the
-		// next call.
-		b = slices.Clone(b)
+		// next call.  Use a pooled buffer to reduce GC pressure.
+		var poolBuf *[]byte
+		if v := chunkBufPool.Get(); v != nil {
+			poolBuf = v.(*[]byte)
+		} else {
+			buf := make([]byte, 0, len(b))
+			poolBuf = &buf
+		}
+		if cap(*poolBuf) < len(b) {
+			*poolBuf = make([]byte, len(b))
+		} else {
+			*poolBuf = (*poolBuf)[:len(b)]
+		}
+		copy(*poolBuf, b)
+		b = *poolBuf
 
 		// Send it off for compression and storage
 		select {
 		case <-gCtx.Done():
 			break loop
-		case in <- chunkJob{num: num, start: start, b: b}:
+		case in <- chunkJob{num: num, start: start, b: b, poolBuf: poolBuf}:
 		}
 		num++
 	}
