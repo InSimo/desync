@@ -3,6 +3,7 @@
 package bytelimit
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -27,6 +28,9 @@ func shmDir() string {
 // share the same region.
 func openSharedMem() ([]byte, error) {
 	path := filepath.Join(shmDir(), shmName)
+
+	// Try to open an existing file first (works even if we're not the
+	// owner, as long as it was created with 0666).
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
@@ -57,6 +61,19 @@ func closeSharedMem(data []byte) error {
 }
 
 // processAlive checks whether a process with the given PID is still running.
+//
+// kill(pid, 0) returns:
+//   - nil:    process exists and we have permission to signal it
+//   - ESRCH:  process does not exist
+//   - EPERM:  process exists but we lack permission (different user)
+//
+// We treat EPERM as alive to avoid incorrectly reaping slots owned by
+// processes running as a different user.
 func processAlive(pid int32) bool {
-	return syscall.Kill(int(pid), 0) == nil
+	err := syscall.Kill(int(pid), 0)
+	if err == nil {
+		return true
+	}
+	// ESRCH = no such process → dead.  Any other error (EPERM) → assume alive.
+	return !errors.Is(err, syscall.ESRCH)
 }

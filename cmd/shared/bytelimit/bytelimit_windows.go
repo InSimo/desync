@@ -4,7 +4,6 @@ package bytelimit
 
 import (
 	"fmt"
-	"os"
 	"syscall"
 	"unsafe"
 )
@@ -27,9 +26,11 @@ const (
 )
 
 // shmMapName is the name of the shared memory mapping object.
+// "Local\" prefix scopes it to the current session — sufficient for
+// git operations which all run in the same user session.
 const shmMapName = "Local\\desync-inflight"
 
-// windowsMapping holds the handle and mapped view pointer for cleanup.
+// windowsMapping holds the handle for cleanup.
 var windowsMapping struct {
 	handle uintptr
 }
@@ -73,7 +74,6 @@ func openSharedMem() ([]byte, error) {
 		return nil, fmt.Errorf("MapViewOfFile: %w", err)
 	}
 
-	// Convert the pointer to a byte slice.
 	data := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), shmSize)
 	return data, nil
 }
@@ -90,14 +90,23 @@ func closeSharedMem(data []byte) error {
 }
 
 // processAlive checks whether a process with the given PID is still running.
+//
+// OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION returns:
+//   - a valid handle: process exists (we have permission or it's ours)
+//   - 0 with ERROR_INVALID_PARAMETER: process does not exist
+//   - 0 with ERROR_ACCESS_DENIED: process exists but belongs to another user
+//
+// We treat ERROR_ACCESS_DENIED as alive to avoid incorrectly reaping slots
+// owned by processes running as a different user.
 func processAlive(pid int32) bool {
-	handle, _, _ := procOpenProcess.Call(processQueryInfo, 0, uintptr(pid))
-	if handle == 0 {
-		return false
+	handle, _, err := procOpenProcess.Call(processQueryInfo, 0, uintptr(pid))
+	if handle != 0 {
+		procCloseHandle.Call(handle)
+		return true
 	}
-	procCloseHandle.Call(handle)
-	return true
+	// ERROR_ACCESS_DENIED (5) means the process exists but we can't open it.
+	if errno, ok := err.(syscall.Errno); ok && errno == 5 {
+		return true
+	}
+	return false
 }
-
-// Ensure os is used (for potential future use).
-var _ = os.Getpid
