@@ -42,8 +42,9 @@ type Defaults struct {
 	IndexStore  string   `json:"index-store,omitempty"`
 	ChunkSize   string   `json:"chunk-size,omitempty"`
 	Cache       string   `json:"cache,omitempty"`
-	Concurrency int      `json:"concurrency,omitempty"`
-	MaxInFlight int64    `json:"max-in-flight,omitempty"`
+	Concurrency    int   `json:"concurrency,omitempty"`
+	MaxInFlight    int64 `json:"max-in-flight,omitempty"`
+	MaxStorageOps  int32 `json:"max-storage-ops,omitempty"`
 }
 
 // Config is used to hold the global tool configuration. It's used to customize
@@ -186,6 +187,23 @@ func (c Config) ResolveMaxInFlight(cli int64) int64 {
 	if env := os.Getenv("DESYNC_MAX_INFLIGHT"); env != "" {
 		if v, err := strconv.ParseInt(env, 10, 64); err == nil {
 			return v
+		}
+	}
+	return 0
+}
+
+// ResolveMaxStorageOps returns cli if non-zero, otherwise c.Defaults.MaxStorageOps,
+// otherwise the DESYNC_MAX_STORAGE_OPS environment variable, otherwise 0 (disabled).
+func (c Config) ResolveMaxStorageOps(cli int32) int32 {
+	if cli != 0 {
+		return cli
+	}
+	if c.Defaults.MaxStorageOps != 0 {
+		return c.Defaults.MaxStorageOps
+	}
+	if env := os.Getenv("DESYNC_MAX_STORAGE_OPS"); env != "" {
+		if v, err := strconv.ParseInt(env, 10, 32); err == nil {
+			return int32(v)
 		}
 	}
 	return 0

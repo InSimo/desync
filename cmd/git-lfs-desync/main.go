@@ -69,13 +69,14 @@ func main() {
 	}()
 
 	var (
-		storeURL     string
-		indexURL     string
-		cache        string
-		chunkSize    string
-		indexes      bool
-		maxInFlight  int64
-		storeOpt     cmdshared.CmdStoreOptions
+		storeURL      string
+		indexURL      string
+		cache         string
+		chunkSize     string
+		indexes       bool
+		maxInFlight   int64
+		maxStorageOps int32
+		storeOpt      cmdshared.CmdStoreOptions
 	)
 
 	cmd := &cobra.Command{
@@ -112,9 +113,8 @@ Configure Git LFS to use this agent:
 				return runIndexes(args, os.Stdin, os.Stdout)
 			}
 
-			// Open the cross-process in-flight byte gate.  A limit of 0
-			// disables admission control.
-			gate, err := bytelimit.OpenGate(maxInFlight)
+			// Open the cross-process gate for in-flight bytes and/or storage ops.
+			gate, err := bytelimit.OpenGate(maxInFlight, maxStorageOps)
 			if err != nil {
 				return fmt.Errorf("opening in-flight byte gate: %w", err)
 			}
@@ -177,9 +177,16 @@ Configure Git LFS to use this agent:
 					return err
 				}
 
-				agent.writeStore = chunkStore
-				agent.readStore = readStore
-				agent.indexWriteStore = indexStore
+				// Wrap stores with ops gating if a storage-ops limit is configured.
+				if gate.MaxOps() > 0 {
+					agent.writeStore = &bytelimit.GatedWriteStore{WriteStore: chunkStore, Gate: gate}
+					agent.readStore = &bytelimit.GatedStore{Store: readStore, Gate: gate}
+					agent.indexWriteStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
+				} else {
+					agent.writeStore = chunkStore
+					agent.readStore = readStore
+					agent.indexWriteStore = indexStore
+				}
 				agent.n = storeOpt.N
 				agent.minChunk = minChunk
 				agent.avgChunk = avgChunk
@@ -210,6 +217,10 @@ Configure Git LFS to use this agent:
 		"maximum total bytes allowed in-flight across all concurrent agent processes;\n"+
 			"limits memory usage when git-lfs spawns multiple agents (concurrent=true);\n"+
 			"set to 0 to disable the limit (default 2 GB)")
+	flags.Int32Var(&maxStorageOps, "max-storage-ops", 0,
+		"maximum concurrent storage operations (GetChunk/StoreChunk/GetIndex/StoreIndex)\n"+
+			"across all concurrent agent processes; limits S3/network backend load;\n"+
+			"set to 0 to disable the limit (default: disabled)")
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
 			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")

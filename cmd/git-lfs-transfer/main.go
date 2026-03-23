@@ -142,17 +142,23 @@ func run() error {
 	}
 	defer indexStore.Close()
 
-	// Open the cross-process in-flight byte gate.  The limit is read from
-	// config (defaults.max-in-flight) or the DESYNC_MAX_INFLIGHT env var.
-	// A limit of 0 disables admission control.
+	// Open the cross-process gate for in-flight bytes and/or storage ops.
 	maxInFlight := cfg.ResolveMaxInFlight(0)
+	maxOps := cfg.ResolveMaxStorageOps(0)
 	var gate *bytelimit.Gate
-	if maxInFlight > 0 {
-		gate, err = bytelimit.OpenGate(maxInFlight)
+	if maxInFlight > 0 || maxOps > 0 {
+		gate, err = bytelimit.OpenGate(maxInFlight, maxOps)
 		if err != nil {
 			return fmt.Errorf("opening in-flight byte gate: %w", err)
 		}
 		defer gate.Close()
+	}
+
+	// Wrap stores with ops gating if a storage-ops limit is configured.
+	if gate != nil && gate.MaxOps() > 0 {
+		writeStore = &bytelimit.GatedWriteStore{WriteStore: writeStore, Gate: gate}
+		readStore = &bytelimit.GatedStore{Store: readStore, Gate: gate}
+		indexStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
 	}
 
 	srv := &Server{

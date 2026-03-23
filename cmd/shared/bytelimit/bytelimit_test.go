@@ -9,7 +9,7 @@ import (
 )
 
 func TestOpenAndClose(t *testing.T) {
-	g, err := OpenGate(1 << 30) // 1 GB
+	g, err := OpenGate(1<<30, 0) // 1 GB
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,7 @@ func TestOpenAndClose(t *testing.T) {
 }
 
 func TestAcquireRelease(t *testing.T) {
-	g, err := OpenGate(1 << 30)
+	g, err := OpenGate(1<<30, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestAcquireRelease(t *testing.T) {
 }
 
 func TestReleaseIdempotent(t *testing.T) {
-	g, err := OpenGate(1 << 30)
+	g, err := OpenGate(1<<30, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestReleaseIdempotent(t *testing.T) {
 }
 
 func TestDisabledGate(t *testing.T) {
-	g, err := OpenGate(0)
+	g, err := OpenGate(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestDisabledGate(t *testing.T) {
 
 func TestLoneWolf(t *testing.T) {
 	// A single object larger than the limit should proceed when alone.
-	g, err := OpenGate(1024) // 1 KB limit
+	g, err := OpenGate(1024, 0) // 1 KB limit
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestLoneWolf(t *testing.T) {
 
 func TestCumulativeInProcess(t *testing.T) {
 	// Multiple Acquire calls within the same process should accumulate.
-	g, err := OpenGate(1 << 30)
+	g, err := OpenGate(1<<30, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestCumulativeInProcess(t *testing.T) {
 }
 
 func TestSlotClaimedAtInit(t *testing.T) {
-	g, err := OpenGate(1 << 30)
+	g, err := OpenGate(1<<30, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestSlotClaimedAtInit(t *testing.T) {
 }
 
 func TestReapStale(t *testing.T) {
-	g, err := OpenGate(1 << 30)
+	g, err := OpenGate(1<<30, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestReapStale(t *testing.T) {
 }
 
 func TestOverLimitBlocksCrossProcess(t *testing.T) {
-	g, err := OpenGate(1024) // 1 KB limit
+	g, err := OpenGate(1024, 0) // 1 KB limit
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestOverLimitBlocksCrossProcess(t *testing.T) {
 }
 
 func TestContextCancellation(t *testing.T) {
-	g, err := OpenGate(100)
+	g, err := OpenGate(100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,4 +228,126 @@ func TestContextCancellation(t *testing.T) {
 	// Clean up.
 	atomic.StoreInt32(g.slotPID(fakeSlot), 0)
 	atomic.StoreInt64(g.slotBytes(fakeSlot), 0)
+}
+
+// --- Storage ops tests ---
+
+func TestAcquireReleaseOp(t *testing.T) {
+	g, err := OpenGate(0, 10) // ops only, no byte limit
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	ctx := context.Background()
+	if err := g.AcquireOp(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := atomic.LoadInt32(g.slotOps(g.slot))
+	if ops != 1 {
+		t.Errorf("slot ops = %d, want 1", ops)
+	}
+
+	g.ReleaseOp()
+
+	ops = atomic.LoadInt32(g.slotOps(g.slot))
+	if ops != 0 {
+		t.Errorf("after release: slot ops = %d, want 0", ops)
+	}
+}
+
+func TestOpsDisabled(t *testing.T) {
+	g, err := OpenGate(0, 0) // both disabled
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	// Should succeed immediately even though no shared memory is open.
+	if err := g.AcquireOp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g.ReleaseOp() // should not panic
+}
+
+func TestOpsLimitBlocks(t *testing.T) {
+	g, err := OpenGate(0, 2) // max 2 ops
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	ctx := context.Background()
+
+	// Acquire 2 ops — should succeed.
+	if err := g.AcquireOp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.AcquireOp(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate another process also at 1 op.
+	fakeSlot := (g.slot + 1) % MaxSlots
+	atomic.StoreInt32(g.slotPID(fakeSlot), 1)
+	atomic.StoreInt32(g.slotOps(fakeSlot), 1)
+
+	// Now total = 3 (our 2 + fake 1), limit = 2 — should block.
+	// But wait, we already have 2, so total is already >= 2.
+	// Release one of ours first, then the fake makes total = 2, still at limit.
+	g.ReleaseOp()
+	// Now our ops = 1, fake = 1, total = 2 = limit — should block.
+
+	ctx2, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	err = g.AcquireOp(ctx2)
+	if err == nil {
+		t.Fatal("expected timeout, got nil")
+	}
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected DeadlineExceeded, got: %v", err)
+	}
+
+	// Clear fake slot — now total = 1, should succeed.
+	atomic.StoreInt32(g.slotPID(fakeSlot), 0)
+	atomic.StoreInt32(g.slotOps(fakeSlot), 0)
+
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel3()
+	if err := g.AcquireOp(ctx3); err != nil {
+		t.Fatalf("should succeed after clearing fake slot: %v", err)
+	}
+	g.ReleaseOp()
+	g.ReleaseOp() // release the remaining one from earlier
+}
+
+func TestOpsCumulative(t *testing.T) {
+	g, err := OpenGate(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	ctx := context.Background()
+	for range 5 {
+		if err := g.AcquireOp(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ops := atomic.LoadInt32(g.slotOps(g.slot))
+	if ops != 5 {
+		t.Errorf("cumulative ops = %d, want 5", ops)
+	}
+
+	for range 5 {
+		g.ReleaseOp()
+	}
+
+	ops = atomic.LoadInt32(g.slotOps(g.slot))
+	if ops != 0 {
+		t.Errorf("after release all: ops = %d, want 0", ops)
+	}
 }

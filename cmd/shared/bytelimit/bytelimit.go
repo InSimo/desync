@@ -41,14 +41,16 @@ const (
 	retryInterval = 100 * time.Millisecond
 )
 
-// Gate controls admission based on total in-flight bytes across all
-// processes sharing the same memory region.  One Gate per process;
-// it owns a single slot in shared memory.
+// Gate controls admission based on total in-flight bytes and/or total
+// concurrent storage operations across all processes sharing the same
+// memory region.  One Gate per process; it owns a single slot in shared
+// memory.
 type Gate struct {
-	data  []byte // mmap'd shared memory
-	limit int64
-	pid   int32
-	slot  int // index of this process's slot (-1 if disabled)
+	data   []byte // mmap'd shared memory
+	limit  int64  // max total in-flight bytes (0 = disabled)
+	maxOps int32  // max concurrent storage ops across all processes (0 = disabled)
+	pid    int32
+	slot   int // index of this process's slot (-1 if disabled)
 }
 
 // Reservation represents an in-flight byte reservation.
@@ -61,33 +63,48 @@ type Reservation struct {
 // slot layout helpers.  Each slot is 16 bytes:
 //
 //	offset 0:  int32  PID  (0 = unused)
-//	offset 4:  int32  (padding)
+//	offset 4:  int32  storage ops count (active GetChunk/StoreChunk/GetIndex/StoreIndex)
 //	offset 8:  int64  byte count (cumulative across concurrent operations)
 func (g *Gate) slotPID(i int) *int32 {
 	return (*int32)(unsafe.Pointer(&g.data[i*slotSize]))
+}
+
+func (g *Gate) slotOps(i int) *int32 {
+	return (*int32)(unsafe.Pointer(&g.data[i*slotSize+4]))
 }
 
 func (g *Gate) slotBytes(i int) *int64 {
 	return (*int64)(unsafe.Pointer(&g.data[i*slotSize+8]))
 }
 
+// MaxOps returns the configured maximum concurrent storage operations.
+// Returns 0 if the ops limit is disabled.
+func (g *Gate) MaxOps() int32 { return g.maxOps }
+
 // OpenGate opens (or creates) the shared memory region, claims a slot
 // for this process, and returns a Gate.
 //
 // limit is the maximum total in-flight bytes allowed across all processes.
-// A limit of 0 disables admission control (Acquire always succeeds immediately).
-func OpenGate(limit int64) (*Gate, error) {
+// A limit of 0 disables byte admission control (Acquire always succeeds).
+//
+// maxOps is the maximum number of concurrent storage operations allowed
+// across all processes.  A maxOps of 0 disables ops admission control
+// (AcquireOp always succeeds).
+//
+// If both limit and maxOps are 0, no shared memory is opened.
+func OpenGate(limit int64, maxOps int32) (*Gate, error) {
 	if limit < 0 {
 		return nil, fmt.Errorf("bytelimit: negative limit %d", limit)
 	}
 
 	g := &Gate{
-		limit: limit,
-		pid:   int32(os.Getpid()),
-		slot:  -1,
+		limit:  limit,
+		maxOps: maxOps,
+		pid:    int32(os.Getpid()),
+		slot:   -1,
 	}
 
-	if limit == 0 {
+	if limit == 0 && maxOps == 0 {
 		return g, nil
 	}
 
@@ -97,21 +114,25 @@ func OpenGate(limit int64) (*Gate, error) {
 	}
 	g.data = data
 
+	// resetSlot zeroes the byte and ops counters for a claimed slot.
+	resetSlot := func(i int) {
+		atomic.StoreInt32(g.slotOps(i), 0)
+		atomic.StoreInt64(g.slotBytes(i), 0)
+	}
+
 	// Claim a slot: find one already owned by our PID (e.g. after exec)
 	// or an empty one.
 	for i := range MaxSlots {
 		p := atomic.LoadInt32(g.slotPID(i))
 		if p == g.pid {
 			g.slot = i
-			// Reset byte counter in case of stale state from a previous run
-			// with the same PID.
-			atomic.StoreInt64(g.slotBytes(i), 0)
+			resetSlot(i)
 			return g, nil
 		}
 	}
 	for i := range MaxSlots {
 		if atomic.CompareAndSwapInt32(g.slotPID(i), 0, g.pid) {
-			atomic.StoreInt64(g.slotBytes(i), 0)
+			resetSlot(i)
 			g.slot = i
 			return g, nil
 		}
@@ -121,7 +142,7 @@ func OpenGate(limit int64) (*Gate, error) {
 	g.reapStale()
 	for i := range MaxSlots {
 		if atomic.CompareAndSwapInt32(g.slotPID(i), 0, g.pid) {
-			atomic.StoreInt64(g.slotBytes(i), 0)
+			resetSlot(i)
 			g.slot = i
 			return g, nil
 		}
@@ -135,6 +156,7 @@ func OpenGate(limit int64) (*Gate, error) {
 func (g *Gate) Close() error {
 	if g.slot >= 0 {
 		atomic.StoreInt64(g.slotBytes(g.slot), 0)
+		atomic.StoreInt32(g.slotOps(g.slot), 0)
 		atomic.StoreInt32(g.slotPID(g.slot), 0)
 		g.slot = -1
 	}
@@ -225,6 +247,7 @@ func (g *Gate) reapStale() {
 		}
 		if !processAlive(p) {
 			if atomic.CompareAndSwapInt32(g.slotPID(i), p, 0) {
+				atomic.StoreInt32(g.slotOps(i), 0)
 				atomic.StoreInt64(g.slotBytes(i), 0)
 			}
 		}
@@ -241,4 +264,63 @@ func (r *Reservation) Release() {
 		atomic.AddInt64(r.gate.slotBytes(r.gate.slot), -r.size)
 	}
 	r.size = 0
+}
+
+// AcquireOp blocks until a storage operation slot is available.
+// It atomically increments this process's ops counter.  Call ReleaseOp
+// when the operation completes.
+//
+// If maxOps is 0 (disabled), AcquireOp returns nil immediately.
+func (g *Gate) AcquireOp(ctx context.Context) error {
+	if g.maxOps == 0 {
+		return nil
+	}
+
+	reaped := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		total := g.totalOps()
+		if total < g.maxOps {
+			atomic.AddInt32(g.slotOps(g.slot), 1)
+			return nil
+		}
+
+		// At the ops limit — wait.
+		if !reaped {
+			g.reapStale()
+			reaped = true
+			continue
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryInterval):
+			reaped = false
+		}
+	}
+}
+
+// ReleaseOp decrements the process's storage ops counter.
+func (g *Gate) ReleaseOp() {
+	if g.maxOps == 0 || g.slot < 0 {
+		return
+	}
+	atomic.AddInt32(g.slotOps(g.slot), -1)
+}
+
+// totalOps sums the ops counters of all active slots.
+func (g *Gate) totalOps() int32 {
+	var total int32
+	for i := range MaxSlots {
+		p := atomic.LoadInt32(g.slotPID(i))
+		if p == 0 {
+			continue
+		}
+		total += atomic.LoadInt32(g.slotOps(i))
+	}
+	return total
 }
