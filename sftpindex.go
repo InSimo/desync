@@ -67,6 +67,25 @@ func (s *SFTPIndexStore) HasIndex(name string) (bool, error) {
 	return err == nil, nil
 }
 
+// StatIndex returns metadata about the named index. For SFTP stores the
+// modification time comes from the remote stat and the original content
+// size is computed by parsing the index.
+func (s *SFTPIndexStore) StatIndex(name string) (IndexInfo, error) {
+	fi, err := s.client.Stat(s.pathFromName(name))
+	if err != nil {
+		return IndexInfo{}, err
+	}
+	idx, err := s.GetIndex(name)
+	if err != nil {
+		return IndexInfo{}, err
+	}
+	return IndexInfo{
+		Name:    name,
+		Size:    idx.TotalSize(),
+		ModTime: fi.ModTime(),
+	}, nil
+}
+
 func (s *SFTPIndexStore) pathFromName(name string) string {
 	return path.Join(s.path, name)
 }

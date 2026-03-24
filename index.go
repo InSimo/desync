@@ -86,6 +86,15 @@ func IndexFromReader(r io.Reader) (c Index, err error) {
 	return
 }
 
+// TotalSize returns the total uncompressed content size represented by the index.
+func (i *Index) TotalSize() int64 {
+	if len(i.Chunks) == 0 {
+		return 0
+	}
+	last := i.Chunks[len(i.Chunks)-1]
+	return int64(last.Start + last.Size)
+}
+
 // WriteTo writes the index and chunk table into a stream
 func (i *Index) WriteTo(w io.Writer) (int64, error) {
 	index := FormatIndex{

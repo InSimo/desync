@@ -7,12 +7,15 @@ import (
 	"io"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/minio/minio-go/v6"
 	"github.com/minio/minio-go/v6/pkg/credentials"
 	"github.com/pkg/errors"
 )
+
+const originalSizeMetaKey = "Original-Size"
 
 // S3IndexStore is a read-write index store with S3 backing
 type S3IndexStore struct {
@@ -57,9 +60,41 @@ func (s S3IndexStore) HasIndex(name string) (bool, error) {
 	return err == nil, nil
 }
 
-// StoreIndex writes the index file to the S3 store
+// StatIndex returns metadata about the named index. The original content size
+// is read from the x-amz-meta-original-size user metadata if present (set by
+// StoreIndex). For indexes stored before this metadata was added, StatIndex
+// falls back to GetIndex to compute the size.
+func (s S3IndexStore) StatIndex(name string) (IndexInfo, error) {
+	info, err := s.client.StatObject(s.bucket, s.prefix+name, minio.StatObjectOptions{})
+	if err != nil {
+		return IndexInfo{}, err
+	}
+	result := IndexInfo{
+		Name:    name,
+		ModTime: info.LastModified,
+		Size:    -1,
+	}
+	// Try to read original size from user metadata (set by StoreIndex).
+	if sizeStr, ok := info.UserMetadata[originalSizeMetaKey]; ok {
+		if size, err := strconv.ParseInt(sizeStr, 10, 64); err == nil {
+			result.Size = size
+		}
+	}
+	// Fallback: download and parse the full index.
+	if result.Size < 0 {
+		idx, err := s.GetIndex(name)
+		if err != nil {
+			return IndexInfo{}, err
+		}
+		result.Size = idx.TotalSize()
+	}
+	return result, nil
+}
+
+// StoreIndex writes the index file to the S3 store. The original content size
+// is stored as x-amz-meta-original-size user metadata so that StatIndex can
+// return it from a HEAD request without downloading the full index.
 func (s S3IndexStore) StoreIndex(name string, idx Index) error {
-	contentType := "application/octet-stream"
 	r, w := io.Pipe()
 
 	go func() {
@@ -67,7 +102,12 @@ func (s S3IndexStore) StoreIndex(name string, idx Index) error {
 		idx.WriteTo(w)
 	}()
 
-	_, err := s.client.PutObject(s.bucket, s.prefix+name, r, -1, minio.PutObjectOptions{ContentType: contentType})
+	_, err := s.client.PutObject(s.bucket, s.prefix+name, r, -1, minio.PutObjectOptions{
+		ContentType: "application/octet-stream",
+		UserMetadata: map[string]string{
+			originalSizeMetaKey: strconv.FormatInt(idx.TotalSize(), 10),
+		},
+	})
 	return errors.Wrap(err, path.Base(s.Location))
 }
 

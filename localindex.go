@@ -81,6 +81,25 @@ func (s LocalIndexStore) HasIndex(name string) (bool, error) {
 	return false, err
 }
 
+// StatIndex returns metadata about the named index. For local stores the
+// modification time comes from the filesystem and the original content size
+// is computed by parsing the index (fast for local I/O).
+func (s LocalIndexStore) StatIndex(name string) (IndexInfo, error) {
+	fi, err := os.Stat(s.Path + name)
+	if err != nil {
+		return IndexInfo{}, err
+	}
+	idx, err := s.GetIndex(name)
+	if err != nil {
+		return IndexInfo{}, err
+	}
+	return IndexInfo{
+		Name:    name,
+		Size:    idx.TotalSize(),
+		ModTime: fi.ModTime(),
+	}, nil
+}
+
 func (s LocalIndexStore) String() string {
 	return s.Path
 }

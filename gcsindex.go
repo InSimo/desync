@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	"cloud.google.com/go/storage"
@@ -75,6 +76,35 @@ func (s GCIndexStore) HasIndex(name string) (bool, error) {
 	return err == nil, err
 }
 
+// StatIndex returns metadata about the named index. The original content size
+// is read from GCS object metadata if present. Falls back to GetIndex for
+// indexes stored before this metadata was added.
+func (s GCIndexStore) StatIndex(name string) (IndexInfo, error) {
+	ctx := context.TODO()
+	attrs, err := s.client.Object(s.prefix + name).Attrs(ctx)
+	if err != nil {
+		return IndexInfo{}, err
+	}
+	result := IndexInfo{
+		Name:    name,
+		ModTime: attrs.Updated,
+		Size:    -1,
+	}
+	if sizeStr, ok := attrs.Metadata[originalSizeMetaKey]; ok {
+		if size, err := strconv.ParseInt(sizeStr, 10, 64); err == nil {
+			result.Size = size
+		}
+	}
+	if result.Size < 0 {
+		idx, err := s.GetIndex(name)
+		if err != nil {
+			return IndexInfo{}, err
+		}
+		result.Size = idx.TotalSize()
+	}
+	return result, nil
+}
+
 // StoreIndex writes the index file to the Google Storage store
 func (s GCIndexStore) StoreIndex(name string, idx Index) error {
 	ctx := context.TODO()
@@ -88,6 +118,9 @@ func (s GCIndexStore) StoreIndex(name string, idx Index) error {
 
 	w := s.client.Object(s.prefix + name).NewWriter(ctx)
 	w.ContentType = "application/octet-stream"
+	w.Metadata = map[string]string{
+		originalSizeMetaKey: strconv.FormatInt(idx.TotalSize(), 10),
+	}
 
 	_, err := idx.WriteTo(w)
 

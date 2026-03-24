@@ -47,6 +47,9 @@ func (s *mockIndexPruneStore) HasIndex(name string) (bool, error) {
 	_, ok := s.indexes[name]
 	return ok, nil
 }
+func (s *mockIndexPruneStore) StatIndex(_ string) (IndexInfo, error) {
+	return IndexInfo{}, fmt.Errorf("not implemented")
+}
 func (s *mockIndexPruneStore) Close() error   { return nil }
 func (s *mockIndexPruneStore) String() string { return "mockIndexPruneStore" }
 

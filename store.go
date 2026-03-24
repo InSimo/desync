@@ -97,11 +97,25 @@ type SafePruneStore interface {
 	HasProtect(id ChunkID) (bool, error)
 }
 
+// IndexInfo holds metadata about an index without requiring the full index
+// to be downloaded and parsed. Size is the original (uncompressed) content
+// size, not the size of the index file itself.
+type IndexInfo struct {
+	Name    string
+	Size    int64
+	ModTime time.Time
+}
+
 // IndexStore is implemented by stores that hold indexes.
 type IndexStore interface {
 	GetIndexReader(name string) (io.ReadCloser, error)
 	GetIndex(name string) (Index, error)
 	HasIndex(name string) (bool, error)
+	// StatIndex returns metadata about the named index. For backends that
+	// support user metadata (S3, GCS), the original content size is read
+	// from a HEAD/stat request without downloading the full index. For
+	// other backends, StatIndex falls back to GetIndex internally.
+	StatIndex(name string) (IndexInfo, error)
 	io.Closer
 	fmt.Stringer
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"time"
 )
 
 // RemoteHTTPIndex is a remote index store accessed via HTTP.
@@ -57,6 +58,21 @@ func (r RemoteHTTPIndex) HasIndex(name string) (bool, error) {
 	default:
 		return false, fmt.Errorf("unexpected status code: %d", statusCode)
 	}
+}
+
+// StatIndex returns metadata about the named index. For HTTP stores the
+// modification time is not reliably available, and the original content
+// size is computed by parsing the index.
+func (r *RemoteHTTPIndex) StatIndex(name string) (IndexInfo, error) {
+	idx, err := r.GetIndex(name)
+	if err != nil {
+		return IndexInfo{}, err
+	}
+	return IndexInfo{
+		Name:    name,
+		Size:    idx.TotalSize(),
+		ModTime: time.Time{},
+	}, nil
 }
 
 // StoreIndex adds a new chunk to the store

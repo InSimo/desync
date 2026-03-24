@@ -1,9 +1,10 @@
 package desync
 
 import (
-	"os"
-
+	"fmt"
 	"io"
+	"os"
+	"time"
 )
 
 // ConsoleIndexStore is used for writing/reading indexes from STDOUT/STDIN
@@ -34,6 +35,11 @@ func (s ConsoleIndexStore) StoreIndex(name string, idx Index) error {
 // HasIndex always returns false for the console store since stdin cannot be probed.
 func (s ConsoleIndexStore) HasIndex(string) (bool, error) {
 	return false, nil
+}
+
+// StatIndex is not supported for the console store.
+func (s ConsoleIndexStore) StatIndex(string) (IndexInfo, error) {
+	return IndexInfo{ModTime: time.Time{}}, fmt.Errorf("StatIndex not supported on console store")
 }
 
 func (s ConsoleIndexStore) String() string {

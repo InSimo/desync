@@ -121,6 +121,7 @@ func (s *errorStore) HasIndex(string) (bool, error)                  { return fa
 func (s *errorStore) GetIndexReader(string) (io.ReadCloser, error)   { return nil, fmt.Errorf("%s", s.msg) }
 func (s *errorStore) GetIndex(string) (desync.Index, error)          { return desync.Index{}, fmt.Errorf("%s", s.msg) }
 func (s *errorStore) StoreIndex(string, desync.Index) error          { return fmt.Errorf("%s", s.msg) }
+func (s *errorStore) StatIndex(string) (desync.IndexInfo, error)     { return desync.IndexInfo{}, fmt.Errorf("%s", s.msg) }
 
 func TestAgentInitStoreError(t *testing.T) {
 	bad := &errorStore{msg: "connection refused"}
