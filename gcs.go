@@ -114,6 +114,32 @@ func (s GCStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	}
 	defer rc.Close()
 
+	// When a pooled destination chunk is provided, read directly into its
+	// storageBuf to avoid a heap allocation.
+	if c := dstChunk(dst); c != nil && c.storageBuf != nil {
+		size := int(rc.Attrs.Size)
+		if size > cap(c.storageBuf) {
+			c.growStorageBuf(size)
+		}
+		c.storage = c.storageBuf[:size]
+		if _, err := io.ReadFull(rc, c.storage); err != nil {
+			log.WithError(err).Error("Unable to read object from GCS bucket")
+			return nil, errors.Wrap(err, fmt.Sprintf("chunk %s could not be retrieved from GCS bucket", id))
+		}
+		c.converters = s.converters
+		c.id = id
+		c.idCalculated = false
+		if !s.opt.SkipVerify {
+			if sum := c.ID(); sum != id {
+				return nil, ChunkInvalid{ID: id, Sum: sum}
+			}
+		} else {
+			c.idCalculated = true
+		}
+		log.Debug("Retrieved chunk from GCS bucket")
+		return c, nil
+	}
+
 	b, err := io.ReadAll(rc)
 
 	if err == storage.ErrObjectNotExist {

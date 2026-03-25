@@ -78,6 +78,31 @@ func dstChunk(dst []*Chunk) *Chunk {
 	return nil
 }
 
+// chunkFromStorage populates a chunk with compressed storage data.  When dst
+// is a pooled chunk, b is assigned directly to c.storage (no copy) so the
+// chunk stays pooled and the caller's pool.Put works correctly.  When dst is
+// nil, a new Chunk is allocated via NewChunkFromStorage.
+//
+// For backends that can read directly into storageBuf (LocalStore, S3Store,
+// GCStore), use the inline read-into-buffer pattern instead of this helper.
+func chunkFromStorage(id ChunkID, b []byte, conv Converters, skipVerify bool, dst []*Chunk) (*Chunk, error) {
+	if c := dstChunk(dst); c != nil {
+		c.storage = b
+		c.converters = conv
+		c.id = id
+		c.idCalculated = false
+		if !skipVerify {
+			if sum := c.ID(); sum != id {
+				return nil, ChunkInvalid{ID: id, Sum: sum}
+			}
+		} else {
+			c.idCalculated = true
+		}
+		return c, nil
+	}
+	return NewChunkFromStorage(id, b, conv, skipVerify)
+}
+
 // growStorageBuf ensures storageBuf can hold at least size bytes,
 // reallocating to nextPow2(size) if needed.  Also grows dataBuf to
 // the same capacity so decompressed data fits.
