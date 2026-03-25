@@ -104,7 +104,7 @@ func NewS3Store(location *url.URL, s3Creds *credentials.Credentials, region stri
 }
 
 // GetChunk reads and returns one chunk from the store
-func (s S3Store) GetChunk(id ChunkID) (*Chunk, error) {
+func (s S3Store) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	name := s.nameFromID(id)
 	var attempt int
 retry:
@@ -118,24 +118,62 @@ retry:
 	}
 	defer obj.Close()
 
+	// When a pooled destination chunk is provided, try to read into its
+	// storageBuf to avoid a heap allocation.
+	if c := dstChunk(dst); c != nil && c.storageBuf != nil {
+		info, err := obj.Stat()
+		if err != nil {
+			if attempt <= s.opt.ErrorRetry {
+				goto retry
+			}
+			return nil, s.wrapS3Error(id, err)
+		}
+		size := int(info.Size)
+		if size <= cap(c.storageBuf) {
+			c.storage = c.storageBuf[:size]
+			if _, err := io.ReadFull(obj, c.storage); err != nil {
+				if attempt <= s.opt.ErrorRetry {
+					goto retry
+				}
+				return nil, s.wrapS3Error(id, err)
+			}
+			c.converters = s.converters
+			c.id = id
+			c.idCalculated = false
+			if !s.opt.SkipVerify {
+				if sum := c.ID(); sum != id {
+					return nil, ChunkInvalid{ID: id, Sum: sum}
+				}
+			} else {
+				c.idCalculated = true
+			}
+			return c, nil
+		}
+		// Fall through to io.ReadAll path if chunk doesn't fit backing buffer.
+	}
+
 	b, err := io.ReadAll(obj)
 	if err != nil {
 		if attempt <= s.opt.ErrorRetry {
 			goto retry
 		}
-		if e, ok := err.(minio.ErrorResponse); ok {
-			switch e.Code {
-			case "NoSuchBucket":
-				err = fmt.Errorf("bucket '%s' does not exist", s.bucket)
-			case "NoSuchKey":
-				err = ChunkMissing{ID: id}
-			default: // Without ListBucket perms in AWS, we get Permission Denied for a missing chunk, not 404
-				err = errors.Wrap(err, fmt.Sprintf("chunk %s could not be retrieved from s3 store", id))
-			}
-		}
-		return nil, err
+		return nil, s.wrapS3Error(id, err)
 	}
 	return NewChunkFromStorage(id, b, s.converters, s.opt.SkipVerify)
+}
+
+func (s S3Store) wrapS3Error(id ChunkID, err error) error {
+	if e, ok := err.(minio.ErrorResponse); ok {
+		switch e.Code {
+		case "NoSuchBucket":
+			return fmt.Errorf("bucket '%s' does not exist", s.bucket)
+		case "NoSuchKey":
+			return ChunkMissing{ID: id}
+		default:
+			return errors.Wrap(err, fmt.Sprintf("chunk %s could not be retrieved from s3 store", id))
+		}
+	}
+	return err
 }
 
 // StoreChunk adds a new chunk to the store

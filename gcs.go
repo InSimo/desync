@@ -92,7 +92,7 @@ func NewGCStore(location *url.URL, opt StoreOptions) (s GCStore, e error) {
 }
 
 // GetChunk reads and returns one chunk from the store
-func (s GCStore) GetChunk(id ChunkID) (*Chunk, error) {
+func (s GCStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	ctx := context.TODO()
 	name := s.nameFromID(id)
 

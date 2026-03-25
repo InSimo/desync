@@ -11,7 +11,7 @@ type TestStore struct {
 	StoreChunkFunc func(chunk *Chunk) error
 }
 
-func (s *TestStore) GetChunk(id ChunkID) (*Chunk, error) {
+func (s *TestStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	if s.GetChunkFunc != nil {
 		return s.GetChunkFunc(id)
 	}

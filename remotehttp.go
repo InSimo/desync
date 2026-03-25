@@ -212,7 +212,7 @@ func NewRemoteHTTPStore(location *url.URL, opt StoreOptions) (*RemoteHTTP, error
 }
 
 // GetChunk reads and returns one chunk from the store
-func (r *RemoteHTTP) GetChunk(id ChunkID) (*Chunk, error) {
+func (r *RemoteHTTP) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	p := r.nameFromID(id)
 	b, err := r.GetObject(p)
 	if err != nil {

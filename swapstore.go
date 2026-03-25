@@ -37,10 +37,10 @@ func NewSwapWriteStore(s Store) *SwapWriteStore {
 }
 
 // GetChunk reads and returns one (compressed!) chunk from the store
-func (s *SwapStore) GetChunk(id ChunkID) (*Chunk, error) {
+func (s *SwapStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.s.GetChunk(id)
+	return s.s.GetChunk(id, dst...)
 }
 
 // HasChunk returns true if the chunk is in the store

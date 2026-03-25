@@ -25,11 +25,11 @@ func NewFailoverGroup(stores ...Store) *FailoverGroup {
 	return &FailoverGroup{stores: stores}
 }
 
-func (g *FailoverGroup) GetChunk(id ChunkID) (*Chunk, error) {
+func (g *FailoverGroup) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	var gErr error
 	for i := 0; i < len(g.stores); i++ {
 		s, active := g.current()
-		b, err := s.GetChunk(id)
+		b, err := s.GetChunk(id, dst...)
 		if err == nil { // return right away on success
 			return b, err
 		}

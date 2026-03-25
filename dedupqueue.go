@@ -27,7 +27,7 @@ func NewDedupQueue(store Store) *DedupQueue {
 	}
 }
 
-func (q *DedupQueue) GetChunk(id ChunkID) (*Chunk, error) {
+func (q *DedupQueue) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	req, isInFlight := q.getChunkQueue.loadOrStore(id)
 
 	if isInFlight { // The request is already in-flight, wait for it to come back

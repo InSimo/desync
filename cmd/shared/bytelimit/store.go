@@ -13,12 +13,12 @@ type GatedStore struct {
 	Gate *Gate
 }
 
-func (s *GatedStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
+func (s *GatedStore) GetChunk(id desync.ChunkID, dst ...*desync.Chunk) (*desync.Chunk, error) {
 	if err := s.Gate.AcquireOp(context.TODO()); err != nil {
 		return nil, err
 	}
 	defer s.Gate.ReleaseOp()
-	return s.Store.GetChunk(id)
+	return s.Store.GetChunk(id, dst...)
 }
 
 // GatedWriteStore wraps a desync.WriteStore, gating GetChunk and
@@ -28,12 +28,12 @@ type GatedWriteStore struct {
 	Gate *Gate
 }
 
-func (s *GatedWriteStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
+func (s *GatedWriteStore) GetChunk(id desync.ChunkID, dst ...*desync.Chunk) (*desync.Chunk, error) {
 	if err := s.Gate.AcquireOp(context.TODO()); err != nil {
 		return nil, err
 	}
 	defer s.Gate.ReleaseOp()
-	return s.WriteStore.GetChunk(id)
+	return s.WriteStore.GetChunk(id, dst...)
 }
 
 func (s *GatedWriteStore) StoreChunk(c *desync.Chunk) error {

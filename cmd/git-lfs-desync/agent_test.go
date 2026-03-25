@@ -113,7 +113,7 @@ func TestAgentInit(t *testing.T) {
 type errorStore struct{ msg string }
 
 func (s *errorStore) HasChunk(desync.ChunkID) (bool, error)          { return false, fmt.Errorf("%s", s.msg) }
-func (s *errorStore) GetChunk(desync.ChunkID) (*desync.Chunk, error) { return nil, fmt.Errorf("%s", s.msg) }
+func (s *errorStore) GetChunk(desync.ChunkID, ...*desync.Chunk) (*desync.Chunk, error) { return nil, fmt.Errorf("%s", s.msg) }
 func (s *errorStore) StoreChunk(*desync.Chunk) error                 { return fmt.Errorf("%s", s.msg) }
 func (s *errorStore) Close() error                                   { return nil }
 func (s *errorStore) String() string                                 { return "errorStore" }

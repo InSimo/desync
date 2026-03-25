@@ -69,7 +69,7 @@ func newMockStore() *mockStore {
 
 // Store interface
 
-func (s *mockStore) GetChunk(id ChunkID) (*Chunk, error) {
+func (s *mockStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	s.mu.Lock()
 	c, ok := s.chunks[id]
 	s.mu.Unlock()

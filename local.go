@@ -44,9 +44,51 @@ func NewLocalStore(dir string, opt StoreOptions) (LocalStore, error) {
 	return LocalStore{Base: dir, Opt: opt, converters: opt.converters()}, nil
 }
 
-// GetChunk reads and returns one (compressed!) chunk from the store
-func (s LocalStore) GetChunk(id ChunkID) (*Chunk, error) {
+// GetChunk reads and returns one (compressed!) chunk from the store.
+// When dst is provided with backing buffers, compressed data is read
+// directly into dst.storageBuf to avoid a heap allocation.
+func (s LocalStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	_, p := s.nameFromID(id)
+
+	if c := dstChunk(dst); c != nil && c.storageBuf != nil {
+		f, err := os.Open(p)
+		if os.IsNotExist(err) {
+			return nil, ChunkMissing{id}
+		}
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		size := int(info.Size())
+		if size > cap(c.storageBuf) {
+			// Chunk larger than backing buffer — fall back to allocation.
+			b, err := io.ReadAll(f)
+			if err != nil {
+				return nil, err
+			}
+			return NewChunkFromStorage(id, b, s.converters, s.Opt.SkipVerify)
+		}
+		c.storage = c.storageBuf[:size]
+		if _, err := io.ReadFull(f, c.storage); err != nil {
+			return nil, err
+		}
+		c.converters = s.converters
+		c.id = id
+		c.idCalculated = false
+		if !s.Opt.SkipVerify {
+			if sum := c.ID(); sum != id {
+				return nil, ChunkInvalid{ID: id, Sum: sum}
+			}
+		} else {
+			c.idCalculated = true
+		}
+		return c, nil
+	}
+
 	b, err := os.ReadFile(p)
 	if os.IsNotExist(err) {
 		return nil, ChunkMissing{id}

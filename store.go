@@ -15,7 +15,12 @@ const DefaultSafePropagationTime = 1 * time.Second
 // Store is a generic interface implemented by read-only stores, like SSH or
 // HTTP remote stores currently.
 type Store interface {
-	GetChunk(id ChunkID) (*Chunk, error)
+	// GetChunk reads and returns a chunk from the store.  When dst is
+	// provided, implementations should read compressed data into dst's
+	// backing buffers (storageBuf/dataBuf) to avoid heap allocations;
+	// this is used with ChunkPool to eliminate per-chunk GC pressure.
+	// When dst is omitted, a new Chunk is allocated as before.
+	GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error)
 	HasChunk(id ChunkID) (bool, error)
 	io.Closer
 	fmt.Stringer

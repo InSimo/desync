@@ -155,7 +155,7 @@ func NewSFTPStore(location *url.URL, opt StoreOptions) (*SFTPStore, error) {
 }
 
 // GetChunk returns a chunk from an SFTP store, returns ChunkMissing if the file does not exist
-func (s *SFTPStore) GetChunk(id ChunkID) (*Chunk, error) {
+func (s *SFTPStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	c := <-s.pool
 	defer func() { s.pool <- c }()
 	name := c.nameFromID(id)

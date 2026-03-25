@@ -122,7 +122,7 @@ func TestExtract(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			defer os.Remove(test.outfile)
 			if _, err := AssembleFile(context.Background(), test.outfile, index, test.store, nil,
-				AssembleOptions{10, InvalidSeedActionBailOut},
+				AssembleOptions{10, InvalidSeedActionBailOut, nil},
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -261,7 +261,7 @@ func TestSeed(t *testing.T) {
 			}
 
 			if _, err := AssembleFile(context.Background(), dst.Name(), dstIndex, s, seeds,
-				AssembleOptions{10, InvalidSeedActionBailOut},
+				AssembleOptions{10, InvalidSeedActionBailOut, nil},
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -366,7 +366,7 @@ func TestSelfSeedInPlace(t *testing.T) {
 
 			// Extract the file
 			stats, err := AssembleFile(context.Background(), dst.Name(), idx, s, nil,
-				AssembleOptions{1, InvalidSeedActionBailOut},
+				AssembleOptions{1, InvalidSeedActionBailOut, nil},
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -437,7 +437,7 @@ func TestExtractWithNonStaticSeeds(t *testing.T) {
 	err = plan.Validate(context.Background(), n, NullProgressBar{})
 	require.NoError(t, err)
 
-	options := AssembleOptions{n, InvalidSeedActionRegenerate}
+	options := AssembleOptions{n, InvalidSeedActionRegenerate, nil}
 	_, err = AssembleFile(context.Background(), out, index, store, seeds, options)
 	require.NoError(t, err)
 

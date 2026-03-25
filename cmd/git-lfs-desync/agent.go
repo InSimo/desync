@@ -321,7 +321,7 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
-	_, err = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.n})
+	_, err = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.n, Pool: a.chunkPool})
 	stopProgress()
 	if err != nil {
 		os.Remove(tmpFile)
@@ -404,8 +404,8 @@ func newCountingReadStore(s desync.Store, idx desync.Index) *countingReadStore {
 	return &countingReadStore{Store: s, chunkSizes: m}
 }
 
-func (s *countingReadStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
-	chunk, err := s.Store.GetChunk(id)
+func (s *countingReadStore) GetChunk(id desync.ChunkID, dst ...*desync.Chunk) (*desync.Chunk, error) {
+	chunk, err := s.Store.GetChunk(id, dst...)
 	if err == nil {
 		s.bytes.Add(int64(s.chunkSizes[id]))
 	}
