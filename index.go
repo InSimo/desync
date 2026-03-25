@@ -155,12 +155,13 @@ type ChunkerInterface interface {
 	Max() uint64
 }
 
-func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration) (Index, error) {
+func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration, pool *ChunkPool) (Index, error) {
 	type chunkJob struct {
-		num     int
-		start   uint64
-		b       []byte
-		poolBuf *[]byte // original pool buffer (may be larger than b)
+		num   int
+		start uint64
+		chunk *Chunk   // pooled chunk (when pool != nil)
+		b     []byte   // chunk data (when pool == nil, points into poolBuf)
+		poolBuf *[]byte // ad-hoc pool buffer (only when pool == nil)
 	}
 	var (
 		mu      sync.Mutex
@@ -168,8 +169,7 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 		results = make(map[int]IndexChunk)
 	)
 
-	// Pool for chunk data buffers.  Reduces GC pressure by recycling the
-	// byte slices that are cloned from the chunker's backing buffer.
+	// Ad-hoc byte pool, used only when no ChunkPool is provided.
 	var chunkBufPool sync.Pool
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -180,9 +180,6 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 		s = NewChunkStorage(ws)
 	}
 
-	// All the chunks are processed in parallel, but we need to preserve the
-	// order for later. So add the chunking results to a map, indexed by
-	// the chunk number so we can rebuild it in the right order when done
 	recordResult := func(num int, r IndexChunk) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -194,19 +191,27 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 	for range n {
 		g.Go(func() error {
 			for c := range in {
-				// Create a chunk object, needed to calculate the checksum
-				chunk := NewChunk(c.b)
+				var chunk *Chunk
+				if c.chunk != nil {
+					chunk = c.chunk
+				} else {
+					chunk = NewChunk(c.b)
+				}
 
-				// Record the index row
-				idxChunk := IndexChunk{Start: c.start, Size: uint64(len(c.b)), ID: chunk.ID()}
+				idxChunk := IndexChunk{Start: c.start, Size: uint64(len(chunk.data)), ID: chunk.ID()}
 				recordResult(c.num, idxChunk)
 
-				if _, err := s.StoreChunk(chunk); err != nil {
+				captured, err := s.StoreChunk(chunk)
+				if err != nil {
+					if pool != nil && c.chunk != nil && !captured {
+						pool.Put(c.chunk)
+					}
 					return err
 				}
 
-				// Return the buffer to the pool now that StoreChunk is done.
-				if c.poolBuf != nil {
+				if pool != nil && c.chunk != nil && !captured {
+					pool.Put(c.chunk)
+				} else if c.poolBuf != nil {
 					*c.poolBuf = (*c.poolBuf)[:0]
 					chunkBufPool.Put(c.poolBuf)
 				}
@@ -215,10 +220,9 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 		})
 	}
 
-	// Feed the workers, stop if there are any errors. To keep the index list in
-	// order, we calculate the checksum here before handing	them over to the
-	// workers for compression and storage. That could probably be optimized further
-	var num int // chunk #, so we can re-assemble the index in the right order later
+	// Feed the workers. The chunker reuses its internal backing buffer, so
+	// we must copy each chunk's data before sending it to workers.
+	var num int
 loop:
 	for {
 		start, b, err := c.Next()
@@ -229,30 +233,39 @@ loop:
 			break
 		}
 
-		// Copy the buffer before sending it to workers. The chunker
-		// reuses its internal backing buffer across fillBuffer() calls,
-		// so the slice returned by Next() may be overwritten by the
-		// next call.  Use a pooled buffer to reduce GC pressure.
-		var poolBuf *[]byte
-		if v := chunkBufPool.Get(); v != nil {
-			poolBuf = v.(*[]byte)
-		} else {
-			buf := make([]byte, 0, len(b))
-			poolBuf = &buf
-		}
-		if cap(*poolBuf) < len(b) {
-			*poolBuf = make([]byte, len(b))
-		} else {
-			*poolBuf = (*poolBuf)[:len(b)]
-		}
-		copy(*poolBuf, b)
-		b = *poolBuf
+		var job chunkJob
+		job.num = num
+		job.start = start
 
-		// Send it off for compression and storage
+		if pool != nil {
+			// Use a pooled chunk: copy data into its dataBuf.
+			chunk := pool.Get()
+			chunk.data = chunk.dataBuf[:len(b)]
+			copy(chunk.data, b)
+			job.chunk = chunk
+		} else {
+			// Ad-hoc byte pool fallback.
+			var poolBuf *[]byte
+			if v := chunkBufPool.Get(); v != nil {
+				poolBuf = v.(*[]byte)
+			} else {
+				buf := make([]byte, 0, len(b))
+				poolBuf = &buf
+			}
+			if cap(*poolBuf) < len(b) {
+				*poolBuf = make([]byte, len(b))
+			} else {
+				*poolBuf = (*poolBuf)[:len(b)]
+			}
+			copy(*poolBuf, b)
+			job.b = *poolBuf
+			job.poolBuf = poolBuf
+		}
+
 		select {
 		case <-gCtx.Done():
 			break loop
-		case in <- chunkJob{num: num, start: start, b: b, poolBuf: poolBuf}:
+		case in <- job:
 		}
 		num++
 	}
@@ -262,14 +275,11 @@ loop:
 		return Index{}, err
 	}
 
-	// All the chunks have been processed and are stored in a map. Now build a
-	// list in the correct order to be used in the index below
 	chunks := make([]IndexChunk, len(results))
 	for i := 0; i < len(results); i++ {
 		chunks[i] = results[i]
 	}
 
-	// Build the index
 	index := Index{
 		Index: FormatIndex{
 			FeatureFlags: CaFormatExcludeNoDump | CaFormatSHA512256,
@@ -281,7 +291,13 @@ loop:
 	}
 
 	if sps != nil {
-		if err := SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, propTime); err != nil {
+		err := SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, propTime)
+		if pool != nil {
+			for _, chunk := range s.Chunks() {
+				pool.Put(chunk)
+			}
+		}
+		if err != nil {
 			return Index{}, err
 		}
 	}

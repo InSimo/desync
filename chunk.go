@@ -69,31 +69,6 @@ func (p *ChunkPool) Put(c *Chunk) {
 	p.pool.Put(c)
 }
 
-// populateFromStorage fills a (pooled) chunk with compressed storage data.
-// If the chunk has a storageBuf and the data fits, it copies into the backing
-// buffer.  Otherwise it uses b directly.  Called by Store.GetChunk when a
-// destination chunk is provided.
-func (c *Chunk) populateFromStorage(id ChunkID, b []byte, modifiers Converters, skipVerify bool) error {
-	if c.storageBuf != nil && len(b) <= cap(c.storageBuf) {
-		c.storage = c.storageBuf[:len(b)]
-		copy(c.storage, b)
-	} else {
-		c.storage = b
-	}
-	c.converters = modifiers
-	c.id = id
-	c.idCalculated = false
-	if !skipVerify {
-		sum := c.ID()
-		if sum != id {
-			return ChunkInvalid{ID: id, Sum: sum}
-		}
-	} else {
-		c.idCalculated = true
-	}
-	return nil
-}
-
 // dstChunk returns the destination chunk from a variadic GetChunk argument,
 // or nil if none was provided.
 func dstChunk(dst []*Chunk) *Chunk {

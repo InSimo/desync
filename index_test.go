@@ -89,7 +89,7 @@ func TestIndexChunking(t *testing.T) {
 	}
 
 	// Split up the blob into chunks and return the index
-	idx, err := ChunkStream(context.Background(), &c, s, 10, nil, 0)
+	idx, err := ChunkStream(context.Background(), &c, s, 10, nil, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestChunkStreamIntegrity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	index, err := ChunkStream(context.Background(), &c, s, 10, nil, 0)
+	index, err := ChunkStream(context.Background(), &c, s, 10, nil, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func splitBlob(b *testing.B) {
 	}
 	b.StartTimer()
 	// Split up the blob into chunks and return the index
-	idx, err = ChunkStream(context.Background(), &c, s, 10, nil, 0)
+	idx, err = ChunkStream(context.Background(), &c, s, 10, nil, 0, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -175,6 +175,7 @@ func run() error {
 		safePruning:  storeOpts.SafePruning,
 		safePropTime: storeOpts.SafePropagationTime,
 		gate:         gate,
+		chunkPool:    desync.NewChunkPool(int(maxChunk)),
 		logDir:       filepath.Join(absPath, "desync-lfs", "logs"),
 	}
 
