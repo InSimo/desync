@@ -55,7 +55,7 @@ func TestExtract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ChopFile(context.Background(), in.Name(), index.Chunks, s, 10, NewProgressBar(""), nil, 0, nil); err != nil {
+	if err := ChopFile(context.Background(), in.Name(), index.Chunks, s, 10, NewProgressBar(""), nil, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -122,7 +122,7 @@ func TestExtract(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			defer os.Remove(test.outfile)
 			if _, err := AssembleFile(context.Background(), test.outfile, index, test.store, nil,
-				AssembleOptions{10, InvalidSeedActionBailOut, nil},
+				AssembleOptions{10, InvalidSeedActionBailOut},
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -227,7 +227,7 @@ func TestSeed(t *testing.T) {
 			}
 
 			// Chop up the input file into the store
-			if err := ChopFile(context.Background(), dst.Name(), dstIndex.Chunks, s, 10, NewProgressBar(""), nil, 0, nil); err != nil {
+			if err := ChopFile(context.Background(), dst.Name(), dstIndex.Chunks, s, 10, NewProgressBar(""), nil, 0); err != nil {
 				t.Fatal(err)
 			}
 
@@ -261,7 +261,7 @@ func TestSeed(t *testing.T) {
 			}
 
 			if _, err := AssembleFile(context.Background(), dst.Name(), dstIndex, s, seeds,
-				AssembleOptions{10, InvalidSeedActionBailOut, nil},
+				AssembleOptions{10, InvalidSeedActionBailOut},
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -366,7 +366,7 @@ func TestSelfSeedInPlace(t *testing.T) {
 
 			// Extract the file
 			stats, err := AssembleFile(context.Background(), dst.Name(), idx, s, nil,
-				AssembleOptions{1, InvalidSeedActionBailOut, nil},
+				AssembleOptions{1, InvalidSeedActionBailOut},
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -437,7 +437,7 @@ func TestExtractWithNonStaticSeeds(t *testing.T) {
 	err = plan.Validate(context.Background(), n, NullProgressBar{})
 	require.NoError(t, err)
 
-	options := AssembleOptions{n, InvalidSeedActionRegenerate, nil}
+	options := AssembleOptions{n, InvalidSeedActionRegenerate}
 	_, err = AssembleFile(context.Background(), out, index, store, seeds, options)
 	require.NoError(t, err)
 

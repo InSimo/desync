@@ -155,7 +155,8 @@ type ChunkerInterface interface {
 	Max() uint64
 }
 
-func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration, pool *ChunkPool) (Index, error) {
+func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration) (Index, error) {
+	pool := GetChunkPool()
 	type chunkJob struct {
 		num   int
 		start uint64

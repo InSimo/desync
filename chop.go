@@ -14,10 +14,11 @@ import (
 // and stores them in the provided store. When sps is non-nil, ChopFile
 // participates in the safe-pruning protocol: prunable chunks get .protect
 // markers and SafePrunePreCommit is called before returning.
-// When pool is non-nil, chunks are taken from the pool and returned after
-// StoreChunk completes (or after SafePrunePreCommit for captured chunks),
-// eliminating per-chunk heap allocations.
-func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar, sps SafePruneStore, propTime time.Duration, pool *ChunkPool) error {
+// Chunks are taken from the global pool and returned after StoreChunk
+// completes (or after SafePrunePreCommit for captured chunks), eliminating
+// per-chunk heap allocations.
+func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar, sps SafePruneStore, propTime time.Duration) error {
+	pool := GetChunkPool()
 	in := make(chan IndexChunk)
 	g, gCtx := errgroup.WithContext(ctx)
 

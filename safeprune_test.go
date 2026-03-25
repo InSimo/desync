@@ -1097,7 +1097,7 @@ func runSafePruneStress(
 				// chunks (mix of fresh + reused) into ChunkStream, which
 				// internally handles ChunkStorage + SafePrunePreCommit.
 				chopper := newMockChopper(store, stressChunksPerIdx)
-				idx, err := ChunkStream(gCtx, chopper, store, 1, sps, propagationTime, nil)
+				idx, err := ChunkStream(gCtx, chopper, store, 1, sps, propagationTime)
 				if err != nil {
 					if gCtx.Err() != nil {
 						return nil

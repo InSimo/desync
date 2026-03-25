@@ -30,8 +30,7 @@ type Server struct {
 	maxChunk       uint64
 	safePruning    bool
 	safePropTime   time.Duration
-	gate           *bytelimit.Gate    // cross-process in-flight byte limit; may be nil
-	chunkPool      *desync.ChunkPool // reusable chunk buffers
+	gate           *bytelimit.Gate // cross-process in-flight byte limit; may be nil
 
 	r *pktline.Reader
 	w *pktline.Writer

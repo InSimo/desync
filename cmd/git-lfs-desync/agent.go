@@ -84,8 +84,7 @@ type Agent struct {
 	tmpDir              string
 	safePruning         bool
 	safePropagationTime time.Duration
-	gate            *bytelimit.Gate      // cross-process in-flight byte limit; may be nil
-	chunkPool       *desync.ChunkPool   // reusable chunk buffers for uploads
+	gate            *bytelimit.Gate // cross-process in-flight byte limit; may be nil
 	enc             *json.Encoder
 	mu              sync.Mutex
 	// setup is called once from handleInit with remote and operation from the
@@ -271,7 +270,7 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
 	// Store chunks in the remote store.
-	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps, a.safePropagationTime, a.chunkPool); err != nil {
+	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps, a.safePropagationTime); err != nil {
 		stopProgress()
 		a.sendComplete(req.OID, "", err)
 		return
@@ -321,7 +320,7 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
-	_, err = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.n, Pool: a.chunkPool})
+	_, err = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.n})
 	stopProgress()
 	if err != nil {
 		os.Remove(tmpFile)

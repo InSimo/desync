@@ -96,7 +96,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	desync.InitCompression(maxChunk)
+	desync.Init(maxChunk)
 
 	var cmdOpt cmdshared.CmdStoreOptions
 	cmdOpt.N = 10
@@ -175,7 +175,6 @@ func run() error {
 		safePruning:  storeOpts.SafePruning,
 		safePropTime: storeOpts.SafePropagationTime,
 		gate:         gate,
-		chunkPool:    desync.NewChunkPool(int(maxChunk)),
 		logDir:       filepath.Join(absPath, "desync-lfs", "logs"),
 	}
 

@@ -140,6 +140,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 	if err != nil {
 		return err
 	}
+	desync.Init(max)
 	c, err := desync.NewChunker(r, min, avg, max)
 	if err != nil {
 		return err
@@ -165,7 +166,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 		return err
 	}
 	mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
-	index, err := desync.ChunkStream(ctx, &c, s, opt.N, sps, mergedOpt.SafePropagationTime, nil)
+	index, err := desync.ChunkStream(ctx, &c, s, opt.N, sps, mergedOpt.SafePropagationTime)
 	if err != nil {
 		return err
 	}

@@ -177,7 +177,7 @@ Configure Git LFS to use this agent:
 					indexStore.Close()
 					return err
 				}
-				desync.InitCompression(maxChunk)
+				desync.Init(maxChunk)
 
 				// Wrap stores with ops gating if a storage-ops limit is configured.
 				if gate.MaxOps() > 0 {
@@ -193,7 +193,6 @@ Configure Git LFS to use this agent:
 				agent.minChunk = minChunk
 				agent.avgChunk = avgChunk
 				agent.maxChunk = maxChunk
-				agent.chunkPool = desync.NewChunkPool(int(maxChunk))
 				agent.safePruning = storeOpt.SafePruning
 				agent.safePropagationTime = storeOpt.SafePropagationTime
 				return nil

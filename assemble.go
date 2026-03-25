@@ -23,13 +23,13 @@ const (
 type AssembleOptions struct {
 	N                 int
 	InvalidSeedAction InvalidSeedAction
-	Pool              *ChunkPool // optional; reuses chunk buffers to reduce GC pressure
 }
 
 // writeChunk tries to write a chunk by looking at the self seed, if it is already existing in the
 // destination file or by taking it from the store. The in-place check runs first to avoid unnecessary
 // writes. If the target already has the correct data, no write is performed.
-func writeChunk(c IndexChunk, ss *selfSeed, f *os.File, blocksize uint64, s Store, stats *ExtractStats, isBlank bool, pool *ChunkPool) error {
+func writeChunk(c IndexChunk, ss *selfSeed, f *os.File, blocksize uint64, s Store, stats *ExtractStats, isBlank bool) error {
+	pool := GetChunkPool()
 	// If we operate on an existing file there's a good chance we already
 	// have the data written for this chunk. Let's read it from disk and
 	// compare to what is expected. This is checked first to avoid rewriting
@@ -211,7 +211,7 @@ func AssembleFile(ctx context.Context, name string, idx Index, s Store, seeds []
 							if options.InvalidSeedAction == InvalidSeedActionRegenerate {
 								// Try harder before giving up and aborting
 								Log.WithField("ID", c.ID.String()).Info("The seed may have changed during processing, trying to take the chunk from the self seed or the store")
-								if err := writeChunk(c, ss, f, blocksize, s, stats, isBlank, options.Pool); err != nil {
+								if err := writeChunk(c, ss, f, blocksize, s, stats, isBlank); err != nil {
 									return err
 								}
 							} else {
@@ -236,7 +236,7 @@ func AssembleFile(ctx context.Context, name string, idx Index, s Store, seeds []
 				}
 				c := job.segment.chunks()[0]
 
-				if err := writeChunk(c, ss, f, blocksize, s, stats, isBlank, options.Pool); err != nil {
+				if err := writeChunk(c, ss, f, blocksize, s, stats, isBlank); err != nil {
 					return err
 				}
 

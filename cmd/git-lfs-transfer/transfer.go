@@ -72,7 +72,7 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	}
 	pending := make([]chan prefetched, len(idx.Chunks))
 	sem := make(chan struct{}, s.n)
-	pool := s.chunkPool
+	pool := desync.GetChunkPool()
 	for i, c := range idx.Chunks {
 		ch := make(chan prefetched, 1)
 		pending[i] = ch
@@ -217,7 +217,7 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 	var idx desync.Index
 	var chunkStreamErr error
 	if chunkerErr == nil {
-		idx, chunkStreamErr = desync.ChunkStream(ctx, &chunker, s.writeStore, s.n, sps, s.safePropTime, s.chunkPool)
+		idx, chunkStreamErr = desync.ChunkStream(ctx, &chunker, s.writeStore, s.n, sps, s.safePropTime)
 	}
 
 	// Close the read end of the pipe so the goroutine unblocks if it is
