@@ -65,12 +65,7 @@ func (s LocalStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 		}
 		size := int(info.Size())
 		if size > cap(c.storageBuf) {
-			// Chunk larger than backing buffer — fall back to allocation.
-			b, err := io.ReadAll(f)
-			if err != nil {
-				return nil, err
-			}
-			return NewChunkFromStorage(id, b, s.converters, s.Opt.SkipVerify)
+			c.growStorageBuf(size)
 		}
 		c.storage = c.storageBuf[:size]
 		if _, err := io.ReadFull(f, c.storage); err != nil {

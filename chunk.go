@@ -78,6 +78,19 @@ func dstChunk(dst []*Chunk) *Chunk {
 	return nil
 }
 
+// growStorageBuf ensures storageBuf can hold at least size bytes,
+// reallocating to nextPow2(size) if needed.  Also grows dataBuf to
+// the same capacity so decompressed data fits.
+func (c *Chunk) growStorageBuf(size int) {
+	newCap := int(nextPow2(uint64(size)))
+	if cap(c.storageBuf) < newCap {
+		c.storageBuf = make([]byte, newCap)
+	}
+	if cap(c.dataBuf) < newCap {
+		c.dataBuf = make([]byte, newCap)
+	}
+}
+
 // NewChunk creates a new chunk from plain data. The data is trusted and the ID is
 // calculated on demand.
 func NewChunk(b []byte) *Chunk {

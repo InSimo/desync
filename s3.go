@@ -129,27 +129,27 @@ retry:
 			return nil, s.wrapS3Error(id, err)
 		}
 		size := int(info.Size)
-		if size <= cap(c.storageBuf) {
-			c.storage = c.storageBuf[:size]
-			if _, err := io.ReadFull(obj, c.storage); err != nil {
-				if attempt <= s.opt.ErrorRetry {
-					goto retry
-				}
-				return nil, s.wrapS3Error(id, err)
-			}
-			c.converters = s.converters
-			c.id = id
-			c.idCalculated = false
-			if !s.opt.SkipVerify {
-				if sum := c.ID(); sum != id {
-					return nil, ChunkInvalid{ID: id, Sum: sum}
-				}
-			} else {
-				c.idCalculated = true
-			}
-			return c, nil
+		if size > cap(c.storageBuf) {
+			c.growStorageBuf(size)
 		}
-		// Fall through to io.ReadAll path if chunk doesn't fit backing buffer.
+		c.storage = c.storageBuf[:size]
+		if _, err := io.ReadFull(obj, c.storage); err != nil {
+			if attempt <= s.opt.ErrorRetry {
+				goto retry
+			}
+			return nil, s.wrapS3Error(id, err)
+		}
+		c.converters = s.converters
+		c.id = id
+		c.idCalculated = false
+		if !s.opt.SkipVerify {
+			if sum := c.ID(); sum != id {
+				return nil, ChunkInvalid{ID: id, Sum: sum}
+			}
+		} else {
+			c.idCalculated = true
+		}
+		return c, nil
 	}
 
 	b, err := io.ReadAll(obj)
