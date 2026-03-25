@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	desync "github.com/folbricht/desync"
 	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/folbricht/desync/cmd/shared/pktline"
@@ -95,6 +96,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	desync.InitCompression(maxChunk)
 
 	var cmdOpt cmdshared.CmdStoreOptions
 	cmdOpt.N = 10

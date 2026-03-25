@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	desync "github.com/folbricht/desync"
 	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/spf13/cobra"
@@ -176,6 +177,7 @@ Configure Git LFS to use this agent:
 					indexStore.Close()
 					return err
 				}
+				desync.InitCompression(maxChunk)
 
 				// Wrap stores with ops gating if a storage-ops limit is configured.
 				if gate.MaxOps() > 0 {
