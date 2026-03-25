@@ -60,13 +60,16 @@ func (s *ChunkStorage) unmarkProcessed(id ChunkID) {
 }
 
 // StoreChunk stores a single chunk in a synchronous manner.
-func (s *ChunkStorage) StoreChunk(chunk *Chunk) (err error) {
+// The returned captured flag indicates whether the chunk was retained
+// for safe-pruning verification (callers that pool chunks must not
+// reclaim a captured chunk until after SafePrunePreCommit).
+func (s *ChunkStorage) StoreChunk(chunk *Chunk) (captured bool, err error) {
 
 	// Mark this chunk as done so no other goroutine will attempt to store it
 	// at the same time. If this is the first time this chunk is marked, it'll
 	// return false and we need to continue processing/storing the chunk below.
 	if s.markProcessed(chunk.ID()) {
-		return nil
+		return false, nil
 	}
 
 	id := chunk.ID()
@@ -74,7 +77,7 @@ func (s *ChunkStorage) StoreChunk(chunk *Chunk) (err error) {
 	present, err := s.ws.HasChunk(id)
 	if err != nil {
 		s.unmarkProcessed(id)
-		return err
+		return false, err
 	}
 	if present {
 		// Chunk already in store. When safe pruning is active, check whether
@@ -84,20 +87,21 @@ func (s *ChunkStorage) StoreChunk(chunk *Chunk) (err error) {
 			prunable, err := s.sps.HasPrunable(id)
 			if err != nil {
 				s.unmarkProcessed(id)
-				return err
+				return false, err
 			}
 			if prunable {
 				if err := s.sps.CreateProtect(id); err != nil {
 					s.unmarkProcessed(id)
-					return err
+					return false, err
 				}
 				s.Lock()
 				s.captured[id] = chunk
 				s.lastProtectTime = time.Now()
 				s.Unlock()
+				return true, nil
 			}
 		}
-		return nil
+		return false, nil
 	}
 
 	// Chunk absent: store it.
@@ -109,7 +113,7 @@ func (s *ChunkStorage) StoreChunk(chunk *Chunk) (err error) {
 		}
 	}()
 
-	return s.ws.StoreChunk(chunk)
+	return false, s.ws.StoreChunk(chunk)
 }
 
 // Chunks returns a snapshot of the prunable chunks captured so far.

@@ -201,7 +201,7 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 				idxChunk := IndexChunk{Start: c.start, Size: uint64(len(c.b)), ID: chunk.ID()}
 				recordResult(c.num, idxChunk)
 
-				if err := s.StoreChunk(chunk); err != nil {
+				if _, err := s.StoreChunk(chunk); err != nil {
 					return err
 				}
 

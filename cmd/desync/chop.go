@@ -125,7 +125,7 @@ func runChop(ctx context.Context, opt chopOptions, args []string) error {
 		return err
 	}
 	mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
-	return desync.ChopFile(ctx, dataFile, chunks, s, opt.N, pb, sps, mergedOpt.SafePropagationTime)
+	return desync.ChopFile(ctx, dataFile, chunks, s, opt.N, pb, sps, mergedOpt.SafePropagationTime, nil)
 }
 
 // Read a list of chunk IDs from a file. Blank lines are skipped.

@@ -678,8 +678,9 @@ func TestChunkStorageWithPruning(t *testing.T) {
 	cs := NewChunkStorageWithPruning(s, s)
 
 	// Prunable chunk: StoreChunk detects it is present+prunable → .protect set, captured.
-	err := cs.StoreChunk(prunable)
+	captured_, err := cs.StoreChunk(prunable)
 	require.NoError(t, err)
+	require.True(t, captured_, "prunable reused chunk must be reported as captured")
 	s.assertProtected(t, prunableID)
 
 	captured := cs.Chunks()
@@ -691,8 +692,9 @@ func TestChunkStorageWithPruning(t *testing.T) {
 	fresh := NewChunk([]byte("fresh chunk not in store"))
 	freshID := fresh.ID()
 
-	err = cs.StoreChunk(fresh)
+	captured_, err = cs.StoreChunk(fresh)
 	require.NoError(t, err)
+	require.False(t, captured_, "fresh chunk must not be reported as captured")
 	s.assertLive(t, freshID)
 
 	captured = cs.Chunks()
@@ -706,8 +708,9 @@ func TestChunkStorageWithPruning(t *testing.T) {
 	s.chunks[normalID] = normal
 	s.mu.Unlock()
 
-	err = cs.StoreChunk(normal)
+	captured_, err = cs.StoreChunk(normal)
 	require.NoError(t, err)
+	require.False(t, captured_, "normal chunk must not be reported as captured")
 
 	captured = cs.Chunks()
 	_, found = captured[normalID]
@@ -723,7 +726,7 @@ func TestChunkStorageWithPruning(t *testing.T) {
 	s.markers[existingID] = struct{}{} // prunable, but sps is nil
 	s.mu.Unlock()
 
-	err = csNoPrune.StoreChunk(existing)
+	_, err = csNoPrune.StoreChunk(existing)
 	require.NoError(t, err)
 	require.Nil(t, csNoPrune.Chunks(), "Chunks() must return nil when safe pruning is disabled")
 }

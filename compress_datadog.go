@@ -7,9 +7,12 @@ import (
 	"github.com/DataDog/zstd"
 )
 
-// Compress a block using the only (currently) supported algorithm
-func Compress(b []byte) ([]byte, error) {
-	return zstd.CompressLevel(nil, b, 3)
+// InitCompression is a no-op for the DataDog zstd backend.
+func InitCompression(maxChunkBytes uint64) {}
+
+// Compress appends zstd-compressed data to dst and returns the extended slice.
+func Compress(dst, src []byte) ([]byte, error) {
+	return zstd.CompressLevel(dst, src, 3)
 }
 
 // Decompress a block using the only supported algorithm. If you already have

@@ -1031,7 +1031,7 @@ func uploadTestObject(t *testing.T, srv *Server, data []byte) (string, int64) {
 		srv.minChunk, srv.avgChunk, srv.maxChunk, desync.NullProgressBar{})
 	require.NoError(t, err)
 
-	err = desync.ChopFile(context.Background(), tmpFile, idx.Chunks, srv.writeStore, 2, desync.NullProgressBar{}, nil, 0)
+	err = desync.ChopFile(context.Background(), tmpFile, idx.Chunks, srv.writeStore, 2, desync.NullProgressBar{}, nil, 0, nil)
 	require.NoError(t, err)
 
 	indexName := oidIndexName(oid)

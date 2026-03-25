@@ -14,7 +14,10 @@ import (
 // and stores them in the provided store. When sps is non-nil, ChopFile
 // participates in the safe-pruning protocol: prunable chunks get .protect
 // markers and SafePrunePreCommit is called before returning.
-func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar, sps SafePruneStore, propTime time.Duration) error {
+// When pool is non-nil, chunks are taken from the pool and returned after
+// StoreChunk completes (or after SafePrunePreCommit for captured chunks),
+// eliminating per-chunk heap allocations.
+func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar, sps SafePruneStore, propTime time.Duration, pool *ChunkPool) error {
 	in := make(chan IndexChunk)
 	g, gCtx := errgroup.WithContext(ctx)
 
@@ -43,13 +46,32 @@ func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteSto
 				// Update progress bar if any
 				pb.Increment()
 
-				chunk, err := readChunkFromFile(f, c)
+				var (
+					chunk *Chunk
+					err   error
+				)
+				if pool != nil {
+					chunk = pool.Get()
+					err = readChunkInto(f, c, chunk)
+				} else {
+					chunk, err = readChunkFromFile(f, c)
+				}
 				if err != nil {
+					if pool != nil {
+						pool.Put(chunk)
+					}
 					return err
 				}
 
-				if err := s.StoreChunk(chunk); err != nil {
+				captured, err := s.StoreChunk(chunk)
+				if err != nil {
+					if pool != nil {
+						pool.Put(chunk)
+					}
 					return err
+				}
+				if pool != nil && !captured {
+					pool.Put(chunk)
 				}
 			}
 			return nil
@@ -72,24 +94,44 @@ loop:
 		return err
 	}
 	if sps != nil {
-		return SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, propTime)
+		err := SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, propTime)
+		// Return captured chunks to the pool now that SafePrunePreCommit is done.
+		if pool != nil {
+			for _, chunk := range s.Chunks() {
+				pool.Put(chunk)
+			}
+		}
+		return err
 	}
 	return nil
 }
 
-// Helper function to read chunk contents from file
+// readChunkFromFile reads chunk data from file and returns a new Chunk.
 func readChunkFromFile(f *os.File, c IndexChunk) (*Chunk, error) {
-	var err error
 	b := make([]byte, c.Size)
-
-	// Position the filehandle to the place where the chunk is meant to come
-	// from within the file
-	if _, err = f.Seek(int64(c.Start), io.SeekStart); err != nil {
+	if _, err := f.Seek(int64(c.Start), io.SeekStart); err != nil {
 		return nil, err
 	}
-	// Read the whole (uncompressed) chunk into memory
-	if _, err = io.ReadFull(f, b); err != nil {
+	if _, err := io.ReadFull(f, b); err != nil {
 		return nil, err
 	}
 	return NewChunkWithID(c.ID, b, false)
+}
+
+// readChunkInto reads chunk data into a pooled chunk's backing buffer.
+func readChunkInto(f *os.File, c IndexChunk, chunk *Chunk) error {
+	chunk.data = chunk.dataBuf[:c.Size]
+	if _, err := f.Seek(int64(c.Start), io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := io.ReadFull(f, chunk.data); err != nil {
+		return err
+	}
+	chunk.id = c.ID
+	chunk.idCalculated = false
+	// Verify the chunk ID matches the data.
+	if sum := chunk.ID(); sum != c.ID {
+		return ChunkInvalid{ID: c.ID, Sum: sum}
+	}
+	return nil
 }

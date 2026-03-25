@@ -87,7 +87,7 @@ func runMake(ctx context.Context, opt makeOptions, args []string) error {
 		}
 		mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
 		pb := desync.NewProgressBar("Storing ")
-		if err := desync.ChopFile(ctx, dataFile, index.Chunks, s, opt.N, pb, sps, mergedOpt.SafePropagationTime); err != nil {
+		if err := desync.ChopFile(ctx, dataFile, index.Chunks, s, opt.N, pb, sps, mergedOpt.SafePropagationTime, nil); err != nil {
 			return err
 		}
 	}

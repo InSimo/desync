@@ -193,6 +193,7 @@ Configure Git LFS to use this agent:
 				agent.minChunk = minChunk
 				agent.avgChunk = avgChunk
 				agent.maxChunk = maxChunk
+				agent.chunkPool = desync.NewChunkPool(int(maxChunk))
 				agent.safePruning = storeOpt.SafePruning
 				agent.safePropagationTime = storeOpt.SafePropagationTime
 				return nil

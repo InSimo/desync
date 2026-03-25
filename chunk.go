@@ -2,6 +2,7 @@ package desync
 
 import (
 	"errors"
+	"sync"
 )
 
 // Chunk holds chunk data plain, storage format, or both. If a chunk is created
@@ -15,6 +16,57 @@ type Chunk struct {
 	converters   Converters // Modifiers to convert from storage format to plain
 	id           ChunkID
 	idCalculated bool
+	dataBuf      []byte // Backing buffer for data (pooled chunks only)
+	storageBuf   []byte // Backing buffer for storage (pooled chunks only)
+}
+
+// Reset clears a chunk's fields for reuse, preserving backing buffers.
+func (c *Chunk) Reset() {
+	c.data = nil
+	c.storage = nil
+	c.converters = nil
+	c.id = ChunkID{}
+	c.idCalculated = false
+}
+
+// ChunkPool is a pool of Chunk objects with pre-allocated backing buffers.
+// Using a pool eliminates per-chunk heap allocations in hot paths like
+// ChopFile, where chunks are created, compressed, stored, and discarded
+// in rapid succession.
+type ChunkPool struct {
+	pool sync.Pool
+}
+
+// NewChunkPool creates a pool of chunks with backing buffers of maxSize bytes
+// for both plain and compressed data.
+func NewChunkPool(maxSize int) *ChunkPool {
+	return &ChunkPool{
+		pool: sync.Pool{
+			New: func() any {
+				return &Chunk{
+					dataBuf:    make([]byte, maxSize),
+					storageBuf: make([]byte, maxSize),
+				}
+			},
+		},
+	}
+}
+
+// Get returns a reset chunk from the pool.
+func (p *ChunkPool) Get() *Chunk {
+	c := p.pool.Get().(*Chunk)
+	c.Reset()
+	return c
+}
+
+// Put returns a chunk to the pool.  Non-pooled chunks (dataBuf == nil) are
+// silently ignored.
+func (p *ChunkPool) Put(c *Chunk) {
+	if c == nil || c.dataBuf == nil {
+		return
+	}
+	c.Reset()
+	p.pool.Put(c)
 }
 
 // NewChunk creates a new chunk from plain data. The data is trusted and the ID is
@@ -64,6 +116,14 @@ func (c *Chunk) Data() ([]byte, error) {
 		return c.data, nil
 	}
 	if len(c.storage) > 0 {
+		if c.dataBuf != nil && c.converters.hasCompression() {
+			decompressed, err := Decompress(c.dataBuf[:0], c.storage)
+			if err != nil {
+				return nil, err
+			}
+			c.data = decompressed
+			return c.data, nil
+		}
 		var err error
 		c.data, err = c.converters.fromStorage(c.storage)
 		return c.data, err
@@ -88,8 +148,10 @@ func (c *Chunk) ID() ChunkID {
 }
 
 // Storage returns the chunk data in compressed form. If the chunk was created
-// with compressed data and same modifiers, this data will be returned as is. The
-// caller must not modify the data in the returned slice.
+// with compressed data and same modifiers, this data will be returned as is.
+// When the chunk has a backing storageBuf (pooled), compression writes
+// directly into it, avoiding a heap allocation.
+// The caller must not modify the data in the returned slice.
 func (c *Chunk) Storage(modifiers Converters) ([]byte, error) {
 	if len(c.storage) > 0 && modifiers.equal(c.converters) {
 		return c.storage, nil
@@ -97,6 +159,15 @@ func (c *Chunk) Storage(modifiers Converters) ([]byte, error) {
 	b, err := c.Data()
 	if err != nil {
 		return nil, err
+	}
+	if c.storageBuf != nil && modifiers.hasCompression() {
+		compressed, err := Compress(c.storageBuf[:0], b)
+		if err != nil {
+			return nil, err
+		}
+		c.storage = compressed
+		c.converters = modifiers
+		return c.storage, nil
 	}
 	return modifiers.toStorage(b)
 }

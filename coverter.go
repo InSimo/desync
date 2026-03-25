@@ -84,7 +84,7 @@ type Compressor struct{}
 var _ converter = Compressor{}
 
 func (d Compressor) toStorage(in []byte) ([]byte, error) {
-	return Compress(in)
+	return Compress(nil, in)
 }
 
 func (d Compressor) fromStorage(in []byte) ([]byte, error) {
