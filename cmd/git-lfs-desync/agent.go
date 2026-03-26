@@ -331,13 +331,6 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 		return
 	}
 
-	// Release page cache for the fully written file to avoid accumulating
-	// gigabytes of cached pages across many LFS objects.
-	if f, err := os.Open(tmpFile); err == nil {
-		desync.FadviseNoNeed(f, 0, req.Size)
-		f.Close()
-	}
-
 	a.sendComplete(req.OID, tmpFile, nil)
 }
 
