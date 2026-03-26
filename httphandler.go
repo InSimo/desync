@@ -60,6 +60,9 @@ func (h HTTPHandler) get(id ChunkID, w http.ResponseWriter) {
 		b, err = chunk.Storage(h.converters)
 	}
 	h.HTTPHandlerBase.get(id.String(), b, err, w)
+	if chunk != nil {
+		chunk.Release()
+	}
 }
 
 func (h HTTPHandler) head(id ChunkID, w http.ResponseWriter) {

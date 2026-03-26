@@ -23,8 +23,8 @@ func NewCache(s Store, l WriteStore) Cache {
 
 // GetChunk first asks the local store for the chunk and then the remote one.
 // If we get a chunk from the remote, it's stored locally too.
-func (c Cache) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
-	chunk, err := c.l.GetChunk(id, dst...)
+func (c Cache) GetChunk(id ChunkID) (*Chunk, error) {
+	chunk, err := c.l.GetChunk(id)
 	switch err.(type) {
 	case nil:
 		return chunk, nil
@@ -33,7 +33,7 @@ func (c Cache) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 		return chunk, err
 	}
 	// At this point we failed to find chunk in the local cache. Ask the remote
-	chunk, err = c.s.GetChunk(id, dst...)
+	chunk, err = c.s.GetChunk(id)
 	if err != nil {
 		return chunk, err
 	}
@@ -74,8 +74,8 @@ func NewRepairableCache(l WriteStore) RepairableCache {
 	return RepairableCache{l: l}
 }
 
-func (r RepairableCache) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
-	chunk, err := r.l.GetChunk(id, dst...)
+func (r RepairableCache) GetChunk(id ChunkID) (*Chunk, error) {
+	chunk, err := r.l.GetChunk(id)
 	var chunkInvalidErr ChunkInvalid
 	if err != nil && errors.As(err, &chunkInvalidErr) {
 		return chunk, ChunkMissing{ID: chunkInvalidErr.ID}

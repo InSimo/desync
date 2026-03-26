@@ -36,8 +36,10 @@ func Copy(ctx context.Context, ids []ChunkID, src Store, dst WriteStore, n int, 
 					return err
 				}
 				if err := dst.StoreChunk(chunk); err != nil {
+					chunk.Release()
 					return err
 				}
+				chunk.Release()
 			}
 			return nil
 		})

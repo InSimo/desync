@@ -156,22 +156,16 @@ type ChunkerInterface interface {
 }
 
 func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration) (Index, error) {
-	pool := GetChunkPool()
 	type chunkJob struct {
 		num   int
 		start uint64
-		chunk *Chunk   // pooled chunk (when pool != nil)
-		b     []byte   // chunk data (when pool == nil, points into poolBuf)
-		poolBuf *[]byte // ad-hoc pool buffer (only when pool == nil)
+		chunk *Chunk
 	}
 	var (
 		mu      sync.Mutex
 		in      = make(chan chunkJob)
 		results = make(map[int]IndexChunk)
 	)
-
-	// Ad-hoc byte pool, used only when no ChunkPool is provided.
-	var chunkBufPool sync.Pool
 
 	g, gCtx := errgroup.WithContext(ctx)
 	var s *ChunkStorage
@@ -192,29 +186,18 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 	for range n {
 		g.Go(func() error {
 			for c := range in {
-				var chunk *Chunk
-				if c.chunk != nil {
-					chunk = c.chunk
-				} else {
-					chunk = NewChunk(c.b)
-				}
-
-				idxChunk := IndexChunk{Start: c.start, Size: uint64(len(chunk.data)), ID: chunk.ID()}
+				idxChunk := IndexChunk{Start: c.start, Size: uint64(len(c.chunk.data)), ID: c.chunk.ID()}
 				recordResult(c.num, idxChunk)
 
-				captured, err := s.StoreChunk(chunk)
+				captured, err := s.StoreChunk(c.chunk)
 				if err != nil {
-					if pool != nil && c.chunk != nil && !captured {
-						pool.Put(c.chunk)
+					if !captured {
+						c.chunk.Release()
 					}
 					return err
 				}
-
-				if pool != nil && c.chunk != nil && !captured {
-					pool.Put(c.chunk)
-				} else if c.poolBuf != nil {
-					*c.poolBuf = (*c.poolBuf)[:0]
-					chunkBufPool.Put(c.poolBuf)
+				if !captured {
+					c.chunk.Release()
 				}
 			}
 			return nil
@@ -234,39 +217,23 @@ loop:
 			break
 		}
 
-		var job chunkJob
-		job.num = num
-		job.start = start
-
-		if pool != nil {
-			// Use a pooled chunk: copy data into its dataBuf.
-			chunk := pool.Get()
+		chunk := getPooledChunk()
+		if chunk != nil {
+			if len(b) > cap(chunk.dataBuf) {
+				chunk.growStorageBuf(len(b))
+			}
 			chunk.data = chunk.dataBuf[:len(b)]
 			copy(chunk.data, b)
-			job.chunk = chunk
 		} else {
-			// Ad-hoc byte pool fallback.
-			var poolBuf *[]byte
-			if v := chunkBufPool.Get(); v != nil {
-				poolBuf = v.(*[]byte)
-			} else {
-				buf := make([]byte, 0, len(b))
-				poolBuf = &buf
-			}
-			if cap(*poolBuf) < len(b) {
-				*poolBuf = make([]byte, len(b))
-			} else {
-				*poolBuf = (*poolBuf)[:len(b)]
-			}
-			copy(*poolBuf, b)
-			job.b = *poolBuf
-			job.poolBuf = poolBuf
+			clone := make([]byte, len(b))
+			copy(clone, b)
+			chunk = NewChunk(clone)
 		}
 
 		select {
 		case <-gCtx.Done():
 			break loop
-		case in <- job:
+		case in <- chunkJob{num: num, start: start, chunk: chunk}:
 		}
 		num++
 	}
@@ -293,10 +260,8 @@ loop:
 
 	if sps != nil {
 		err := SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, propTime)
-		if pool != nil {
-			for _, chunk := range s.Chunks() {
-				pool.Put(chunk)
-			}
+		for _, chunk := range s.Chunks() {
+			chunk.Release()
 		}
 		if err != nil {
 			return Index{}, err

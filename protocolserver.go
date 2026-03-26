@@ -63,11 +63,14 @@ func (s *ProtocolServer) Serve(ctx context.Context) error {
 			}
 			b, err := chunk.Storage([]converter{Compressor{}})
 			if err != nil {
+				chunk.Release()
 				return err
 			}
 			if err := s.p.SendProtocolChunk(chunk.ID(), CaProtocolChunkCompressed, b); err != nil {
+				chunk.Release()
 				return errors.Wrap(err, "failed to send chunk data")
 			}
+			chunk.Release()
 		case CaProtocolAbort:
 			return errors.New("client aborted connection")
 		case CaProtocolGoodbye:

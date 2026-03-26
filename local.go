@@ -45,30 +45,33 @@ func NewLocalStore(dir string, opt StoreOptions) (LocalStore, error) {
 }
 
 // GetChunk reads and returns one (compressed!) chunk from the store.
-// When dst is provided with backing buffers, compressed data is read
-// directly into dst.storageBuf to avoid a heap allocation.
-func (s LocalStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
+// When the global chunk pool is initialized, reads directly into the
+// pooled chunk's storageBuf to avoid a heap allocation.
+func (s LocalStore) GetChunk(id ChunkID) (*Chunk, error) {
 	_, p := s.nameFromID(id)
 
-	if c := dstChunk(dst); c != nil && c.storageBuf != nil {
-		f, err := os.Open(p)
-		if os.IsNotExist(err) {
-			return nil, ChunkMissing{id}
-		}
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil {
-			return nil, err
-		}
-		size := int(info.Size())
+	f, err := os.Open(p)
+	if os.IsNotExist(err) {
+		return nil, ChunkMissing{id}
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := int(info.Size())
+
+	if c := getPooledChunk(); c != nil {
 		if size > cap(c.storageBuf) {
 			c.growStorageBuf(size)
 		}
 		c.storage = c.storageBuf[:size]
 		if _, err := io.ReadFull(f, c.storage); err != nil {
+			c.Release()
 			return nil, err
 		}
 		c.converters = s.converters
@@ -76,6 +79,7 @@ func (s LocalStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 		c.idCalculated = false
 		if !s.Opt.SkipVerify {
 			if sum := c.ID(); sum != id {
+				c.Release()
 				return nil, ChunkInvalid{ID: id, Sum: sum}
 			}
 		} else {
@@ -84,9 +88,9 @@ func (s LocalStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 		return c, nil
 	}
 
-	b, err := os.ReadFile(p)
-	if os.IsNotExist(err) {
-		return nil, ChunkMissing{id}
+	b := make([]byte, size)
+	if _, err := io.ReadFull(f, b); err != nil {
+		return nil, err
 	}
 	return NewChunkFromStorage(id, b, s.converters, s.Opt.SkipVerify)
 }
@@ -136,7 +140,10 @@ func (s LocalStore) Verify(ctx context.Context, n int, repair bool, w io.Writer)
 		wg.Add(1)
 		go func() {
 			for id := range ids {
-				_, err := s.GetChunk(id)
+				chunk, err := s.GetChunk(id)
+				if chunk != nil {
+					chunk.Release()
+				}
 				switch err.(type) {
 				case ChunkInvalid: // bad chunk, report and delete (if repair=true)
 					msg := err.Error()

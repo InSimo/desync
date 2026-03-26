@@ -24,7 +24,7 @@ func NewWriteDedupQueue(store WriteStore) *WriteDedupQueue {
 	}
 }
 
-func (q *WriteDedupQueue) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
+func (q *WriteDedupQueue) GetChunk(id ChunkID) (*Chunk, error) {
 	// If the chunk is being stored just wait and return the data
 	q.storeChunkQueue.mu.Lock()
 	req, isInFlight := q.storeChunkQueue.requests[id]

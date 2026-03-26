@@ -155,7 +155,7 @@ func NewSFTPStore(location *url.URL, opt StoreOptions) (*SFTPStore, error) {
 }
 
 // GetChunk returns a chunk from an SFTP store, returns ChunkMissing if the file does not exist
-func (s *SFTPStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
+func (s *SFTPStore) GetChunk(id ChunkID) (*Chunk, error) {
 	c := <-s.pool
 	defer func() { s.pool <- c }()
 	name := c.nameFromID(id)
@@ -171,7 +171,7 @@ func (s *SFTPStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to read from %s", name)
 	}
-	return NewChunkFromStorage(id, b, s.converters, c.opt.SkipVerify)
+	return newChunkFromStoragePooled(id, b, s.converters, c.opt.SkipVerify)
 }
 
 // RemoveChunk deletes a chunk, typically an invalid one, from the filesystem.

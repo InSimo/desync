@@ -92,7 +92,7 @@ func NewGCStore(location *url.URL, opt StoreOptions) (s GCStore, e error) {
 }
 
 // GetChunk reads and returns one chunk from the store
-func (s GCStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
+func (s GCStore) GetChunk(id ChunkID) (*Chunk, error) {
 	ctx := context.TODO()
 	name := s.nameFromID(id)
 
@@ -114,15 +114,16 @@ func (s GCStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 	}
 	defer rc.Close()
 
-	// When a pooled destination chunk is provided, read directly into its
-	// storageBuf to avoid a heap allocation.
-	if c := dstChunk(dst); c != nil && c.storageBuf != nil {
+	// When the global chunk pool is initialized, read directly into the
+	// pooled chunk's storageBuf to avoid a heap allocation.
+	if c := getPooledChunk(); c != nil {
 		size := int(rc.Attrs.Size)
 		if size > cap(c.storageBuf) {
 			c.growStorageBuf(size)
 		}
 		c.storage = c.storageBuf[:size]
 		if _, err := io.ReadFull(rc, c.storage); err != nil {
+			c.Release()
 			log.WithError(err).Error("Unable to read object from GCS bucket")
 			return nil, errors.Wrap(err, fmt.Sprintf("chunk %s could not be retrieved from GCS bucket", id))
 		}
@@ -131,6 +132,7 @@ func (s GCStore) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
 		c.idCalculated = false
 		if !s.opt.SkipVerify {
 			if sum := c.ID(); sum != id {
+				c.Release()
 				return nil, ChunkInvalid{ID: id, Sum: sum}
 			}
 		} else {

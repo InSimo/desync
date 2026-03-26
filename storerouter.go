@@ -24,9 +24,9 @@ func NewStoreRouter(stores ...Store) StoreRouter {
 
 // GetChunk queries the available stores in order and moves to the next if
 // it gets a ChunkMissing. Fails if any store returns a different error.
-func (r StoreRouter) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
+func (r StoreRouter) GetChunk(id ChunkID) (*Chunk, error) {
 	for _, s := range r.Stores {
-		chunk, err := s.GetChunk(id, dst...)
+		chunk, err := s.GetChunk(id)
 		switch err.(type) {
 		case nil:
 			return chunk, nil

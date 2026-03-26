@@ -66,13 +66,12 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	// Any error after the 200 response has been sent cannot be reported as a
 	// protocol error; we close the connection by returning it to the caller.
 	type prefetched struct {
-		chunk *desync.Chunk // pooled chunk; returned to pool by consumer
+		chunk *desync.Chunk
 		data  []byte
 		err   error
 	}
 	pending := make([]chan prefetched, len(idx.Chunks))
 	sem := make(chan struct{}, s.n)
-	pool := desync.GetChunkPool()
 	for i, c := range idx.Chunks {
 		ch := make(chan prefetched, 1)
 		pending[i] = ch
@@ -80,24 +79,10 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 		sem <- struct{}{} // acquire slot (blocks if s.n workers busy)
 		go func() {
 			defer func() { <-sem }()
-			var (
-				chunk *desync.Chunk
-				err   error
-			)
-			if pool != nil {
-				pc := pool.Get()
-				chunk, err = s.readStore.GetChunk(id, pc)
-				if err != nil {
-					pool.Put(pc)
-					ch <- prefetched{err: err}
-					return
-				}
-			} else {
-				chunk, err = s.readStore.GetChunk(id)
-				if err != nil {
-					ch <- prefetched{err: err}
-					return
-				}
+			chunk, err := s.readStore.GetChunk(id)
+			if err != nil {
+				ch <- prefetched{err: err}
+				return
 			}
 			data, err := chunk.Data()
 			ch <- prefetched{chunk: chunk, data: data, err: err}
@@ -116,16 +101,12 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 				n = len(data)
 			}
 			if err := s.w.WriteBinaryPacket(data[:n]); err != nil {
-				if pool != nil {
-					pool.Put(pc.chunk)
-				}
+				pc.chunk.Release()
 				return err
 			}
 			data = data[n:]
 		}
-		if pool != nil {
-			pool.Put(pc.chunk)
-		}
+		pc.chunk.Release()
 	}
 
 	return s.w.WriteFlush()

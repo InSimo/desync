@@ -103,8 +103,10 @@ func NewS3Store(location *url.URL, s3Creds *credentials.Credentials, region stri
 	return S3Store{b}, nil
 }
 
-// GetChunk reads and returns one chunk from the store
-func (s S3Store) GetChunk(id ChunkID, dst ...*Chunk) (*Chunk, error) {
+// GetChunk reads and returns one chunk from the store.
+// When the global chunk pool is initialized, reads directly into the
+// pooled chunk's storageBuf to avoid a heap allocation.
+func (s S3Store) GetChunk(id ChunkID) (*Chunk, error) {
 	name := s.nameFromID(id)
 	var attempt int
 retry:
@@ -118,9 +120,7 @@ retry:
 	}
 	defer obj.Close()
 
-	// When a pooled destination chunk is provided, try to read into its
-	// storageBuf to avoid a heap allocation.
-	if c := dstChunk(dst); c != nil && c.storageBuf != nil {
+	if globalPool != nil {
 		info, err := obj.Stat()
 		if err != nil {
 			if attempt <= s.opt.ErrorRetry {
@@ -129,11 +129,13 @@ retry:
 			return nil, s.wrapS3Error(id, err)
 		}
 		size := int(info.Size)
+		c := getPooledChunk()
 		if size > cap(c.storageBuf) {
 			c.growStorageBuf(size)
 		}
 		c.storage = c.storageBuf[:size]
 		if _, err := io.ReadFull(obj, c.storage); err != nil {
+			c.Release()
 			if attempt <= s.opt.ErrorRetry {
 				goto retry
 			}
@@ -144,6 +146,7 @@ retry:
 		c.idCalculated = false
 		if !s.opt.SkipVerify {
 			if sum := c.ID(); sum != id {
+				c.Release()
 				return nil, ChunkInvalid{ID: id, Sum: sum}
 			}
 		} else {

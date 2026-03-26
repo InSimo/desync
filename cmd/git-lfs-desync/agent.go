@@ -403,8 +403,8 @@ func newCountingReadStore(s desync.Store, idx desync.Index) *countingReadStore {
 	return &countingReadStore{Store: s, chunkSizes: m}
 }
 
-func (s *countingReadStore) GetChunk(id desync.ChunkID, dst ...*desync.Chunk) (*desync.Chunk, error) {
-	chunk, err := s.Store.GetChunk(id, dst...)
+func (s *countingReadStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
+	chunk, err := s.Store.GetChunk(id)
 	if err == nil {
 		s.bytes.Add(int64(s.chunkSizes[id]))
 	}

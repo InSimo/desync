@@ -14,11 +14,7 @@ import (
 // and stores them in the provided store. When sps is non-nil, ChopFile
 // participates in the safe-pruning protocol: prunable chunks get .protect
 // markers and SafePrunePreCommit is called before returning.
-// Chunks are taken from the global pool and returned after StoreChunk
-// completes (or after SafePrunePreCommit for captured chunks), eliminating
-// per-chunk heap allocations.
 func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteStore, n int, pb ProgressBar, sps SafePruneStore, propTime time.Duration) error {
-	pool := GetChunkPool()
 	in := make(chan IndexChunk)
 	g, gCtx := errgroup.WithContext(ctx)
 
@@ -44,35 +40,20 @@ func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteSto
 
 		g.Go(func() error {
 			for c := range in {
-				// Update progress bar if any
 				pb.Increment()
 
-				var (
-					chunk *Chunk
-					err   error
-				)
-				if pool != nil {
-					chunk = pool.Get()
-					err = readChunkInto(f, c, chunk)
-				} else {
-					chunk, err = readChunkFromFile(f, c)
-				}
+				chunk, err := readChunkFromFile(f, c)
 				if err != nil {
-					if pool != nil {
-						pool.Put(chunk)
-					}
 					return err
 				}
 
 				captured, err := s.StoreChunk(chunk)
 				if err != nil {
-					if pool != nil {
-						pool.Put(chunk)
-					}
+					chunk.Release()
 					return err
 				}
-				if pool != nil && !captured {
-					pool.Put(chunk)
+				if !captured {
+					chunk.Release()
 				}
 			}
 			return nil
@@ -96,19 +77,40 @@ loop:
 	}
 	if sps != nil {
 		err := SafePrunePreCommit(ctx, s.Chunks(), s.LastProtectTime(), sps, propTime)
-		// Return captured chunks to the pool now that SafePrunePreCommit is done.
-		if pool != nil {
-			for _, chunk := range s.Chunks() {
-				pool.Put(chunk)
-			}
+		for _, chunk := range s.Chunks() {
+			chunk.Release()
 		}
 		return err
 	}
 	return nil
 }
 
-// readChunkFromFile reads chunk data from file and returns a new Chunk.
+// readChunkFromFile reads chunk data from file and returns a chunk.
+// When the global pool is available, reads into a pooled chunk's dataBuf.
+// Otherwise allocates a new chunk.
 func readChunkFromFile(f *os.File, c IndexChunk) (*Chunk, error) {
+	if chunk := getPooledChunk(); chunk != nil {
+		if int(c.Size) > cap(chunk.dataBuf) {
+			chunk.growStorageBuf(int(c.Size))
+		}
+		chunk.data = chunk.dataBuf[:c.Size]
+		if _, err := f.Seek(int64(c.Start), io.SeekStart); err != nil {
+			chunk.Release()
+			return nil, err
+		}
+		if _, err := io.ReadFull(f, chunk.data); err != nil {
+			chunk.Release()
+			return nil, err
+		}
+		chunk.id = c.ID
+		chunk.idCalculated = false
+		if sum := chunk.ID(); sum != c.ID {
+			chunk.Release()
+			return nil, ChunkInvalid{ID: c.ID, Sum: sum}
+		}
+		return chunk, nil
+	}
+
 	b := make([]byte, c.Size)
 	if _, err := f.Seek(int64(c.Start), io.SeekStart); err != nil {
 		return nil, err
@@ -117,22 +119,4 @@ func readChunkFromFile(f *os.File, c IndexChunk) (*Chunk, error) {
 		return nil, err
 	}
 	return NewChunkWithID(c.ID, b, false)
-}
-
-// readChunkInto reads chunk data into a pooled chunk's backing buffer.
-func readChunkInto(f *os.File, c IndexChunk, chunk *Chunk) error {
-	chunk.data = chunk.dataBuf[:c.Size]
-	if _, err := f.Seek(int64(c.Start), io.SeekStart); err != nil {
-		return err
-	}
-	if _, err := io.ReadFull(f, chunk.data); err != nil {
-		return err
-	}
-	chunk.id = c.ID
-	chunk.idCalculated = false
-	// Verify the chunk ID matches the data.
-	if sum := chunk.ID(); sum != c.ID {
-		return ChunkInvalid{ID: c.ID, Sum: sum}
-	}
-	return nil
 }

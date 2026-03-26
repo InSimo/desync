@@ -29,7 +29,6 @@ type AssembleOptions struct {
 // destination file or by taking it from the store. The in-place check runs first to avoid unnecessary
 // writes. If the target already has the correct data, no write is performed.
 func writeChunk(c IndexChunk, ss *selfSeed, f *os.File, blocksize uint64, s Store, stats *ExtractStats, isBlank bool) error {
-	pool := GetChunkPool()
 	// If we operate on an existing file there's a good chance we already
 	// have the data written for this chunk. Let's read it from disk and
 	// compare to what is expected. This is checked first to avoid rewriting
@@ -61,27 +60,11 @@ func writeChunk(c IndexChunk, ss *selfSeed, f *os.File, blocksize uint64, s Stor
 
 	// Record this chunk having been pulled from the store
 	stats.incChunksFromStore()
-
-	// Pull the (compressed) chunk from the store, optionally using a pooled
-	// destination to avoid per-chunk heap allocations.
-	var (
-		chunk *Chunk
-		err   error
-	)
-	if pool != nil {
-		pc := pool.Get()
-		chunk, err = s.GetChunk(c.ID, pc)
-		if err != nil {
-			pool.Put(pc)
-			return err
-		}
-		defer pool.Put(pc)
-	} else {
-		chunk, err = s.GetChunk(c.ID)
-		if err != nil {
-			return err
-		}
+	chunk, err := s.GetChunk(c.ID)
+	if err != nil {
+		return err
 	}
+	defer chunk.Release()
 	b, err := chunk.Data()
 	if err != nil {
 		return err

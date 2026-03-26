@@ -69,30 +69,33 @@ func (p *ChunkPool) Put(c *Chunk) {
 	p.pool.Put(c)
 }
 
-// dstChunk returns the destination chunk from a variadic GetChunk argument,
-// or nil if none was provided.
-func dstChunk(dst []*Chunk) *Chunk {
-	if len(dst) > 0 {
-		return dst[0]
+// Release returns the chunk to the global pool.  Safe to call on any chunk:
+// non-pooled chunks (dataBuf == nil) and nil receivers are silently ignored.
+// No-op when the global pool is not initialized (Init was not called).
+func (c *Chunk) Release() {
+	if c == nil || c.dataBuf == nil || globalPool == nil {
+		return
 	}
-	return nil
+	c.Reset()
+	globalPool.pool.Put(c)
 }
 
-// chunkFromStorage populates a chunk with compressed storage data.  When dst
-// is a pooled chunk, b is assigned directly to c.storage (no copy) so the
-// chunk stays pooled and the caller's pool.Put works correctly.  When dst is
-// nil, a new Chunk is allocated via NewChunkFromStorage.
-//
-// For backends that can read directly into storageBuf (LocalStore, S3Store,
-// GCStore), use the inline read-into-buffer pattern instead of this helper.
-func chunkFromStorage(id ChunkID, b []byte, conv Converters, skipVerify bool, dst []*Chunk) (*Chunk, error) {
-	if c := dstChunk(dst); c != nil {
+// newChunkFromStoragePooled creates a chunk from compressed storage data,
+// using a pooled chunk when available. For backends that read into an
+// already-allocated []byte (SFTP, RemoteHTTP, RemoteSSH), this assigns
+// b directly to the pooled chunk's storage field.
+// For backends that can read directly into storageBuf (Local, S3, GCS),
+// use the inline read-into-buffer pattern instead.
+func newChunkFromStoragePooled(id ChunkID, b []byte, conv Converters, skipVerify bool) (*Chunk, error) {
+	c := getPooledChunk()
+	if c != nil {
 		c.storage = b
 		c.converters = conv
 		c.id = id
 		c.idCalculated = false
 		if !skipVerify {
 			if sum := c.ID(); sum != id {
+				c.Release()
 				return nil, ChunkInvalid{ID: id, Sum: sum}
 			}
 		} else {
