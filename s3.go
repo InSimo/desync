@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -120,49 +119,30 @@ retry:
 	}
 	defer obj.Close()
 
-	if globalPool != nil {
-		info, err := obj.Stat()
-		if err != nil {
-			if attempt <= s.opt.ErrorRetry {
-				goto retry
-			}
-			return nil, s.wrapS3Error(id, err)
-		}
-		size := int(info.Size)
-		c := getPooledChunk()
-		if size > cap(c.storageBuf) {
-			c.growStorageBuf(size)
-		}
-		c.storage = c.storageBuf[:size]
-		if _, err := io.ReadFull(obj, c.storage); err != nil {
-			c.Release()
-			if attempt <= s.opt.ErrorRetry {
-				goto retry
-			}
-			return nil, s.wrapS3Error(id, err)
-		}
-		c.converters = s.converters
-		c.id = id
-		c.idCalculated = false
-		if !s.opt.SkipVerify {
-			if sum := c.ID(); sum != id {
-				c.Release()
-				return nil, ChunkInvalid{ID: id, Sum: sum}
-			}
-		} else {
-			c.idCalculated = true
-		}
-		return c, nil
+	c := getPooledChunk()
+	if c == nil {
+		c = &Chunk{}
 	}
-
-	b, err := io.ReadAll(obj)
-	if err != nil {
+	if err := c.ReadStorageFrom(obj); err != nil {
 		if attempt <= s.opt.ErrorRetry {
+			c.Release()
 			goto retry
 		}
+		c.Release()
 		return nil, s.wrapS3Error(id, err)
 	}
-	return NewChunkFromStorage(id, b, s.converters, s.opt.SkipVerify)
+	c.converters = s.converters
+	c.id = id
+	c.idCalculated = false
+	if !s.opt.SkipVerify {
+		if sum := c.ID(); sum != id {
+			c.Release()
+			return nil, ChunkInvalid{ID: id, Sum: sum}
+		}
+	} else {
+		c.idCalculated = true
+	}
+	return c, nil
 }
 
 func (s S3Store) wrapS3Error(id ChunkID, err error) error {

@@ -154,12 +154,14 @@ func NewSFTPStore(location *url.URL, opt StoreOptions) (*SFTPStore, error) {
 	return s, nil
 }
 
-// GetChunk returns a chunk from an SFTP store, returns ChunkMissing if the file does not exist
+// GetChunk returns a chunk from an SFTP store, returns ChunkMissing if the file does not exist.
+// When the global chunk pool is initialized, reads directly into the
+// pooled chunk's storageBuf to avoid a heap allocation.
 func (s *SFTPStore) GetChunk(id ChunkID) (*Chunk, error) {
-	c := <-s.pool
-	defer func() { s.pool <- c }()
-	name := c.nameFromID(id)
-	f, err := c.client.Open(name)
+	sc := <-s.pool
+	defer func() { s.pool <- sc }()
+	name := sc.nameFromID(id)
+	f, err := sc.client.Open(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			err = ChunkMissing{id}
@@ -167,11 +169,27 @@ func (s *SFTPStore) GetChunk(id ChunkID) (*Chunk, error) {
 		return nil, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(f)
-	if err != nil {
+
+	chunk := getPooledChunk()
+	if chunk == nil {
+		chunk = &Chunk{}
+	}
+	if err := chunk.ReadStorageFrom(f); err != nil {
+		chunk.Release()
 		return nil, errors.Wrapf(err, "unable to read from %s", name)
 	}
-	return newChunkFromStoragePooled(id, b, s.converters, c.opt.SkipVerify)
+	chunk.converters = s.converters
+	chunk.id = id
+	chunk.idCalculated = false
+	if !sc.opt.SkipVerify {
+		if sum := chunk.ID(); sum != id {
+			chunk.Release()
+			return nil, ChunkInvalid{ID: id, Sum: sum}
+		}
+	} else {
+		chunk.idCalculated = true
+	}
+	return chunk, nil
 }
 
 // RemoveChunk deletes a chunk, typically an invalid one, from the filesystem.

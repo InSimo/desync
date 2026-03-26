@@ -2,6 +2,7 @@ package desync
 
 import (
 	"errors"
+	"io"
 	"sync"
 )
 
@@ -67,6 +68,47 @@ func (p *ChunkPool) Put(c *Chunk) {
 	}
 	c.Reset()
 	p.pool.Put(c)
+}
+
+// ReadStorageFrom reads compressed storage data from r into the chunk.
+// When storageBuf is present (pooled chunk), data is read directly into it
+// with no heap allocation in the common case.  If the data exceeds the
+// buffer capacity, the buffers are grown to nextPow2(total) and the data
+// is concatenated — this is rare since storageBuf starts at maxChunkSize.
+// When storageBuf is nil (non-pooled), falls back to io.ReadAll.
+func (c *Chunk) ReadStorageFrom(r io.Reader) error {
+	if c.storageBuf != nil {
+		n, err := io.ReadFull(r, c.storageBuf)
+		if err == io.ErrUnexpectedEOF || err == io.EOF {
+			// Data fit within storageBuf — zero allocation.
+			c.storage = c.storageBuf[:n]
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// storageBuf was exactly filled — there may be more data.
+		overflow, err := io.ReadAll(r)
+		if len(overflow) > 0 {
+			total := n + len(overflow)
+			newCap := int(nextPow2(uint64(total)))
+			newBuf := make([]byte, newCap)
+			copy(newBuf, c.storageBuf[:n])
+			copy(newBuf[n:], overflow)
+			c.storageBuf = newBuf
+			c.dataBuf = make([]byte, newCap)
+			c.storage = c.storageBuf[:total]
+		} else {
+			c.storage = c.storageBuf[:n]
+		}
+		return err
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	c.storage = b
+	return nil
 }
 
 // Release returns the chunk to the global pool.  Safe to call on any chunk:
