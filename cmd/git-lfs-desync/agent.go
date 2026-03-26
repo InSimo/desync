@@ -254,6 +254,7 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 		a.sendComplete(req.OID, "", err)
 		return
 	}
+	cmdshared.WriteHeapProfile("upload_after_index")
 
 	// Wrap the chunk store to count bytes stored.
 	cs := &countingWriteStore{WriteStore: a.writeStore}
@@ -275,6 +276,7 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 		a.sendComplete(req.OID, "", err)
 		return
 	}
+	cmdshared.WriteHeapProfile("upload_after_chop")
 	stopProgress()
 
 	// Store the index in the S3 index store.
@@ -322,6 +324,7 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 
 	_, err = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.n})
 	stopProgress()
+	cmdshared.WriteHeapProfile("download_after_assemble")
 	if err != nil {
 		os.Remove(tmpFile)
 		a.sendComplete(req.OID, "", err)

@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/folbricht/desync"
+	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/folbricht/desync/cmd/shared/pktline"
 )
 
@@ -109,6 +110,7 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 		pc.chunk.Release()
 	}
 
+	cmdshared.WriteHeapProfile("get_after_stream")
 	return s.w.WriteFlush()
 }
 
@@ -212,6 +214,7 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 		s.logf("put-object %s: creating chunker: %v", oid, chunkerErr)
 		return s.w.WriteErrorStatus(500, "internal error")
 	}
+	cmdshared.WriteHeapProfile("put_after_chunkstream")
 	if chunkStreamErr != nil {
 		s.logf("put-object %s: storing chunks: %v", oid, chunkStreamErr)
 		return s.w.WriteErrorStatus(500, "internal error")

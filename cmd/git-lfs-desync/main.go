@@ -121,6 +121,9 @@ Configure Git LFS to use this agent:
 			}
 			defer gate.Close()
 
+			cleanupProfiling := cmdshared.InitProfiling()
+			defer cleanupProfiling()
+
 			agent := &Agent{tmpDir: os.TempDir(), gate: gate}
 			defer agent.Close()
 

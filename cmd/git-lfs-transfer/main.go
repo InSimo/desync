@@ -98,6 +98,9 @@ func run() error {
 	}
 	desync.Init(maxChunk)
 
+	cleanupProfiling := cmdshared.InitProfiling()
+	defer cleanupProfiling()
+
 	var cmdOpt cmdshared.CmdStoreOptions
 	cmdOpt.N = 10
 	if cfg.Defaults.Concurrency > 0 {
