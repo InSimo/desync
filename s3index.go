@@ -95,14 +95,16 @@ func (s S3IndexStore) StatIndex(name string) (IndexInfo, error) {
 // is stored as x-amz-meta-original-size user metadata so that StatIndex can
 // return it from a HEAD request without downloading the full index.
 func (s S3IndexStore) StoreIndex(name string, idx Index) error {
-	r, w := io.Pipe()
+	// Serialize the index to a buffer so we can pass the exact size to
+	// PutObject.  Without a known size, the minio SDK uses multipart upload
+	// which allocates a 128 MB buffer per part — extremely wasteful for
+	// small index files (typically a few KB).
+	var buf bytes.Buffer
+	if _, err := idx.WriteTo(&buf); err != nil {
+		return errors.Wrap(err, "serializing index")
+	}
 
-	go func() {
-		defer w.Close()
-		idx.WriteTo(w)
-	}()
-
-	_, err := s.client.PutObject(s.bucket, s.prefix+name, r, -1, minio.PutObjectOptions{
+	_, err := s.client.PutObject(s.bucket, s.prefix+name, &buf, int64(buf.Len()), minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
 		UserMetadata: map[string]string{
 			originalSizeMetaKey: strconv.FormatInt(idx.TotalSize(), 10),
