@@ -40,20 +40,7 @@ func (r *RemoteSSH) GetChunk(id ChunkID) (*Chunk, error) {
 	client := <-r.pool
 	chunk, err := client.RequestChunk(id)
 	r.pool <- client
-	if err != nil {
-		return nil, err
-	}
-	// Wrap in a pooled chunk if pool is available, so the caller can
-	// use dataBuf for decompression.
-	if c := getPooledChunk(); c != nil {
-		b, _ := chunk.Storage(chunk.converters)
-		c.storage = b
-		c.converters = chunk.converters
-		c.id = id
-		c.idCalculated = true // already verified by RequestChunk
-		return c, nil
-	}
-	return chunk, nil
+	return chunk, err
 }
 
 // Close terminates all client connections

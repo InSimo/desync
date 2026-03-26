@@ -133,7 +133,9 @@ func (p *Protocol) SendGoodbye() error {
 
 // RequestChunk sends a request for a specific chunk to the server, waits for
 // the response and returns the bytes in the chunk. Returns an error if the
-// server reports the chunk as missing
+// server reports the chunk as missing.
+// When the global chunk pool is initialized, compressed data is read directly
+// into the pooled chunk's storageBuf to avoid a heap allocation.
 func (p *Protocol) RequestChunk(id ChunkID) (*Chunk, error) {
 	if !p.initialized {
 		return nil, errors.New("protocol not initialized")
@@ -141,23 +143,84 @@ func (p *Protocol) RequestChunk(id ChunkID) (*Chunk, error) {
 	if err := p.SendProtocolRequest(id, CaProtocolRequestHighPriority); err != nil {
 		return nil, err
 	}
-	m, err := p.ReadMessage()
+	msgType, bodyLen, err := p.ReadMessageHeader()
 	if err != nil {
 		return nil, err
 	}
-	switch m.Type { // TODO: deal with ABORT messages
+	r := reader{p.r}
+	switch msgType {
 	case CaProtocolMissing:
+		// Drain remaining body bytes to keep the stream in sync.
+		if bodyLen > 0 {
+			r.ReadN(bodyLen)
+		}
 		return nil, ChunkMissing{id}
 	case CaProtocolChunk:
-		// The body comes with flags... do we need them? Ignore for now
-		if len(m.Body) < 40 {
+		if bodyLen < 40 {
+			if bodyLen > 0 {
+				r.ReadN(bodyLen)
+			}
 			return nil, errors.New("received chunk too small")
 		}
-		// The rest should be the (compressed) chunk data
-		return NewChunkFromStorage(id, m.Body[40:], []converter{Compressor{}}, false)
+		// Skip the 40-byte prefix (flags etc.)
+		var discard [40]byte
+		if _, err := io.ReadFull(p.r, discard[:]); err != nil {
+			return nil, err
+		}
+		chunkSize := bodyLen - 40
+
+		c := getPooledChunk()
+		if c != nil {
+			if int(chunkSize) > cap(c.storageBuf) {
+				c.growStorageBuf(int(chunkSize))
+			}
+			c.storage = c.storageBuf[:chunkSize]
+			if _, err := io.ReadFull(p.r, c.storage); err != nil {
+				c.Release()
+				return nil, err
+			}
+			c.converters = Converters{Compressor{}}
+			c.id = id
+			c.idCalculated = false
+			if sum := c.ID(); sum != id {
+				c.Release()
+				return nil, ChunkInvalid{ID: id, Sum: sum}
+			}
+			return c, nil
+		}
+		// No pool: allocate and read.
+		b := make([]byte, chunkSize)
+		if _, err := io.ReadFull(p.r, b); err != nil {
+			return nil, err
+		}
+		return NewChunkFromStorage(id, b, []converter{Compressor{}}, false)
 	default:
-		return nil, fmt.Errorf("unexpected protocol message type %x", m.Type)
+		// Drain body to keep stream in sync.
+		if bodyLen > 0 {
+			r.ReadN(bodyLen)
+		}
+		return nil, fmt.Errorf("unexpected protocol message type %x", msgType)
 	}
+}
+
+// ReadMessageHeader reads the 16-byte protocol message header (8-byte length +
+// 8-byte type) and returns the message type and the number of body bytes
+// remaining after the header. The caller is responsible for reading exactly
+// bodyLen bytes from p.r before the next message.
+func (p *Protocol) ReadMessageHeader() (msgType uint64, bodyLen uint64, err error) {
+	r := reader{p.r}
+	msgLen, err := r.ReadUint64()
+	if err != nil {
+		return 0, 0, err
+	}
+	if msgLen < 16 {
+		return 0, 0, errors.New("message length too short")
+	}
+	msgType, err = r.ReadUint64()
+	if err != nil {
+		return 0, 0, err
+	}
+	return msgType, msgLen - 16, nil
 }
 
 // ReadMessage reads a generic message from the other end, verifies the length,

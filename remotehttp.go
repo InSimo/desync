@@ -171,6 +171,56 @@ retry:
 	return statusCode, responseBody, nil
 }
 
+// IssueRetryableHttpGet issues a GET request with retries and returns the
+// response body as an io.ReadCloser. The caller must close the body.
+// Returns NoSuchObject for 404, error for other non-200 status codes.
+func (r *RemoteHTTPBase) IssueRetryableHttpGet(u *url.URL) (io.ReadCloser, error) {
+	var attempt int
+retry:
+	attempt++
+	log := Log.WithFields(logrus.Fields{
+		"method":  "GET",
+		"url":     u.String(),
+		"attempt": attempt,
+	})
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if r.opt.HTTPAuth != "" {
+		req.Header.Set("Authorization", r.opt.HTTPAuth)
+	}
+	if r.opt.HTTPCookie != "" {
+		req.Header.Set("Cookie", r.opt.HTTPCookie)
+	}
+	log.Debug("sending request")
+	resp, err := r.client.Do(req)
+	if err != nil || (resp != nil && resp.StatusCode >= 500) {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		if attempt < r.opt.ErrorRetry {
+			log.WithField("delay", attempt).Debug("waiting, then retrying")
+			time.Sleep(time.Duration(attempt) * r.opt.ErrorRetryBaseInterval)
+			goto retry
+		}
+		if err != nil {
+			return nil, errors.Wrap(err, u.String())
+		}
+		return nil, fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, u.String())
+	}
+	switch resp.StatusCode {
+	case 200:
+		return resp.Body, nil
+	case 404:
+		resp.Body.Close()
+		return nil, NoSuchObject{u.String()}
+	default:
+		resp.Body.Close()
+		return nil, fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, u.String())
+	}
+}
+
 // GetObject reads and returns an object in the form of []byte from the store
 func (r *RemoteHTTPBase) GetObject(name string) ([]byte, error) {
 	u, _ := r.location.Parse(name)
@@ -211,10 +261,13 @@ func NewRemoteHTTPStore(location *url.URL, opt StoreOptions) (*RemoteHTTP, error
 	return &RemoteHTTP{b}, nil
 }
 
-// GetChunk reads and returns one chunk from the store
+// GetChunk reads and returns one chunk from the store.
+// When the global chunk pool is initialized, reads directly into the
+// pooled chunk's storageBuf to avoid a heap allocation.
 func (r *RemoteHTTP) GetChunk(id ChunkID) (*Chunk, error) {
 	p := r.nameFromID(id)
-	b, err := r.GetObject(p)
+	u, _ := r.location.Parse(p)
+	body, err := r.IssueRetryableHttpGet(u)
 	if err != nil {
 		// The base returns NoSuchObject, but it has to be ChunkMissing for routers to work
 		if _, ok := err.(NoSuchObject); ok {
@@ -222,7 +275,28 @@ func (r *RemoteHTTP) GetChunk(id ChunkID) (*Chunk, error) {
 		}
 		return nil, err
 	}
-	return newChunkFromStoragePooled(id, b, r.converters, r.opt.SkipVerify)
+	defer body.Close()
+
+	c := getPooledChunk()
+	if c == nil {
+		c = &Chunk{}
+	}
+	if err := c.ReadStorageFrom(body); err != nil {
+		c.Release()
+		return nil, err
+	}
+	c.converters = r.converters
+	c.id = id
+	c.idCalculated = false
+	if !r.opt.SkipVerify {
+		if sum := c.ID(); sum != id {
+			c.Release()
+			return nil, ChunkInvalid{ID: id, Sum: sum}
+		}
+	} else {
+		c.idCalculated = true
+	}
+	return c, nil
 }
 
 // HasChunk returns true if the chunk is in the store
