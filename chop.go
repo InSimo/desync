@@ -46,6 +46,9 @@ func ChopFile(ctx context.Context, name string, chunks []IndexChunk, ws WriteSto
 				if err != nil {
 					return err
 				}
+				// Release page cache for the range just read to avoid
+				// accumulating gigabytes of cached pages across many chunks.
+				FadviseNoNeed(f, int64(c.Start), int64(c.Size))
 
 				captured, err := s.StoreChunk(chunk)
 				if err != nil {
