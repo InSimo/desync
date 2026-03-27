@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/pprof"
 	"time"
 )
@@ -53,7 +52,6 @@ func WriteHeapProfile(label string) {
 	if dir == "" {
 		return
 	}
-	runtime.GC() // get up-to-date statistics
 	pid := os.Getpid()
 	name := fmt.Sprintf("heap_%s_%d_%d.prof", label, pid, time.Now().UnixMilli())
 	path := filepath.Join(dir, name)
