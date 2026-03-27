@@ -167,6 +167,7 @@ func runTar(ctx context.Context, opt tarOptions, args []string) error {
 	}
 	mergedOpt = opt.cmdStoreOptions.MergedWith(mergedOpt)
 	index, err := desync.ChunkStream(ctx, &c, s, opt.N, sps, mergedOpt.SafePropagationTime)
+	c.Release()
 	if err != nil {
 		return err
 	}

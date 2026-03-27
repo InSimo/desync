@@ -122,7 +122,8 @@ func IndexFromFile(ctx context.Context,
 	// Start the workers
 	for _, w := range worker {
 		go w.start(ctx)
-		defer w.stop() // shouldn't be necessary, but better be safe
+		defer w.stop()                  // shouldn't be necessary, but better be safe
+		defer w.chunker.Release()       // return backing buffer to pool
 	}
 
 	// Go through the workers, starting with the first one, taking all chunks

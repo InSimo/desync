@@ -202,6 +202,7 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 	if chunkerErr == nil {
 		idx, chunkStreamErr = desync.ChunkStream(ctx, &chunker, s.writeStore, s.n, sps, s.safePropTime)
 	}
+	chunker.Release()
 
 	// Close the read end of the pipe so the goroutine unblocks if it is
 	// waiting on a pw.Write() that ChunkStream is no longer consuming.

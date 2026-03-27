@@ -64,6 +64,7 @@ func runChunk(ctx context.Context, opt chunkOptions, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer c.Release()
 
 	for {
 		select {

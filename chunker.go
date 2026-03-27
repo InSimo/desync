@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/bits"
+	"sync"
 )
 
 // ChunkerWindowSize is the number of bytes in the rolling hash window
@@ -132,6 +133,8 @@ type Chunker struct {
 	hTrailMask  uint32 // (1 << hTrailShift) - 1, for checking low bits
 }
 
+var chunkerBufPool sync.Pool
+
 // NewChunker initializes a chunker for a data stream according to min/avg/max chunk size.
 func NewChunker(r io.Reader, min, avg, max uint64) (Chunker, error) {
 	if min < ChunkerWindowSize {
@@ -172,6 +175,17 @@ func NewChunker(r io.Reader, min, avg, max uint64) (Chunker, error) {
 	}, nil
 }
 
+// Release returns the chunker's backing buffer to the pool for reuse.
+// Call after the chunker is no longer needed.
+func (c *Chunker) Release() {
+	if c.backingBuf != nil {
+		b := c.backingBuf
+		chunkerBufPool.Put(b)
+		c.backingBuf = nil
+		c.buf = nil
+	}
+}
+
 // Make a new buffer with 10*max bytes and copy anything that may be leftover
 // from before into it, then fill it up with new bytes. Don't fail on EOF.
 func (c *Chunker) fillBuffer() (n int, err error) {
@@ -184,7 +198,15 @@ func (c *Chunker) fillBuffer() (n int, err error) {
 	if uint64(cap(c.backingBuf)) >= size {
 		buf = c.backingBuf[:size]
 	} else {
-		buf = make([]byte, int(size))
+		// Try the pool before allocating.
+		if v := chunkerBufPool.Get(); v != nil {
+			if pooled, ok := v.([]byte); ok && uint64(cap(pooled)) >= size {
+				buf = pooled[:size]
+			}
+		}
+		if buf == nil {
+			buf = make([]byte, int(size))
+		}
 		c.backingBuf = buf
 	}
 	n = copy(buf, c.buf)                 // copy the remaining bytes from the old buffer
