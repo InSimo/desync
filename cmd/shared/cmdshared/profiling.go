@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/pprof"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,7 +47,11 @@ func InitProfiling() func() {
 	}
 }
 
-// WriteHeapProfile writes a heap profile to the profiling directory.
+var profileCount atomic.Int64
+
+// WriteHeapProfile writes memory stats to the profiling directory.
+// Every call writes a lightweight MemStats line (~200 bytes).
+// Every 100th call also writes a full pprof heap profile for detailed analysis.
 // No-op if DESYNC_HEAP_PROFILE_DIR is not set.
 func WriteHeapProfile(label string) {
 	dir := ProfileDir()
@@ -53,12 +59,25 @@ func WriteHeapProfile(label string) {
 		return
 	}
 	pid := os.Getpid()
-	name := fmt.Sprintf("heap_%s_%d_%d.prof", label, pid, time.Now().UnixMilli())
-	path := filepath.Join(dir, name)
-	f, err := os.Create(path)
-	if err != nil {
-		return
+	ts := time.Now().UnixMilli()
+
+	// Always write lightweight MemStats.
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	statsPath := filepath.Join(dir, fmt.Sprintf("memstats_%s_%d_%d.txt", label, pid, ts))
+	os.WriteFile(statsPath, []byte(fmt.Sprintf(
+		"HeapInuse=%dMB HeapIdle=%dMB HeapSys=%dMB StackSys=%dMB Sys=%dMB NumGC=%d\n",
+		m.HeapInuse>>20, m.HeapIdle>>20, m.HeapSys>>20, m.StackInuse>>20, m.Sys>>20, m.NumGC,
+	)), 0644)
+
+	// Write full pprof profile every 100 calls (expensive due to gzip).
+	if profileCount.Add(1)%100 == 1 {
+		profPath := filepath.Join(dir, fmt.Sprintf("heap_%s_%d_%d.prof", label, pid, ts))
+		f, err := os.Create(profPath)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		pprof.WriteHeapProfile(f)
 	}
-	defer f.Close()
-	pprof.WriteHeapProfile(f)
 }
