@@ -180,9 +180,9 @@ func NewChunker(r io.Reader, min, avg, max uint64) (Chunker, error) {
 func (c *Chunker) Release() {
 	if c.backingBuf != nil {
 		b := c.backingBuf
-		chunkerBufPool.Put(b)
 		c.backingBuf = nil
 		c.buf = nil
+		chunkerBufPool.Put(b)
 	}
 }
 
