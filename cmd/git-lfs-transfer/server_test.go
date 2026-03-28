@@ -59,7 +59,7 @@ func TestVersionNegotiation(t *testing.T) {
 	srv := testServer(t, "download")
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		// quit
 		w.WritePacketText("quit")
@@ -98,7 +98,7 @@ func TestBatchDownloadExistingObject(t *testing.T) {
 
 	// Now test batch download.
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		// batch
 		w.WritePacketText("batch")
@@ -144,7 +144,7 @@ func TestBatchDownloadMissingObject(t *testing.T) {
 
 	fakeOID := strings.Repeat("ab", 32)
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
 		w.WriteDelim()
@@ -173,7 +173,7 @@ func TestBatchUploadNewObject(t *testing.T) {
 
 	fakeOID := strings.Repeat("cd", 32)
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
 		w.WriteDelim()
@@ -206,7 +206,7 @@ func TestPutAndGetObject(t *testing.T) {
 
 	// Upload via put-object.
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		// put-object
 		w.WritePacketText(fmt.Sprintf("put-object %s", oid))
@@ -240,7 +240,7 @@ func TestPutAndGetObject(t *testing.T) {
 	// Now download via get-object.
 	srv.operation = "download"
 	out = runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("get-object %s", oid))
 		w.WriteFlush()
@@ -286,7 +286,7 @@ func TestVerifyObject(t *testing.T) {
 
 	// verify-object with correct size.
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("verify-object %s", oid))
 		w.WritePacketText(fmt.Sprintf("size=%d", size))
@@ -310,7 +310,7 @@ func TestVerifyObjectSizeMismatch(t *testing.T) {
 	oid, _ := uploadTestObject(t, srv, data)
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("verify-object %s", oid))
 		w.WritePacketText("size=999999")
@@ -332,7 +332,7 @@ func TestVerifyObjectNotFound(t *testing.T) {
 
 	fakeOID := strings.Repeat("ee", 32)
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("verify-object %s", fakeOID))
 		w.WritePacketText("size=100")
@@ -387,7 +387,7 @@ func TestVerifyObjectMissingChunk(t *testing.T) {
 
 	// verify-object should now return 404 (incomplete — missing chunk).
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("verify-object %s", oid))
 		w.WritePacketText(fmt.Sprintf("size=%d", size))
@@ -624,7 +624,7 @@ func TestUnknownCommand(t *testing.T) {
 	srv := testServer(t, "download")
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("unknown-cmd foo")
 		w.WriteFlush()
@@ -718,7 +718,7 @@ func TestPutObjectNegativeSize(t *testing.T) {
 	oid := strings.Repeat("aa", 32)
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("put-object " + oid)
 		w.WritePacketText("size=-1")
@@ -741,7 +741,7 @@ func TestPutObjectTooLarge(t *testing.T) {
 	tooBig := maxObjectSize + 1
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("put-object " + oid)
 		w.WritePacketText(fmt.Sprintf("size=%d", tooBig))
@@ -839,7 +839,7 @@ func TestGetObjectInvalidOID(t *testing.T) {
 
 	for _, badOID := range []string{"", "short", "../../etc/passwd" + strings.Repeat("a", 48), strings.Repeat("G", 64)} {
 		out := runSession(t, srv, func(w *pktline.Writer) {
-			w.WritePacketText("version 1")
+			w.WritePacketText("version=1")
 			w.WriteFlush()
 			w.WritePacketText("get-object " + badOID)
 			w.WriteFlush()
@@ -860,7 +860,7 @@ func TestPutObjectInvalidOID(t *testing.T) {
 	data := []byte("some data")
 	for _, badOID := range []string{"", "short", "../../etc/shadow" + strings.Repeat("a", 48), strings.Repeat("G", 64)} {
 		out := runSession(t, srv, func(w *pktline.Writer) {
-			w.WritePacketText("version 1")
+			w.WritePacketText("version=1")
 			w.WriteFlush()
 			w.WritePacketText("put-object " + badOID)
 			w.WritePacketText(fmt.Sprintf("size=%d", len(data)))
@@ -883,7 +883,7 @@ func TestVerifyObjectInvalidOID(t *testing.T) {
 
 	for _, badOID := range []string{"", "short", strings.Repeat("G", 64)} {
 		out := runSession(t, srv, func(w *pktline.Writer) {
-			w.WritePacketText("version 1")
+			w.WritePacketText("version=1")
 			w.WriteFlush()
 			w.WritePacketText("verify-object " + badOID)
 			w.WritePacketText("size=10")
@@ -906,7 +906,7 @@ func TestBatchInvalidOIDReturnsError(t *testing.T) {
 	badOIDStr := "../../etc/passwd" + strings.Repeat("a", 48) // 64 chars but contains non-hex
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
 		w.WriteDelim()
@@ -931,7 +931,7 @@ func TestBatchShortLineReturnsError(t *testing.T) {
 	validOIDStr := strings.Repeat("ab", 32)
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
 		w.WriteDelim()
@@ -953,7 +953,7 @@ func TestBatchNegativeSizeReturnsError(t *testing.T) {
 	validOIDStr := strings.Repeat("cd", 32)
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
 		w.WriteDelim()
@@ -975,7 +975,7 @@ func TestBatchNonNumericSizeReturnsError(t *testing.T) {
 	validOIDStr := strings.Repeat("ef", 32)
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
 		w.WriteDelim()
@@ -997,7 +997,7 @@ func TestBatchValidSizeSucceeds(t *testing.T) {
 	validOIDStr := strings.Repeat("12", 32)
 
 	out := runSession(t, srv, func(w *pktline.Writer) {
-		w.WritePacketText("version 1")
+		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
 		w.WriteDelim()

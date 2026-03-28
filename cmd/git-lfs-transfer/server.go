@@ -94,15 +94,18 @@ func (s *Server) negotiateVersion() error {
 		return fmt.Errorf("reading version request: %w", err)
 	}
 
-	// Expect "version <N>"
-	if !strings.HasPrefix(line, "version ") {
+	// Accept both "version <N>" (space) and "version=<N>" (equals).
+	var version string
+	if strings.HasPrefix(line, "version ") {
+		version = strings.TrimPrefix(line, "version ")
+	} else if strings.HasPrefix(line, "version=") {
+		version = strings.TrimPrefix(line, "version=")
+	} else {
 		if err := s.w.WriteErrorStatus(400, "expected version request"); err != nil {
 			return err
 		}
 		return fmt.Errorf("unexpected line: %q", line)
 	}
-
-	version := strings.TrimPrefix(line, "version ")
 	// Consume flush-pkt after version line.
 	if _, err := s.r.ReadPacket(); !errors.Is(err, pktline.ErrFlush) {
 		return fmt.Errorf("expected flush after version request, got: %v", err)
