@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -156,6 +157,81 @@ type ChunkerInterface interface {
 }
 
 func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration) (Index, error) {
+	// Use global worker pool if initialized; otherwise fall back to
+	// legacy per-call goroutines.
+	if pool := getWorkerPool(); pool != nil {
+		return chunkStreamPooled(ctx, c, ws, pool, sps, propTime)
+	}
+	return chunkStreamLegacy(ctx, c, ws, n, sps, propTime)
+}
+
+// chunkStreamPooled uses the global WorkerPool.  Chunk hashing is done by
+// CPU-bound process workers; storage (compress + I/O) by I/O-bound storage
+// workers.  All concurrent ChunkStream callers share the same pools.
+func chunkStreamPooled(ctx context.Context, c ChunkerInterface, ws WriteStore, pool *WorkerPool, sps SafePruneStore, propTime time.Duration) (Index, error) {
+	var s *ChunkStorage
+	if sps != nil {
+		s = NewChunkStorageWithPruning(ws, sps)
+	} else {
+		s = NewChunkStorage(ws)
+	}
+
+	var (
+		mu      sync.Mutex
+		results = make(map[int]IndexChunk)
+		wg      sync.WaitGroup
+		errPtr  atomic.Pointer[error]
+	)
+
+	recordResult := func(num int, r IndexChunk) {
+		mu.Lock()
+		results[num] = r
+		mu.Unlock()
+	}
+
+	var num int
+	for {
+		start, b, err := c.Next()
+		if err != nil {
+			return Index{}, err
+		}
+		if len(b) == 0 {
+			break
+		}
+
+		chunk := copyChunkData(b)
+		wg.Add(1)
+
+		select {
+		case <-ctx.Done():
+			chunk.Release()
+			wg.Done()
+			goto done
+		case pool.processQ <- processTask{
+			chunk:    chunk,
+			start:    start,
+			num:      num,
+			store:    s,
+			record:   recordResult,
+			wg:       &wg,
+			firstErr: &errPtr,
+			storageQ: pool.storageQ,
+		}:
+		}
+		num++
+	}
+done:
+	wg.Wait()
+
+	if ep := errPtr.Load(); ep != nil {
+		return Index{}, *ep
+	}
+
+	return buildIndex(c, results, s, sps, ctx, propTime)
+}
+
+// chunkStreamLegacy is the original goroutine-per-call implementation.
+func chunkStreamLegacy(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, sps SafePruneStore, propTime time.Duration) (Index, error) {
 	type chunkJob struct {
 		num   int
 		start uint64
@@ -181,8 +257,6 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 		results[num] = r
 	}
 
-	// Start the workers responsible for checksum calculation, compression and
-	// storage (if required). Each job comes with a chunk number for sorting later
 	for range n {
 		g.Go(func() error {
 			for c := range in {
@@ -204,8 +278,6 @@ func ChunkStream(ctx context.Context, c ChunkerInterface, ws WriteStore, n int, 
 		})
 	}
 
-	// Feed the workers. The chunker reuses its internal backing buffer, so
-	// we must copy each chunk's data before sending it to workers.
 	var num int
 loop:
 	for {
@@ -217,18 +289,7 @@ loop:
 			break
 		}
 
-		chunk := getPooledChunk()
-		if chunk != nil {
-			if len(b) > cap(chunk.dataBuf) {
-				chunk.growStorageBuf(len(b))
-			}
-			chunk.data = chunk.dataBuf[:len(b)]
-			copy(chunk.data, b)
-		} else {
-			clone := make([]byte, len(b))
-			copy(clone, b)
-			chunk = NewChunk(clone)
-		}
+		chunk := copyChunkData(b)
 
 		select {
 		case <-gCtx.Done():
@@ -243,6 +304,30 @@ loop:
 		return Index{}, err
 	}
 
+	return buildIndex(c, results, s, sps, ctx, propTime)
+}
+
+// copyChunkData copies chunk bytes from the chunker's reusable buffer into
+// a pooled or freshly allocated Chunk.
+func copyChunkData(b []byte) *Chunk {
+	chunk := getPooledChunk()
+	if chunk != nil {
+		if len(b) > cap(chunk.dataBuf) {
+			chunk.growStorageBuf(len(b))
+		}
+		chunk.data = chunk.dataBuf[:len(b)]
+		copy(chunk.data, b)
+	} else {
+		clone := make([]byte, len(b))
+		copy(clone, b)
+		chunk = NewChunk(clone)
+	}
+	return chunk
+}
+
+// buildIndex assembles the final Index from collected results and handles
+// safe-pruning pre-commit if needed.
+func buildIndex(c ChunkerInterface, results map[int]IndexChunk, s *ChunkStorage, sps SafePruneStore, ctx context.Context, propTime time.Duration) (Index, error) {
 	chunks := make([]IndexChunk, len(results))
 	for i := 0; i < len(results); i++ {
 		chunks[i] = results[i]
