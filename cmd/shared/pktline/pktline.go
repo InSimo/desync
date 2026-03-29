@@ -36,9 +36,11 @@ type Reader struct {
 }
 
 // NewReader returns a Reader that reads pkt-line packets from r.
+// The buffer is sized to hold a full pkt-line packet (64KB) to
+// minimize read syscalls.
 func NewReader(r io.Reader) *Reader {
 	return &Reader{
-		r:   bufio.NewReader(r),
+		r:   bufio.NewReaderSize(r, 64*1024),
 		buf: make([]byte, 4),
 	}
 }
