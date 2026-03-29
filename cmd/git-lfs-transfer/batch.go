@@ -121,7 +121,7 @@ func (s *Server) handleBatch(ctx context.Context, _ string) error {
 		}
 	}
 
-	return s.w.WriteFlush()
+	return s.writeFlush()
 }
 
 // batchAction determines the action for a single OID based on the operation

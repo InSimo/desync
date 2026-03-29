@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/trace"
 	"strconv"
 	"strings"
 	"time"
@@ -32,8 +34,9 @@ type Server struct {
 	safePropTime   time.Duration
 	gate           *bytelimit.Gate // cross-process in-flight byte limit; may be nil
 
-	r *pktline.Reader
-	w *pktline.Writer
+	r     *pktline.Reader
+	w     *pktline.Writer
+	flush *bufio.Writer
 
 	// logDir is the directory for per-session error log files.  Empty
 	// disables logging (e.g. in tests).  The log file and directory are
@@ -70,7 +73,22 @@ func (s *Server) logf(format string, args ...any) {
 
 func (s *Server) Run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	s.r = pktline.NewReader(stdin)
-	s.w = pktline.NewWriter(stdout)
+	bw := bufio.NewWriterSize(stdout, 64*1024)
+	s.w = pktline.NewWriter(bw)
+	s.flush = bw
+
+	// Optional execution tracing: write to LFS_TRANSFER_TRACE_DIR/<pid>.trace.
+	if traceDir := os.Getenv("LFS_TRANSFER_TRACE_DIR"); traceDir != "" {
+		os.MkdirAll(traceDir, 0o755)
+		path := fmt.Sprintf("%s/%d.trace", traceDir, os.Getpid())
+		if f, err := os.Create(path); err == nil {
+			trace.Start(f)
+			defer func() {
+				trace.Stop()
+				f.Close()
+			}()
+		}
+	}
 
 	if err := s.advertiseCapabilities(); err != nil {
 		return fmt.Errorf("capability advertisement: %w", err)
@@ -81,11 +99,19 @@ func (s *Server) Run(ctx context.Context, stdin io.Reader, stdout io.Writer) err
 	return s.commandLoop(ctx)
 }
 
+// writeFlush sends a pkt-line flush packet and flushes the buffered writer.
+func (s *Server) writeFlush() error {
+	if err := s.w.WriteFlush(); err != nil {
+		return err
+	}
+	return s.flush.Flush()
+}
+
 func (s *Server) advertiseCapabilities() error {
 	if err := s.w.WritePacketText("version=1"); err != nil {
 		return err
 	}
-	return s.w.WriteFlush()
+	return s.writeFlush()
 }
 
 func (s *Server) negotiateVersion() error {
@@ -119,7 +145,7 @@ func (s *Server) negotiateVersion() error {
 	if err := s.w.WriteStatus(200); err != nil {
 		return err
 	}
-	return s.w.WriteFlush()
+	return s.writeFlush()
 }
 
 func (s *Server) commandLoop(ctx context.Context) error {
@@ -138,7 +164,7 @@ func (s *Server) commandLoop(ctx context.Context) error {
 			// Consume flush-pkt.
 			s.r.ReadPacket()
 			s.w.WriteStatus(200)
-			s.w.WriteFlush()
+			s.writeFlush()
 			return nil
 
 		case "batch":

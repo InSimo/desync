@@ -111,7 +111,7 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	}
 
 	cmdshared.WriteHeapProfile("get_after_stream")
-	return s.w.WriteFlush()
+	return s.writeFlush()
 }
 
 // handlePutObject receives an LFS object from the client, chunks it using
@@ -240,7 +240,7 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 	if err := s.w.WriteStatus(200); err != nil {
 		return err
 	}
-	return s.w.WriteFlush()
+	return s.writeFlush()
 }
 
 // handleVerifyObject confirms an object exists, its size matches, and all
@@ -314,7 +314,7 @@ func (s *Server) handleVerifyObject(ctx context.Context, oid string) error {
 	if err := s.w.WriteStatus(200); err != nil {
 		return err
 	}
-	return s.w.WriteFlush()
+	return s.writeFlush()
 }
 
 // drainBinaryData reads and discards binary pkt-line packets until flush.
