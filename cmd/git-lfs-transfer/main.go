@@ -106,6 +106,7 @@ func run() error {
 	if cfg.Defaults.Concurrency > 0 {
 		cmdOpt.N = cfg.Defaults.Concurrency
 	}
+	cmdOpt.ConnPoolSize = cfg.ResolveConnPoolSize(0)
 
 	// Ensure local store directories exist (created on first use).
 	if err := ensureLocalDir(storeURL); err != nil {

@@ -45,6 +45,7 @@ type Defaults struct {
 	Concurrency    int   `json:"concurrency,omitempty"`
 	MaxInFlight    int64 `json:"max-in-flight,omitempty"`
 	MaxStorageOps  int32 `json:"max-storage-ops,omitempty"`
+	ConnPoolSize   int   `json:"conn-pool-size,omitempty"`
 }
 
 // Config is used to hold the global tool configuration. It's used to customize
@@ -205,6 +206,18 @@ func (c Config) ResolveMaxStorageOps(cli int32) int32 {
 		if v, err := strconv.ParseInt(env, 10, 32); err == nil {
 			return int32(v)
 		}
+	}
+	return 0
+}
+
+// ResolveConnPoolSize returns cli if non-zero, otherwise c.Defaults.ConnPoolSize,
+// otherwise 0 (meaning use concurrency as the pool size, preserving previous behavior).
+func (c Config) ResolveConnPoolSize(cli int) int {
+	if cli != 0 {
+		return cli
+	}
+	if c.Defaults.ConnPoolSize != 0 {
+		return c.Defaults.ConnPoolSize
 	}
 	return 0
 }

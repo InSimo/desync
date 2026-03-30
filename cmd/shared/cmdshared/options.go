@@ -83,6 +83,7 @@ func AddStoreOptions(o *CmdStoreOptions, f *pflag.FlagSet) {
 	f.DurationVarP(&o.ErrorRetryBaseInterval, "error-retry-base-interval", "b", desync.DefaultErrorRetryBaseInterval, "initial retry delay, increases linearly with each subsequent attempt")
 	f.BoolVar(&o.SafePruning, "safe-pruning", false, "enable safe concurrent pruning protocol (see doc/safe-pruning.md)")
 	f.DurationVar(&o.SafePropagationTime, "safe-propagation-time", desync.DefaultSafePropagationTime, "max store write propagation delay for safe-pruning protocol")
+	f.IntVar(&o.ConnPoolSize, "conn-pool-size", 0, "S3/HTTP connection pool size per store (default: same as concurrency)")
 
 	o.FlagSet = *f
 }
