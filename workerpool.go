@@ -29,9 +29,10 @@ type processTask struct {
 	storageQ chan<- storageTask
 
 	// Download: decompress chunk, send result to caller.
-	// Fields used: getChunk, getData, resultCh.
+	// Fields used: getChunk, getData, getIdx, resultCh.
 	getChunk *Chunk              // compressed chunk from storage
 	getData  bool                // true = download (decompress) task
+	getIdx   int                 // caller-provided index
 	resultCh chan<- FetchResult  // where to send decompressed result
 }
 
@@ -47,12 +48,14 @@ type storageTask struct {
 	getID    ChunkID             // chunk to fetch
 	getStore Store               // store to fetch from
 	getData  bool                // true = download (fetch) task
+	getIdx   int                 // caller-provided index, passed through to FetchResult
 	processQ chan<- processTask  // where to enqueue decompress followup
 	resultCh chan<- FetchResult  // passed through to the decompress task
 }
 
 // FetchResult carries a decompressed chunk from the download pipeline.
 type FetchResult struct {
+	Idx   int    // caller-provided index, passed through unchanged
 	Chunk *Chunk
 	Data  []byte
 	Err   error
@@ -66,11 +69,13 @@ func GetWorkerPool() *WorkerPool {
 
 // SubmitFetch enqueues a chunk fetch+decompress task. The result is sent
 // to resultCh when both the storage fetch and decompression are complete.
-func (p *WorkerPool) SubmitFetch(id ChunkID, store Store, resultCh chan<- FetchResult) {
+// idx is passed through unchanged in FetchResult.Idx.
+func (p *WorkerPool) SubmitFetch(id ChunkID, store Store, idx int, resultCh chan<- FetchResult) {
 	p.storageQ <- storageTask{
 		getID:    id,
 		getStore: store,
 		getData:  true,
+		getIdx:   idx,
 		processQ: p.processQ,
 		resultCh: resultCh,
 	}
@@ -143,6 +148,7 @@ func (p *WorkerPool) processWorker() {
 			// Download: decompress chunk and send result.
 			data, err := task.getChunk.Data()
 			task.resultCh <- FetchResult{
+				Idx:   task.getIdx,
 				Chunk: task.getChunk,
 				Data:  data,
 				Err:   err,
@@ -174,12 +180,13 @@ func (p *WorkerPool) storageWorker() {
 			// Download: fetch chunk from store, enqueue decompress.
 			chunk, err := task.getStore.GetChunk(task.getID)
 			if err != nil {
-				task.resultCh <- FetchResult{Err: err}
+				task.resultCh <- FetchResult{Idx: task.getIdx, Err: err}
 				continue
 			}
 			task.processQ <- processTask{
 				getChunk: chunk,
 				getData:  true,
+				getIdx:   task.getIdx,
 				resultCh: task.resultCh,
 			}
 			continue
