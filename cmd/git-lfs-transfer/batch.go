@@ -2,14 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
-
-	"github.com/folbricht/desync/cmd/shared/pktline"
 )
 
 // handleBatch implements the "batch" command. It reads OID+size lines from the
@@ -38,14 +35,14 @@ func (s *Server) handleBatch(ctx context.Context, _ string) error {
 	var malformedEntry string // first malformed size or short line
 	if hasDelim {
 		for {
-			data, err := s.r.ReadPacket()
-			if errors.Is(err, pktline.ErrFlush) {
-				break
-			}
+			data, length, err := s.pl.ReadPacketWithLength()
 			if err != nil {
 				return fmt.Errorf("reading batch OID lines: %w", err)
 			}
-			line := string(data)
+			if length == 0 { // flush-pkt
+				break
+			}
+			line := strings.TrimSuffix(string(data), "\n")
 			parts := strings.Fields(line)
 			if len(parts) == 0 {
 				continue // skip blank lines silently
@@ -71,20 +68,20 @@ func (s *Server) handleBatch(ctx context.Context, _ string) error {
 	}
 
 	if invalidOID != "" {
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("invalid OID %q", invalidOID))
+		return s.pl.WriteErrorStatus(400, fmt.Sprintf("invalid OID %q", invalidOID))
 	}
 	if malformedEntry != "" {
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("malformed batch entry %q", malformedEntry))
+		return s.pl.WriteErrorStatus(400, fmt.Sprintf("malformed batch entry %q", malformedEntry))
 	}
 
 	// Write response header.
-	if err := s.w.WriteStatus(200); err != nil {
+	if err := s.pl.WriteStatus(200); err != nil {
 		return err
 	}
-	if err := s.w.WritePacketText("hash-algo=sha256"); err != nil {
+	if err := s.pl.WritePacketText("hash-algo=sha256"); err != nil {
 		return err
 	}
-	if err := s.w.WriteDelim(); err != nil {
+	if err := s.pl.WriteDelim(); err != nil {
 		return err
 	}
 
@@ -116,12 +113,12 @@ func (s *Server) handleBatch(ctx context.Context, _ string) error {
 	// Write responses in original entry order.
 	for i, e := range entries {
 		line := fmt.Sprintf("%s %d %s", e.oid, e.size, actions[i])
-		if err := s.w.WritePacketText(line); err != nil {
+		if err := s.pl.WritePacketText(line); err != nil {
 			return err
 		}
 	}
 
-	return s.writeFlush()
+	return s.pl.WriteFlush()
 }
 
 // batchAction determines the action for a single OID based on the operation

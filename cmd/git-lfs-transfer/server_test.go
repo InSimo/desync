@@ -2,10 +2,10 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,10 +46,10 @@ func testServer(t *testing.T, operation string) *Server {
 
 // runSession writes the client-side pkt-line messages, runs the server, and
 // returns the server's output.
-func runSession(t *testing.T, srv *Server, clientInput func(w *pktline.Writer)) []byte {
+func runSession(t *testing.T, srv *Server, clientInput func(w *pktline.Pktline)) []byte {
 	t.Helper()
 	var clientBuf, serverBuf bytes.Buffer
-	clientInput(pktline.NewWriter(&clientBuf))
+	clientInput(pktline.New(bytes.NewReader(nil), &clientBuf))
 	err := srv.Run(context.Background(), &clientBuf, &serverBuf)
 	require.NoError(t, err)
 	return serverBuf.Bytes()
@@ -58,7 +58,7 @@ func runSession(t *testing.T, srv *Server, clientInput func(w *pktline.Writer)) 
 func TestVersionNegotiation(t *testing.T) {
 	srv := testServer(t, "download")
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		// quit
@@ -66,28 +66,31 @@ func TestVersionNegotiation(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 
 	// Capability advertisement.
 	cap, err := r.ReadPacketText()
 	require.NoError(t, err)
 	require.Equal(t, "version=1", cap)
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrFlush)
+	_, length, err := r.ReadPacketWithLength()
+	require.NoError(t, err)
+	require.Equal(t, 0, length)
 
 	// Version accepted.
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
 	require.Equal(t, "status 200", status)
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrFlush)
+	_, length, err = r.ReadPacketWithLength()
+	require.NoError(t, err)
+	require.Equal(t, 0, length)
 
 	// Quit response.
 	status, err = r.ReadPacketText()
 	require.NoError(t, err)
 	require.Equal(t, "status 200", status)
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrFlush)
+	_, length, err = r.ReadPacketWithLength()
+	require.NoError(t, err)
+	require.Equal(t, 0, length)
 }
 
 func TestBatchDownloadExistingObject(t *testing.T) {
@@ -97,7 +100,7 @@ func TestBatchDownloadExistingObject(t *testing.T) {
 	oid, size := uploadTestObject(t, srv, []byte("hello world, this is a test file for LFS transfer"))
 
 	// Now test batch download.
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		// batch
@@ -110,7 +113,7 @@ func TestBatchDownloadExistingObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	// Batch response.
@@ -123,8 +126,9 @@ func TestBatchDownloadExistingObject(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hash-algo=sha256", algo)
 
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrDelim)
+	_, length, err := r.ReadPacketWithLength()
+	require.NoError(t, err)
+	require.Equal(t, 1, length)
 
 	// OID response line.
 	line, err := r.ReadPacketText()
@@ -135,15 +139,16 @@ func TestBatchDownloadExistingObject(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("%d", size), parts[1])
 	require.Equal(t, "download", parts[2])
 
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrFlush)
+	_, length, err = r.ReadPacketWithLength()
+	require.NoError(t, err)
+	require.Equal(t, 0, length)
 }
 
 func TestBatchDownloadMissingObject(t *testing.T) {
 	srv := testServer(t, "download")
 
 	fakeOID := strings.Repeat("ab", 32)
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
@@ -154,7 +159,7 @@ func TestBatchDownloadMissingObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -172,7 +177,7 @@ func TestBatchUploadNewObject(t *testing.T) {
 	srv := testServer(t, "upload")
 
 	fakeOID := strings.Repeat("cd", 32)
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
@@ -183,7 +188,7 @@ func TestBatchUploadNewObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -205,7 +210,7 @@ func TestPutAndGetObject(t *testing.T) {
 	size := len(data)
 
 	// Upload via put-object.
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		// put-object
@@ -218,7 +223,7 @@ func TestPutAndGetObject(t *testing.T) {
 			if end > len(data) {
 				end = len(data)
 			}
-			w.WriteBinaryPacket(data[off:end])
+			w.WritePacket(data[off:end])
 			off = end
 		}
 		w.WriteFlush()
@@ -227,19 +232,20 @@ func TestPutAndGetObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	// put-object response.
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
 	require.Equal(t, "status 200", status)
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrFlush)
+	_, length, err := r.ReadPacketWithLength()
+	require.NoError(t, err)
+	require.Equal(t, 0, length)
 
 	// Now download via get-object.
 	srv.operation = "download"
-	out = runSession(t, srv, func(w *pktline.Writer) {
+	out = runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("get-object %s", oid))
@@ -248,7 +254,7 @@ func TestPutAndGetObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r = pktline.NewReader(bytes.NewReader(out))
+	r = pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	// get-object response.
@@ -260,14 +266,15 @@ func TestPutAndGetObject(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, fmt.Sprintf("size=%d", size), sizeArg)
 
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrDelim)
+	_, length, err = r.ReadPacketWithLength()
+	require.NoError(t, err)
+	require.Equal(t, 1, length)
 
 	// Read binary data.
 	var received bytes.Buffer
 	for {
-		pkt, readErr := r.ReadRawPacket()
-		if errors.Is(readErr, pktline.ErrFlush) {
+		pkt, pktLen, readErr := r.ReadPacketWithLength()
+		if pktLen == 0 {
 			break
 		}
 		require.NoError(t, readErr)
@@ -285,7 +292,7 @@ func TestVerifyObject(t *testing.T) {
 	oid, size := uploadTestObject(t, srv, data)
 
 	// verify-object with correct size.
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("verify-object %s", oid))
@@ -295,7 +302,7 @@ func TestVerifyObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -309,7 +316,7 @@ func TestVerifyObjectSizeMismatch(t *testing.T) {
 	data := []byte("verify mismatch test data that should be somewhat long")
 	oid, _ := uploadTestObject(t, srv, data)
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("verify-object %s", oid))
@@ -319,7 +326,7 @@ func TestVerifyObjectSizeMismatch(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -331,7 +338,7 @@ func TestVerifyObjectNotFound(t *testing.T) {
 	srv := testServer(t, "upload")
 
 	fakeOID := strings.Repeat("ee", 32)
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("verify-object %s", fakeOID))
@@ -341,7 +348,7 @@ func TestVerifyObjectNotFound(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -386,7 +393,7 @@ func TestVerifyObjectMissingChunk(t *testing.T) {
 	require.NoError(t, os.Remove(chunkFile))
 
 	// verify-object should now return 404 (incomplete — missing chunk).
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText(fmt.Sprintf("verify-object %s", oid))
@@ -396,7 +403,7 @@ func TestVerifyObjectMissingChunk(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -623,7 +630,7 @@ func TestResolveConfigNoGitRepo(t *testing.T) {
 func TestUnknownCommand(t *testing.T) {
 	srv := testServer(t, "download")
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("unknown-cmd foo")
@@ -632,7 +639,7 @@ func TestUnknownCommand(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -717,7 +724,7 @@ func TestPutObjectNegativeSize(t *testing.T) {
 	srv := testServer(t, "upload")
 	oid := strings.Repeat("aa", 32)
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("put-object " + oid)
@@ -728,7 +735,7 @@ func TestPutObjectNegativeSize(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -740,7 +747,7 @@ func TestPutObjectTooLarge(t *testing.T) {
 	oid := strings.Repeat("bb", 32)
 	tooBig := maxObjectSize + 1
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("put-object " + oid)
@@ -751,7 +758,7 @@ func TestPutObjectTooLarge(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -838,7 +845,7 @@ func TestGetObjectInvalidOID(t *testing.T) {
 	srv := testServer(t, "download")
 
 	for _, badOID := range []string{"", "short", "../../etc/passwd" + strings.Repeat("a", 48), strings.Repeat("G", 64)} {
-		out := runSession(t, srv, func(w *pktline.Writer) {
+		out := runSession(t, srv, func(w *pktline.Pktline) {
 			w.WritePacketText("version=1")
 			w.WriteFlush()
 			w.WritePacketText("get-object " + badOID)
@@ -846,7 +853,7 @@ func TestGetObjectInvalidOID(t *testing.T) {
 			w.WritePacketText("quit")
 			w.WriteFlush()
 		})
-		r := pktline.NewReader(bytes.NewReader(out))
+		r := pktline.New(bytes.NewReader(out), io.Discard)
 		skipCapAndVersion(t, r)
 		status, err := r.ReadPacketText()
 		require.NoError(t, err)
@@ -859,18 +866,18 @@ func TestPutObjectInvalidOID(t *testing.T) {
 
 	data := []byte("some data")
 	for _, badOID := range []string{"", "short", "../../etc/shadow" + strings.Repeat("a", 48), strings.Repeat("G", 64)} {
-		out := runSession(t, srv, func(w *pktline.Writer) {
+		out := runSession(t, srv, func(w *pktline.Pktline) {
 			w.WritePacketText("version=1")
 			w.WriteFlush()
 			w.WritePacketText("put-object " + badOID)
 			w.WritePacketText(fmt.Sprintf("size=%d", len(data)))
 			w.WriteDelim()
-			w.WriteBinaryPacket(data)
+			w.WritePacket(data)
 			w.WriteFlush()
 			w.WritePacketText("quit")
 			w.WriteFlush()
 		})
-		r := pktline.NewReader(bytes.NewReader(out))
+		r := pktline.New(bytes.NewReader(out), io.Discard)
 		skipCapAndVersion(t, r)
 		status, err := r.ReadPacketText()
 		require.NoError(t, err)
@@ -882,7 +889,7 @@ func TestVerifyObjectInvalidOID(t *testing.T) {
 	srv := testServer(t, "upload")
 
 	for _, badOID := range []string{"", "short", strings.Repeat("G", 64)} {
-		out := runSession(t, srv, func(w *pktline.Writer) {
+		out := runSession(t, srv, func(w *pktline.Pktline) {
 			w.WritePacketText("version=1")
 			w.WriteFlush()
 			w.WritePacketText("verify-object " + badOID)
@@ -891,7 +898,7 @@ func TestVerifyObjectInvalidOID(t *testing.T) {
 			w.WritePacketText("quit")
 			w.WriteFlush()
 		})
-		r := pktline.NewReader(bytes.NewReader(out))
+		r := pktline.New(bytes.NewReader(out), io.Discard)
 		skipCapAndVersion(t, r)
 		status, err := r.ReadPacketText()
 		require.NoError(t, err)
@@ -905,7 +912,7 @@ func TestBatchInvalidOIDReturnsError(t *testing.T) {
 	validOIDStr := strings.Repeat("ab", 32)
 	badOIDStr := "../../etc/passwd" + strings.Repeat("a", 48) // 64 chars but contains non-hex
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
@@ -917,7 +924,7 @@ func TestBatchInvalidOIDReturnsError(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 
 	// Whole batch must fail with 400 when any OID is invalid.
@@ -930,7 +937,7 @@ func TestBatchShortLineReturnsError(t *testing.T) {
 	srv := testServer(t, "upload")
 	validOIDStr := strings.Repeat("ab", 32)
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
@@ -941,7 +948,7 @@ func TestBatchShortLineReturnsError(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -952,7 +959,7 @@ func TestBatchNegativeSizeReturnsError(t *testing.T) {
 	srv := testServer(t, "upload")
 	validOIDStr := strings.Repeat("cd", 32)
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
@@ -963,7 +970,7 @@ func TestBatchNegativeSizeReturnsError(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -974,7 +981,7 @@ func TestBatchNonNumericSizeReturnsError(t *testing.T) {
 	srv := testServer(t, "upload")
 	validOIDStr := strings.Repeat("ef", 32)
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
@@ -985,7 +992,7 @@ func TestBatchNonNumericSizeReturnsError(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -996,7 +1003,7 @@ func TestBatchValidSizeSucceeds(t *testing.T) {
 	srv := testServer(t, "upload")
 	validOIDStr := strings.Repeat("12", 32)
 
-	out := runSession(t, srv, func(w *pktline.Writer) {
+	out := runSession(t, srv, func(w *pktline.Pktline) {
 		w.WritePacketText("version=1")
 		w.WriteFlush()
 		w.WritePacketText("batch")
@@ -1008,7 +1015,7 @@ func TestBatchValidSizeSucceeds(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.NewReader(bytes.NewReader(out))
+	r := pktline.New(bytes.NewReader(out), io.Discard)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -1055,16 +1062,18 @@ func generateTestData(size int) []byte {
 
 // skipCapAndVersion reads and discards the capability advertisement and
 // version response from the server output.
-func skipCapAndVersion(t *testing.T, r *pktline.Reader) {
+func skipCapAndVersion(t *testing.T, r *pktline.Pktline) {
 	t.Helper()
 	// Capability: "version=1" + flush.
 	_, err := r.ReadPacket()
 	require.NoError(t, err)
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrFlush)
-	// Version accepted: "status 200" + flush.
-	_, err = r.ReadPacket()
+	_, length, err := r.ReadPacketWithLength()
 	require.NoError(t, err)
-	_, err = r.ReadPacket()
-	require.ErrorIs(t, err, pktline.ErrFlush)
+	require.Equal(t, 0, length)
+	// Version accepted: "status 200" + flush.
+	_, length, err = r.ReadPacketWithLength()
+	require.NoError(t, err)
+	_, length, err = r.ReadPacketWithLength()
+	require.NoError(t, err)
+	require.Equal(t, 0, length)
 }

@@ -402,15 +402,14 @@ func tryDelegate(repoPath string) error {
 // 403 error to the client, then returns an error so main exits non-zero.
 // Write errors are swallowed — delivering the rejection is best-effort.
 func rejectAndExit(msg string) error {
-	w := pktline.NewWriter(os.Stdout)
-	r := pktline.NewReader(os.Stdin)
+	pl := pktline.New(os.Stdin, os.Stdout)
 	// Advertise version=1 — client expects this first.
-	_ = w.WritePacketText("version=1")
-	_ = w.WriteFlush()
+	_ = pl.WritePacketText("version=1")
+	_ = pl.WriteFlush()
 	// Drain the client's "version 1" line and its trailing flush (best-effort).
-	_, _ = r.ReadPacketText()
-	_, _ = r.ReadPacket()
+	_, _ = pl.ReadPacketText()
+	_, _ = pl.ReadPacket()
 	// Send the protocol-level rejection.
-	_ = w.WriteErrorStatus(403, msg)
+	_ = pl.WriteErrorStatus(403, msg)
 	return fmt.Errorf("%s", msg)
 }

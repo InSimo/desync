@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,9 +32,7 @@ type Server struct {
 	safePropTime   time.Duration
 	gate           *bytelimit.Gate // cross-process in-flight byte limit; may be nil
 
-	r     *pktline.Reader
-	w     *pktline.Writer
-	flush *bufio.Writer
+	pl *pktline.Pktline
 
 	// logDir is the directory for per-session error log files.  Empty
 	// disables logging (e.g. in tests).  The log file and directory are
@@ -72,10 +68,7 @@ func (s *Server) logf(format string, args ...any) {
 }
 
 func (s *Server) Run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
-	s.r = pktline.NewReader(stdin)
-	bw := bufio.NewWriterSize(stdout, 64*1024)
-	s.w = pktline.NewWriter(bw)
-	s.flush = bw
+	s.pl = pktline.New(stdin, stdout)
 
 	// Optional execution tracing: write to LFS_TRANSFER_TRACE_DIR/<pid>.trace.
 	if traceDir := os.Getenv("LFS_TRANSFER_TRACE_DIR"); traceDir != "" {
@@ -99,23 +92,15 @@ func (s *Server) Run(ctx context.Context, stdin io.Reader, stdout io.Writer) err
 	return s.commandLoop(ctx)
 }
 
-// writeFlush sends a pkt-line flush packet and flushes the buffered writer.
-func (s *Server) writeFlush() error {
-	if err := s.w.WriteFlush(); err != nil {
-		return err
-	}
-	return s.flush.Flush()
-}
-
 func (s *Server) advertiseCapabilities() error {
-	if err := s.w.WritePacketText("version=1"); err != nil {
+	if err := s.pl.WritePacketText("version=1"); err != nil {
 		return err
 	}
-	return s.writeFlush()
+	return s.pl.WriteFlush()
 }
 
 func (s *Server) negotiateVersion() error {
-	line, err := s.r.ReadPacketText()
+	line, err := s.pl.ReadPacketText()
 	if err != nil {
 		return fmt.Errorf("reading version request: %w", err)
 	}
@@ -127,44 +112,46 @@ func (s *Server) negotiateVersion() error {
 	} else if strings.HasPrefix(line, "version=") {
 		version = strings.TrimPrefix(line, "version=")
 	} else {
-		if err := s.w.WriteErrorStatus(400, "expected version request"); err != nil {
+		if err := s.pl.WriteErrorStatus(400, "expected version request"); err != nil {
 			return err
 		}
 		return fmt.Errorf("unexpected line: %q", line)
 	}
 	// Consume flush-pkt after version line.
-	if _, err := s.r.ReadPacket(); !errors.Is(err, pktline.ErrFlush) {
-		return fmt.Errorf("expected flush after version request, got: %v", err)
+	if _, length, err := s.pl.ReadPacketWithLength(); err != nil {
+		return fmt.Errorf("expected flush after version request: %v", err)
+	} else if length != 0 {
+		return fmt.Errorf("expected flush after version request, got length %d", length)
 	}
 
 	if version != "1" {
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("unsupported version %q", version))
+		return s.pl.WriteErrorStatus(400, fmt.Sprintf("unsupported version %q", version))
 	}
 
 	// Accepted.
-	if err := s.w.WriteStatus(200); err != nil {
+	if err := s.pl.WriteStatus(200); err != nil {
 		return err
 	}
-	return s.writeFlush()
+	return s.pl.WriteFlush()
 }
 
 func (s *Server) commandLoop(ctx context.Context) error {
 	for {
-		line, err := s.r.ReadPacketText()
+		line, length, err := s.pl.ReadPacketTextWithLength()
 		if err != nil {
-			if errors.Is(err, pktline.ErrFlush) {
-				continue
-			}
 			return fmt.Errorf("reading command: %w", err)
+		}
+		if length <= 1 { // flush-pkt (0) or delim-pkt (1)
+			continue
 		}
 
 		cmd, arg, _ := strings.Cut(line, " ")
 		switch cmd {
 		case "quit":
 			// Consume flush-pkt.
-			s.r.ReadPacket()
-			s.w.WriteStatus(200)
-			s.writeFlush()
+			s.pl.ReadPacket()
+			s.pl.WriteStatus(200)
+			s.pl.WriteFlush()
 			return nil
 
 		case "batch":
@@ -190,7 +177,7 @@ func (s *Server) commandLoop(ctx context.Context) error {
 		default:
 			// Unknown command: read until flush, send error.
 			s.drainUntilFlush()
-			if err := s.w.WriteErrorStatus(400, fmt.Sprintf("unknown command %q", cmd)); err != nil {
+			if err := s.pl.WriteErrorStatus(400, fmt.Sprintf("unknown command %q", cmd)); err != nil {
 				return err
 			}
 		}
@@ -200,8 +187,8 @@ func (s *Server) commandLoop(ctx context.Context) error {
 // drainUntilFlush reads and discards packets until a flush-pkt.
 func (s *Server) drainUntilFlush() {
 	for {
-		_, err := s.r.ReadPacket()
-		if err != nil {
+		_, length, err := s.pl.ReadPacketWithLength()
+		if err != nil || length == 0 { // stop on error or flush-pkt
 			return
 		}
 	}
@@ -213,17 +200,17 @@ func (s *Server) drainUntilFlush() {
 func (s *Server) readArgs() (map[string]string, bool, error) {
 	args := make(map[string]string)
 	for {
-		data, err := s.r.ReadPacket()
-		if errors.Is(err, pktline.ErrFlush) {
-			return args, false, nil
-		}
-		if errors.Is(err, pktline.ErrDelim) {
-			return args, true, nil
-		}
+		data, length, err := s.pl.ReadPacketWithLength()
 		if err != nil {
 			return nil, false, err
 		}
-		line := string(data)
+		if length == 0 { // flush-pkt
+			return args, false, nil
+		}
+		if length == 1 { // delim-pkt
+			return args, true, nil
+		}
+		line := strings.TrimSuffix(string(data), "\n")
 		if k, v, ok := strings.Cut(line, "="); ok {
 			args[k] = v
 		}

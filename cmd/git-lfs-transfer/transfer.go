@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 
@@ -27,13 +26,13 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	_ = args // id, token — not used
 
 	if !validOID(oid) {
-		return s.w.WriteErrorStatus(404, fmt.Sprintf("invalid OID %q", oid))
+		return s.pl.WriteErrorStatus(404, fmt.Sprintf("invalid OID %q", oid))
 	}
 
 	indexName := oidIndexName(oid)
 	idx, err := s.indexStore.GetIndex(indexName)
 	if err != nil {
-		return s.w.WriteErrorStatus(404, fmt.Sprintf("object %s not found", oid))
+		return s.pl.WriteErrorStatus(404, fmt.Sprintf("object %s not found", oid))
 	}
 
 	size := indexTotalSize(idx)
@@ -42,19 +41,19 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	if s.gate != nil {
 		slot, err := s.gate.Acquire(ctx, int64(size))
 		if err != nil {
-			return s.w.WriteErrorStatus(503, fmt.Sprintf("in-flight limit: %v", err))
+			return s.pl.WriteErrorStatus(503, fmt.Sprintf("in-flight limit: %v", err))
 		}
 		defer slot.Release()
 	}
 
 	// Send success response with size before fetching any chunk data.
-	if err := s.w.WriteStatus(200); err != nil {
+	if err := s.pl.WriteStatus(200); err != nil {
 		return err
 	}
-	if err := s.w.WritePacketText(fmt.Sprintf("size=%d", size)); err != nil {
+	if err := s.pl.WritePacketText(fmt.Sprintf("size=%d", size)); err != nil {
 		return err
 	}
-	if err := s.w.WriteDelim(); err != nil {
+	if err := s.pl.WriteDelim(); err != nil {
 		return err
 	}
 
@@ -101,7 +100,7 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 			if n > len(data) {
 				n = len(data)
 			}
-			if err := s.w.WriteBinaryPacket(data[:n]); err != nil {
+			if err := s.pl.WritePacket(data[:n]); err != nil {
 				pc.chunk.Release()
 				return err
 			}
@@ -111,7 +110,7 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 	}
 
 	cmdshared.WriteHeapProfile("get_after_stream")
-	return s.writeFlush()
+	return s.pl.WriteFlush()
 }
 
 // handlePutObject receives an LFS object from the client, chunks it using
@@ -128,21 +127,21 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 
 	size, err := parseSize(args)
 	if err != nil {
-		return s.w.WriteErrorStatus(400, err.Error())
+		return s.pl.WriteErrorStatus(400, err.Error())
 	}
 
 	if !validOID(oid) {
 		if hasDelim {
 			s.drainBinaryData()
 		}
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("invalid OID %q", oid))
+		return s.pl.WriteErrorStatus(400, fmt.Sprintf("invalid OID %q", oid))
 	}
 
 	if size > maxObjectSize {
 		if hasDelim {
 			s.drainBinaryData()
 		}
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("object too large: %d bytes exceeds limit of %d", size, maxObjectSize))
+		return s.pl.WriteErrorStatus(400, fmt.Sprintf("object too large: %d bytes exceeds limit of %d", size, maxObjectSize))
 	}
 
 	// Acquire in-flight byte slot (blocks if over the cross-process limit).
@@ -152,7 +151,7 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 			if hasDelim {
 				s.drainBinaryData()
 			}
-			return s.w.WriteErrorStatus(503, fmt.Sprintf("in-flight limit: %v", err))
+			return s.pl.WriteErrorStatus(503, fmt.Sprintf("in-flight limit: %v", err))
 		}
 		defer slot.Release()
 	}
@@ -172,12 +171,12 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 			return nil
 		}
 		for {
-			data, readErr := s.r.ReadRawPacket()
-			if errors.Is(readErr, pktline.ErrFlush) {
-				return nil
-			}
+			data, length, readErr := s.pl.ReadPacketWithLength()
 			if readErr != nil {
 				return readErr
+			}
+			if length == 0 { // flush-pkt
+				return nil
 			}
 			if _, writeErr := pw.Write(data); writeErr != nil {
 				// ChunkStream stopped reading; drain stdin before returning.
@@ -213,34 +212,34 @@ func (s *Server) handlePutObject(ctx context.Context, oid string) error {
 
 	if chunkerErr != nil {
 		s.logf("put-object %s: creating chunker: %v", oid, chunkerErr)
-		return s.w.WriteErrorStatus(500, "internal error")
+		return s.pl.WriteErrorStatus(500, "internal error")
 	}
 	cmdshared.WriteHeapProfile("put_after_chunkstream")
 	if chunkStreamErr != nil {
 		s.logf("put-object %s: storing chunks: %v", oid, chunkStreamErr)
-		return s.w.WriteErrorStatus(500, "internal error")
+		return s.pl.WriteErrorStatus(500, "internal error")
 	}
 
 	// Verify declared size and content hash before committing the index.
 	// Any chunks already stored without a matching index are orphaned and
 	// will be reclaimed by the safe-pruning protocol.
 	if received != size {
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("size mismatch: expected %d, received %d", size, received))
+		return s.pl.WriteErrorStatus(400, fmt.Sprintf("size mismatch: expected %d, received %d", size, received))
 	}
 	if actualOID := hex.EncodeToString(hasher.Sum(nil)); actualOID != oid {
-		return s.w.WriteErrorStatus(400, fmt.Sprintf("OID mismatch: expected %s, got %s", oid, actualOID))
+		return s.pl.WriteErrorStatus(400, fmt.Sprintf("OID mismatch: expected %s, got %s", oid, actualOID))
 	}
 
 	indexName := oidIndexName(oid)
 	if err := s.indexStore.StoreIndex(indexName, idx); err != nil {
 		s.logf("put-object %s: storing index: %v", oid, err)
-		return s.w.WriteErrorStatus(500, "internal error")
+		return s.pl.WriteErrorStatus(500, "internal error")
 	}
 
-	if err := s.w.WriteStatus(200); err != nil {
+	if err := s.pl.WriteStatus(200); err != nil {
 		return err
 	}
-	return s.writeFlush()
+	return s.pl.WriteFlush()
 }
 
 // handleVerifyObject confirms an object exists, its size matches, and all
@@ -255,22 +254,22 @@ func (s *Server) handleVerifyObject(ctx context.Context, oid string) error {
 
 	size, err := parseSize(args)
 	if err != nil {
-		return s.w.WriteErrorStatus(400, err.Error())
+		return s.pl.WriteErrorStatus(400, err.Error())
 	}
 
 	if !validOID(oid) {
-		return s.w.WriteErrorStatus(404, fmt.Sprintf("invalid OID %q", oid))
+		return s.pl.WriteErrorStatus(404, fmt.Sprintf("invalid OID %q", oid))
 	}
 
 	indexName := oidIndexName(oid)
 	idx, err := s.indexStore.GetIndex(indexName)
 	if err != nil {
-		return s.w.WriteErrorStatus(404, fmt.Sprintf("object %s not found", oid))
+		return s.pl.WriteErrorStatus(404, fmt.Sprintf("object %s not found", oid))
 	}
 
 	actualSize := indexTotalSize(idx)
 	if actualSize != size {
-		return s.w.WriteErrorStatus(409, fmt.Sprintf("size mismatch for %s: expected %d, got %d",
+		return s.pl.WriteErrorStatus(409, fmt.Sprintf("size mismatch for %s: expected %d, got %d",
 			oid, size, actualSize))
 	}
 
@@ -308,20 +307,20 @@ func (s *Server) handleVerifyObject(ctx context.Context, oid string) error {
 	}
 	if err := g.Wait(); err != nil {
 		s.logf("verify-object %s: %v", oid, err)
-		return s.w.WriteErrorStatus(404, fmt.Sprintf("object %s incomplete: %v", oid, err))
+		return s.pl.WriteErrorStatus(404, fmt.Sprintf("object %s incomplete: %v", oid, err))
 	}
 
-	if err := s.w.WriteStatus(200); err != nil {
+	if err := s.pl.WriteStatus(200); err != nil {
 		return err
 	}
-	return s.writeFlush()
+	return s.pl.WriteFlush()
 }
 
 // drainBinaryData reads and discards binary pkt-line packets until flush.
 func (s *Server) drainBinaryData() {
 	for {
-		_, err := s.r.ReadPacket()
-		if err != nil {
+		_, length, err := s.pl.ReadPacketWithLength()
+		if err != nil || length == 0 { // stop on error or flush-pkt
 			return
 		}
 	}
