@@ -6,8 +6,9 @@ import (
 )
 
 // WorkerPool provides fixed-size pools of goroutines for chunk processing
-// (CPU-bound: hashing) and storage operations (I/O-bound: S3/filesystem).
-// A single global pool is shared across all concurrent ChunkStream callers,
+// (CPU-bound: hashing, compression, decompression) and storage operations
+// (I/O-bound: S3/filesystem PUT/GET).
+// A single global pool is shared across all concurrent callers,
 // preventing goroutine explosion when multiple LFS sessions run in parallel.
 type WorkerPool struct {
 	processQ chan processTask
@@ -15,26 +16,64 @@ type WorkerPool struct {
 }
 
 // processTask is submitted to a ChunkProcessWorker.
-// The worker computes the chunk ID (SHA hash), records the result,
-// then enqueues a storageTask for the I/O stage.
 type processTask struct {
+	// Upload: compute chunk ID (hash), record result, enqueue storageTask.
+	// Fields used: chunk, start, num, store, record, wg, firstErr, storageQ.
 	chunk    *Chunk
 	start    uint64
 	num      int
 	store    *ChunkStorage
-	record   func(int, IndexChunk) // callback to record IndexChunk result
-	wg       *sync.WaitGroup       // Done() called after storage completes
-	firstErr *atomic.Pointer[error] // first error from any task in this stream
-	storageQ chan<- storageTask     // where to enqueue the followup store task
+	record   func(int, IndexChunk)
+	wg       *sync.WaitGroup
+	firstErr *atomic.Pointer[error]
+	storageQ chan<- storageTask
+
+	// Download: decompress chunk, send result to caller.
+	// Fields used: getChunk, getData, resultCh.
+	getChunk *Chunk              // compressed chunk from storage
+	getData  bool                // true = download (decompress) task
+	resultCh chan<- FetchResult  // where to send decompressed result
 }
 
 // storageTask is submitted to a StorageWorker.
-// The worker stores the chunk (compression + I/O) and releases it.
 type storageTask struct {
+	// Upload: store chunk (compress + I/O), then wg.Done().
 	chunk    *Chunk
 	store    *ChunkStorage
 	wg       *sync.WaitGroup
 	firstErr *atomic.Pointer[error]
+
+	// Download: fetch chunk from store, then enqueue decompress task.
+	getID    ChunkID             // chunk to fetch
+	getStore Store               // store to fetch from
+	getData  bool                // true = download (fetch) task
+	processQ chan<- processTask  // where to enqueue decompress followup
+	resultCh chan<- FetchResult  // passed through to the decompress task
+}
+
+// FetchResult carries a decompressed chunk from the download pipeline.
+type FetchResult struct {
+	Chunk *Chunk
+	Data  []byte
+	Err   error
+}
+
+// GetWorkerPool returns the global pool, or nil if not initialized.
+// Exported for use by Forgejo's DesyncStorage.
+func GetWorkerPool() *WorkerPool {
+	return getWorkerPool()
+}
+
+// SubmitFetch enqueues a chunk fetch+decompress task. The result is sent
+// to resultCh when both the storage fetch and decompression are complete.
+func (p *WorkerPool) SubmitFetch(id ChunkID, store Store, resultCh chan<- FetchResult) {
+	p.storageQ <- storageTask{
+		getID:    id,
+		getStore: store,
+		getData:  true,
+		processQ: p.processQ,
+		resultCh: resultCh,
+	}
 }
 
 var (
@@ -51,7 +90,7 @@ var (
 // before the first ChunkStream invocation.  If not called, ChunkStream
 // falls back to the legacy per-call goroutine model.
 //
-// processWorkers: number of CPU-bound workers (hashing).
+// processWorkers: number of CPU-bound workers (hashing, compression, decompression).
 // storageWorkers: number of I/O-bound workers (S3 PUT/GET, filesystem).
 func InitWorkerPool(processWorkers, storageWorkers int) {
 	globalWorkerPoolMu.Lock()
@@ -100,7 +139,18 @@ func setFirstErr(p *atomic.Pointer[error], err error) {
 
 func (p *WorkerPool) processWorker() {
 	for task := range p.processQ {
-		// CPU work: compute chunk ID (SHA hash).
+		if task.getData {
+			// Download: decompress chunk and send result.
+			data, err := task.getChunk.Data()
+			task.resultCh <- FetchResult{
+				Chunk: task.getChunk,
+				Data:  data,
+				Err:   err,
+			}
+			continue
+		}
+
+		// Upload: compute chunk ID (SHA hash), record, enqueue store.
 		id := task.chunk.ID()
 		idxChunk := IndexChunk{
 			Start: task.start,
@@ -109,7 +159,6 @@ func (p *WorkerPool) processWorker() {
 		}
 		task.record(task.num, idxChunk)
 
-		// Enqueue storage task for the I/O stage.
 		task.storageQ <- storageTask{
 			chunk:    task.chunk,
 			store:    task.store,
@@ -121,6 +170,22 @@ func (p *WorkerPool) processWorker() {
 
 func (p *WorkerPool) storageWorker() {
 	for task := range p.storageQ {
+		if task.getData {
+			// Download: fetch chunk from store, enqueue decompress.
+			chunk, err := task.getStore.GetChunk(task.getID)
+			if err != nil {
+				task.resultCh <- FetchResult{Err: err}
+				continue
+			}
+			task.processQ <- processTask{
+				getChunk: chunk,
+				getData:  true,
+				resultCh: task.resultCh,
+			}
+			continue
+		}
+
+		// Upload: store chunk (compress + I/O).
 		captured, err := task.store.StoreChunk(task.chunk)
 		if err != nil {
 			setFirstErr(task.firstErr, err)
