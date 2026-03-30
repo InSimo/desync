@@ -12,6 +12,7 @@ import (
 // These generally override settings read from the config file.
 type CmdStoreOptions struct {
 	N                      int
+	ConnPoolSize           int // overrides N for S3 HTTP connection pool; 0 = use N
 	ClientCert             string
 	ClientKey              string
 	CACert                 string
@@ -30,6 +31,7 @@ type CmdStoreOptions struct {
 // Safe to call on a zero-value CmdStoreOptions (unregistered FlagSet).
 func (o CmdStoreOptions) MergedWith(opt desync.StoreOptions) desync.StoreOptions {
 	opt.N = o.N
+	opt.ConnPoolSize = o.ConnPoolSize
 
 	if f := o.FlagSet.Lookup("client-cert"); f != nil && f.Changed {
 		opt.ClientCert = o.ClientCert

@@ -70,7 +70,10 @@ func NewS3StoreBase(u *url.URL, s3Creds *credentials.Credentials, region string,
 	// MaxIdleConnsPerHost=2, which causes constant connection churn under
 	// concurrent chunk operations. Size the pool to match the configured
 	// concurrency (opt.N) so connections are reused across requests.
-	poolSize := opt.N
+	poolSize := opt.ConnPoolSize
+	if poolSize <= 0 {
+		poolSize = opt.N
+	}
 	if poolSize < 4 {
 		poolSize = 4
 	}

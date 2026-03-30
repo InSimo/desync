@@ -180,6 +180,12 @@ type StoreOptions struct {
 	// the number of goroutines, processes, or connection pool size.
 	N int `json:"n,omitempty"`
 
+	// ConnPoolSize overrides N for HTTP connection pool sizing in S3 stores.
+	// When set, S3 stores use this instead of N for MaxIdleConnsPerHost.
+	// Useful when a single process handles many concurrent sessions that
+	// share the same S3 client (e.g. Forgejo LFS relay).
+	ConnPoolSize int `json:"-"`
+
 	// Cert file name for HTTP SSL connections that require mutual SSL.
 	ClientCert string `json:"client-cert,omitempty"`
 	// Key file name for HTTP SSL connections that require mutual SSL.
