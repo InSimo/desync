@@ -55,41 +55,6 @@ func TestBinaryPacket(t *testing.T) {
 	require.Equal(t, data, got)
 }
 
-func TestWriteStatus(t *testing.T) {
-	var buf bytes.Buffer
-	pl := New(&buf, &buf)
-	require.NoError(t, pl.WriteStatus(200))
-	require.NoError(t, pl.WriteFlush())
-
-	r := New(bytes.NewReader(buf.Bytes()), io.Discard)
-	s, err := r.ReadPacketText()
-	require.NoError(t, err)
-	require.Equal(t, "status 200", s)
-}
-
-func TestWriteErrorStatus(t *testing.T) {
-	var buf bytes.Buffer
-	pl := New(&buf, &buf)
-	require.NoError(t, pl.WriteErrorStatus(404, "not found"))
-
-	r := New(bytes.NewReader(buf.Bytes()), io.Discard)
-	s, err := r.ReadPacketText()
-	require.NoError(t, err)
-	require.Equal(t, "status 404", s)
-
-	_, length, err := r.ReadPacketWithLength()
-	require.NoError(t, err)
-	require.Equal(t, 1, length)
-
-	s, err = r.ReadPacketText()
-	require.NoError(t, err)
-	require.Equal(t, "not found", s)
-
-	_, length, err = r.ReadPacketWithLength()
-	require.NoError(t, err)
-	require.Equal(t, 0, length)
-}
-
 func TestPayloadTooLarge(t *testing.T) {
 	pl := New(bytes.NewReader(nil), &bytes.Buffer{})
 	bigData := make([]byte, MaxPayload+1)

@@ -112,7 +112,7 @@ func (s *Server) negotiateVersion() error {
 	} else if strings.HasPrefix(line, "version=") {
 		version = strings.TrimPrefix(line, "version=")
 	} else {
-		if err := s.pl.WriteErrorStatus(400, "expected version request"); err != nil {
+		if err := writeErrorStatus(s.pl, 400, "expected version request"); err != nil {
 			return err
 		}
 		return fmt.Errorf("unexpected line: %q", line)
@@ -125,11 +125,11 @@ func (s *Server) negotiateVersion() error {
 	}
 
 	if version != "1" {
-		return s.pl.WriteErrorStatus(400, fmt.Sprintf("unsupported version %q", version))
+		return writeErrorStatus(s.pl, 400, fmt.Sprintf("unsupported version %q", version))
 	}
 
 	// Accepted.
-	if err := s.pl.WriteStatus(200); err != nil {
+	if err := writeStatus(s.pl, 200); err != nil {
 		return err
 	}
 	return s.pl.WriteFlush()
@@ -150,7 +150,7 @@ func (s *Server) commandLoop(ctx context.Context) error {
 		case "quit":
 			// Consume flush-pkt.
 			s.pl.ReadPacket()
-			s.pl.WriteStatus(200)
+			writeStatus(s.pl, 200)
 			s.pl.WriteFlush()
 			return nil
 
@@ -177,7 +177,7 @@ func (s *Server) commandLoop(ctx context.Context) error {
 		default:
 			// Unknown command: read until flush, send error.
 			s.drainUntilFlush()
-			if err := s.pl.WriteErrorStatus(400, fmt.Sprintf("unknown command %q", cmd)); err != nil {
+			if err := writeErrorStatus(s.pl, 400, fmt.Sprintf("unknown command %q", cmd)); err != nil {
 				return err
 			}
 		}

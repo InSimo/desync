@@ -6,10 +6,9 @@ package pktline
 
 import (
 	"bufio"
-	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	lfs_pktline "github.com/git-lfs/pktline"
@@ -62,11 +61,11 @@ func (p *Pktline) ReadPacketWithLength() ([]byte, int, error) {
 	case "0001":
 		return nil, 1, nil
 	}
-	var lenBuf [2]byte
-	if _, err := hex.Decode(lenBuf[:], hdr[:]); err != nil {
-		return nil, 0, fmt.Errorf("invalid pkt-line header: %w", err)
+	pktLen, err := strconv.ParseInt(string(hdr[:]), 16, 0)
+	if err != nil {
+		return nil, 0, err
 	}
-	length := int(binary.BigEndian.Uint16(lenBuf[:]))
+	length := int(pktLen)
 	if length < 4 {
 		return nil, length, fmt.Errorf("invalid pkt-line length %d", length)
 	}
@@ -106,26 +105,5 @@ func (p *Pktline) WriteDelim() error {
 	return err
 }
 
-// --- LFS SSH transfer protocol helpers ---
 
-// WriteStatus writes "status <code>\n".
-func (p *Pktline) WriteStatus(code int) error {
-	return p.WritePacketText(fmt.Sprintf("status %d", code))
-}
-
-// WriteErrorStatus writes status + delim + message lines + flush.
-func (p *Pktline) WriteErrorStatus(code int, msg string) error {
-	if err := p.WriteStatus(code); err != nil {
-		return err
-	}
-	if err := p.WriteDelim(); err != nil {
-		return err
-	}
-	for _, line := range strings.Split(msg, "\n") {
-		if err := p.WritePacketText(line); err != nil {
-			return err
-		}
-	}
-	return p.WriteFlush()
-}
 

@@ -68,14 +68,14 @@ func (s *Server) handleBatch(ctx context.Context, _ string) error {
 	}
 
 	if invalidOID != "" {
-		return s.pl.WriteErrorStatus(400, fmt.Sprintf("invalid OID %q", invalidOID))
+		return writeErrorStatus(s.pl, 400, fmt.Sprintf("invalid OID %q", invalidOID))
 	}
 	if malformedEntry != "" {
-		return s.pl.WriteErrorStatus(400, fmt.Sprintf("malformed batch entry %q", malformedEntry))
+		return writeErrorStatus(s.pl, 400, fmt.Sprintf("malformed batch entry %q", malformedEntry))
 	}
 
 	// Write response header.
-	if err := s.pl.WriteStatus(200); err != nil {
+	if err := writeStatus(s.pl, 200); err != nil {
 		return err
 	}
 	if err := s.pl.WritePacketText("hash-algo=sha256"); err != nil {

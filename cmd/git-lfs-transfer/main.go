@@ -410,6 +410,6 @@ func rejectAndExit(msg string) error {
 	_, _ = pl.ReadPacketText()
 	_, _ = pl.ReadPacket()
 	// Send the protocol-level rejection.
-	_ = pl.WriteErrorStatus(403, msg)
+	_ = writeErrorStatus(pl, 403, msg)
 	return fmt.Errorf("%s", msg)
 }
