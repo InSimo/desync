@@ -11,7 +11,7 @@ import (
 
 	"github.com/folbricht/desync"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
-	"github.com/folbricht/desync/cmd/shared/pktline"
+	"github.com/git-lfs/pktline"
 )
 
 // handleGetObject retrieves an LFS object by OID: looks up its desync index,
@@ -96,7 +96,7 @@ func (s *Server) handleGetObject(ctx context.Context, oid string) error {
 		}
 		data := pc.data
 		for len(data) > 0 {
-			n := pktline.MaxPayload
+			n := pktline.MaxPacketLength
 			if n > len(data) {
 				n = len(data)
 			}

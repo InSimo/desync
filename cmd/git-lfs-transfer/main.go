@@ -14,7 +14,7 @@ import (
 	desync "github.com/folbricht/desync"
 	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
-	"github.com/folbricht/desync/cmd/shared/pktline"
+	"github.com/git-lfs/pktline"
 )
 
 const configFileName = "desync-lfs.json"
@@ -402,7 +402,7 @@ func tryDelegate(repoPath string) error {
 // 403 error to the client, then returns an error so main exits non-zero.
 // Write errors are swallowed — delivering the rejection is best-effort.
 func rejectAndExit(msg string) error {
-	pl := pktline.New(os.Stdin, os.Stdout)
+	pl := pktline.NewPktlineSize(os.Stdin, os.Stdout, 64*1024)
 	// Advertise version=1 — client expects this first.
 	_ = pl.WritePacketText("version=1")
 	_ = pl.WriteFlush()

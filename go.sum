@@ -12,6 +12,8 @@ cloud.google.com/go/storage v1.30.1/go.mod h1:NfxhC0UJE1aXSx7CIIbCf7y9HKT7Biccwk
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/DataDog/zstd v1.5.2 h1:vUG4lAyuPCXO0TLbXvPv7EB7cNK1QV/luu55UHLrrn8=
 github.com/DataDog/zstd v1.5.2/go.mod h1:g4AWEaM3yOg3HYfnJ3YIawPnVdXJh9QME85blwSAmyw=
+github.com/InSimo/pktline v0.0.0-20260331103642-8dd7e5cb363e h1:L9Wg7Xk4dGJ0xR7oSxaWceehmLbQdfPSAjsia6MXeas=
+github.com/InSimo/pktline v0.0.0-20260331103642-8dd7e5cb363e/go.mod h1:fenKRzpXDjNpsIBhuhUzvjCKlDjKam0boRAenTE0Q6A=
 github.com/boljen/go-bitmap v0.0.0-20151001105940-23cd2fb0ce7d h1:zsO4lp+bjv5XvPTF58Vq+qgmZEYZttJK+CWtSZhKenI=
 github.com/boljen/go-bitmap v0.0.0-20151001105940-23cd2fb0ce7d/go.mod h1:f1iKL6ZhUWvbk7PdWVmOaak10o86cqMUYEmn1CZNGEI=
 github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
@@ -33,8 +35,6 @@ github.com/fatih/color v1.15.0 h1:kOqh6YHBtK8aywxGerMG2Eq3H6Qgoqeo13Bk2Mv/nBs=
 github.com/fatih/color v1.15.0/go.mod h1:0h5ZqXfHYED7Bhv2ZJamyIOUej9KtShiJESRwBDUSsw=
 github.com/folbricht/tempfile v0.0.1 h1:kB3DubP2Fm5e3W7TrWFNZBfzFEHBoKL7Pjn0HvqKxSQ=
 github.com/folbricht/tempfile v0.0.1/go.mod h1:/Flpxx/6U+clQJ61jQ3y6Z7L2l6j1/ZSiU4B9EDPgWw=
-github.com/git-lfs/pktline v0.0.0-20230103162542-ca444d533ef1 h1:mtDjlmloH7ytdblogrMz1/8Hqua1y8B4ID+bh3rvod0=
-github.com/git-lfs/pktline v0.0.0-20230103162542-ca444d533ef1/go.mod h1:fenKRzpXDjNpsIBhuhUzvjCKlDjKam0boRAenTE0Q6A=
 github.com/go-ini/ini v1.67.0 h1:z6ZrTEZqSWOTyH2FlglNbNgARyHG8oLW9gMELqKr06A=
 github.com/go-ini/ini v1.67.0/go.mod h1:ByCAeIL28uOIIG0E3PJtZPDL8WnHpFKFOtgjp+3Ies8=
 github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b/go.mod h1:SBH7ygxi8pfUlaOkMMuAQtPIUF8ecWP5IEl/CR7VP2Q=

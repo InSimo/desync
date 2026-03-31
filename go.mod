@@ -8,6 +8,7 @@ require (
 	github.com/boljen/go-bitmap v0.0.0-20151001105940-23cd2fb0ce7d
 	github.com/dchest/siphash v1.2.3
 	github.com/folbricht/tempfile v0.0.1
+	github.com/git-lfs/pktline v0.0.0-20230103162542-ca444d533ef1
 	github.com/go-ini/ini v1.67.0
 	github.com/hanwen/go-fuse/v2 v2.2.0
 	github.com/klauspost/compress v1.16.4
@@ -32,7 +33,6 @@ require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.15.0 // indirect
-	github.com/git-lfs/pktline v0.0.0-20230103162542-ca444d533ef1 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
@@ -67,3 +67,5 @@ require (
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/git-lfs/pktline => github.com/InSimo/pktline v0.0.0-20260331103642-8dd7e5cb363e

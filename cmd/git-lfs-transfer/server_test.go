@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/shared/pktline"
+	"github.com/git-lfs/pktline"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,7 +49,7 @@ func testServer(t *testing.T, operation string) *Server {
 func runSession(t *testing.T, srv *Server, clientInput func(w *pktline.Pktline)) []byte {
 	t.Helper()
 	var clientBuf, serverBuf bytes.Buffer
-	clientInput(pktline.New(bytes.NewReader(nil), &clientBuf))
+	clientInput(pktline.NewPktlineSize(bytes.NewReader(nil), &clientBuf, 64*1024))
 	err := srv.Run(context.Background(), &clientBuf, &serverBuf)
 	require.NoError(t, err)
 	return serverBuf.Bytes()
@@ -66,7 +66,7 @@ func TestVersionNegotiation(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 
 	// Capability advertisement.
 	cap, err := r.ReadPacketText()
@@ -113,7 +113,7 @@ func TestBatchDownloadExistingObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	// Batch response.
@@ -159,7 +159,7 @@ func TestBatchDownloadMissingObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -188,7 +188,7 @@ func TestBatchUploadNewObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -232,7 +232,7 @@ func TestPutAndGetObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	// put-object response.
@@ -254,7 +254,7 @@ func TestPutAndGetObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r = pktline.New(bytes.NewReader(out), io.Discard)
+	r = pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	// get-object response.
@@ -302,7 +302,7 @@ func TestVerifyObject(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -326,7 +326,7 @@ func TestVerifyObjectSizeMismatch(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -348,7 +348,7 @@ func TestVerifyObjectNotFound(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -403,7 +403,7 @@ func TestVerifyObjectMissingChunk(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -639,7 +639,7 @@ func TestUnknownCommand(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	status, err := r.ReadPacketText()
@@ -735,7 +735,7 @@ func TestPutObjectNegativeSize(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -758,7 +758,7 @@ func TestPutObjectTooLarge(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -853,7 +853,7 @@ func TestGetObjectInvalidOID(t *testing.T) {
 			w.WritePacketText("quit")
 			w.WriteFlush()
 		})
-		r := pktline.New(bytes.NewReader(out), io.Discard)
+		r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 		skipCapAndVersion(t, r)
 		status, err := r.ReadPacketText()
 		require.NoError(t, err)
@@ -877,7 +877,7 @@ func TestPutObjectInvalidOID(t *testing.T) {
 			w.WritePacketText("quit")
 			w.WriteFlush()
 		})
-		r := pktline.New(bytes.NewReader(out), io.Discard)
+		r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 		skipCapAndVersion(t, r)
 		status, err := r.ReadPacketText()
 		require.NoError(t, err)
@@ -898,7 +898,7 @@ func TestVerifyObjectInvalidOID(t *testing.T) {
 			w.WritePacketText("quit")
 			w.WriteFlush()
 		})
-		r := pktline.New(bytes.NewReader(out), io.Discard)
+		r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 		skipCapAndVersion(t, r)
 		status, err := r.ReadPacketText()
 		require.NoError(t, err)
@@ -924,7 +924,7 @@ func TestBatchInvalidOIDReturnsError(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 
 	// Whole batch must fail with 400 when any OID is invalid.
@@ -948,7 +948,7 @@ func TestBatchShortLineReturnsError(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -970,7 +970,7 @@ func TestBatchNegativeSizeReturnsError(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -992,7 +992,7 @@ func TestBatchNonNumericSizeReturnsError(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)
@@ -1015,7 +1015,7 @@ func TestBatchValidSizeSucceeds(t *testing.T) {
 		w.WriteFlush()
 	})
 
-	r := pktline.New(bytes.NewReader(out), io.Discard)
+	r := pktline.NewPktlineSize(bytes.NewReader(out), io.Discard, 64*1024)
 	skipCapAndVersion(t, r)
 	status, err := r.ReadPacketText()
 	require.NoError(t, err)

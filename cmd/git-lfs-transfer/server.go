@@ -14,7 +14,7 @@ import (
 	"github.com/folbricht/desync"
 	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
-	"github.com/folbricht/desync/cmd/shared/pktline"
+	"github.com/git-lfs/pktline"
 )
 
 // Server implements the Git LFS SSH transfer protocol (git-lfs-transfer).
@@ -68,7 +68,7 @@ func (s *Server) logf(format string, args ...any) {
 }
 
 func (s *Server) Run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
-	s.pl = pktline.New(stdin, stdout)
+	s.pl = pktline.NewPktlineSize(stdin, stdout, 64*1024)
 
 	// Optional execution tracing: write to LFS_TRANSFER_TRACE_DIR/<pid>.trace.
 	if traceDir := os.Getenv("LFS_TRANSFER_TRACE_DIR"); traceDir != "" {

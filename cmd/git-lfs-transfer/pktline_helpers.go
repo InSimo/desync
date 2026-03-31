@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/folbricht/desync/cmd/shared/pktline"
+	"github.com/git-lfs/pktline"
 )
 
 // writeStatus writes a "status <code>\n" pkt-line text packet.
