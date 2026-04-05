@@ -137,6 +137,15 @@ func syncCacheSizesFile(data []byte) error {
 	return nil
 }
 
+// processAlive checks whether a process with the given PID is still running.
+//
+// OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION returns:
+//   - a valid handle: process exists
+//   - 0 with ERROR_INVALID_PARAMETER: process does not exist
+//   - 0 with ERROR_ACCESS_DENIED (5): process exists but belongs to another user
+//
+// We treat ERROR_ACCESS_DENIED as alive to avoid incorrectly reclaiming
+// the eviction lock from a process running as a different user.
 func processAlive(pid int32) bool {
 	handle, _, err := procOpenProcess.Call(processQueryLimitedInfo, 0, uintptr(pid))
 	if handle != 0 {

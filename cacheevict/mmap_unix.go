@@ -65,6 +65,14 @@ func syncCacheSizesFile(data []byte) error {
 }
 
 // processAlive checks whether a process with the given PID is still running.
+//
+// kill(pid, 0) returns:
+//   - nil:    process exists and we have permission to signal it
+//   - ESRCH:  process does not exist
+//   - EPERM:  process exists but we lack permission (different user)
+//
+// We treat EPERM as alive to avoid incorrectly reclaiming the eviction
+// lock from a process running as a different user.
 func processAlive(pid int32) bool {
 	err := syscall.Kill(int(pid), 0)
 	if err == nil {
