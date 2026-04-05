@@ -424,9 +424,13 @@ func (h *Handler) maybeEvict() {
 	// Non-blocking CAS on eviction lock.
 	if !atomic.CompareAndSwapInt32(h.evictionLock(), 0, h.pid) {
 		holder := atomic.LoadInt32(h.evictionLock())
-		if holder != 0 && processAlive(holder) {
-			return
+		if holder == h.pid {
+			return // another goroutine in this process is already evicting
 		}
+		if holder != 0 && processAlive(holder) {
+			return // another live process is evicting
+		}
+		// Stale lock from a dead process — try to reclaim.
 		if !atomic.CompareAndSwapInt32(h.evictionLock(), holder, h.pid) {
 			return
 		}
