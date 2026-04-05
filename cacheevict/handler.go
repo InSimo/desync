@@ -28,8 +28,8 @@ const (
 	trackingFileName = ".cache-sizes"
 
 	// File format version. Major version change = incompatible layout.
-	majorVersion = 1
-	minorVersion = 0
+	majorVersion = 0
+	minorVersion = 1
 
 	// Default values.
 	DefaultPartitions  = 256

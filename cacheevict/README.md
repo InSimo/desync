@@ -2,6 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+**v0.1.0** — preliminary release. The API and file format may change based
+on feedback from initial real-world usage. See [CHANGELOG.md](CHANGELOG.md).
+
 Automatic LRU cache eviction for disk-based caches. Tracks total cache
 size and file count via a persistent mmap'd file with lock-free atomic
 counters, enabling safe coordination between multiple concurrent processes.
@@ -113,12 +116,12 @@ readdir). Operations use `atomic.OrUint32` / `atomic.AndUint32` /
 
 ## Mmap file layout
 
-File: `BaseDir/.cache-sizes` (version 1)
+File: `BaseDir/.cache-sizes` (version 0.1)
 
 ```
 Header (1024 bytes, padded for future fields):
-  [0]    int32   major version (1)
-  [4]    int32   minor version (0)
+  [0]    int32   major version (0)
+  [4]    int32   minor version (1)
   [8]    int32   eviction lock (0 = free, PID = in-progress)
   [12]   int32   prefix count
   [16]   int32   partition count
