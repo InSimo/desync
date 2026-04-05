@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/InSimo/cacheevict"
+	"github.com/insimo/cacheevict"
 )
 
 var _ WriteStore = &SizeLimitStore{}
