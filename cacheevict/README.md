@@ -131,7 +131,13 @@ Total = 24 + PrefixCount/8 + P × 16
 | AfterStore (new file) | +newSize | +1 | +newSize | +1 |
 | AfterStore (overwrite) | +(new-old) | 0 | +(new-old) | 0 |
 | BeforeRemove | -size | -1 | -size | -1 |
-| Eviction delete | -size | -1 | -size | -1 |
+
+During eviction, partition counters are **reconciled** from the actual
+directory listing rather than decremented per-deleted-file (matching
+ccache's approach). The listing reveals the true partition state, so if
+files were deleted externally (by the user, another tool, etc.), the
+counters are self-corrected. Global counters are updated by the delta
+between the old partition counter and the new actual value.
 
 ### Cold start
 

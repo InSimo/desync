@@ -421,7 +421,23 @@ func (h *Handler) evictPartition(partition int) {
 		}
 	}
 
-	if len(files) == 0 {
+	// The actual file listing gives us the true partition state, which may
+	// differ from the counters if files were deleted externally. Following
+	// ccache's approach, we reconcile the counters from the listing rather
+	// than decrementing per-file. This self-heals counter drift.
+	var actualSize int64
+	var actualFiles int64
+	for _, f := range files {
+		actualSize += f.size
+		actualFiles++
+	}
+
+	if actualFiles == 0 {
+		// Reconcile: partition is empty but counters may be stale.
+		oldSize := atomic.SwapInt64(h.partitionSize(partition), 0)
+		oldFiles := atomic.SwapInt64(h.partitionFiles(partition), 0)
+		atomic.AddInt64(h.globalSize(), -oldSize)
+		atomic.AddInt64(h.globalFiles(), -oldFiles)
 		return
 	}
 
@@ -431,21 +447,26 @@ func (h *Handler) evictPartition(partition int) {
 
 	// Eviction target: 0.9 * totalFiles / P (matching ccache).
 	targetFiles := atomic.LoadInt64(h.globalFiles()) * 9 / 10 / int64(h.partitions)
-	currentFiles := atomic.LoadInt64(h.partitionFiles(partition))
 
+	remainingSize := actualSize
+	remainingFiles := actualFiles
 	for _, f := range files {
-		if currentFiles <= targetFiles {
+		if remainingFiles <= targetFiles {
 			break
 		}
 		if err := os.Remove(f.path); err != nil {
-			continue
+			continue // file may be in use (Windows) or already deleted
 		}
-		atomic.AddInt64(h.globalSize(), -f.size)
-		atomic.AddInt64(h.globalFiles(), -1)
-		atomic.AddInt64(h.partitionSize(partition), -f.size)
-		atomic.AddInt64(h.partitionFiles(partition), -1)
-		currentFiles--
+		remainingSize -= f.size
+		remainingFiles--
 	}
+
+	// Reconcile partition counters with actual state after eviction.
+	// Update globals by the delta between old counter and new actual value.
+	oldPartSize := atomic.SwapInt64(h.partitionSize(partition), remainingSize)
+	oldPartFiles := atomic.SwapInt64(h.partitionFiles(partition), remainingFiles)
+	atomic.AddInt64(h.globalSize(), remainingSize-oldPartSize)
+	atomic.AddInt64(h.globalFiles(), remainingFiles-oldPartFiles)
 }
 
 // --- Initialization ---
