@@ -62,6 +62,9 @@ The config file uses the same JSON format as the main desync `config.json` (see 
 - **`defaults.stores`** — single-element array with the chunk store location (required). See [Supported Backends](#supported-backends).
 - **`defaults.index-store`** — index store location. If omitted, derived by replacing the last path segment of the store with `index`.
 - **`defaults.cache`** — local chunk cache for downloads.
+- **`defaults.cache-max-size`** — maximum cache size (e.g. `"10G"`). Overridable via `DESYNC_CACHE_MAX_SIZE` env var. See [doc/cache-size-limit.md](cache-size-limit.md).
+- **`defaults.cache-max-files`** — maximum number of cached files. Overridable via `DESYNC_CACHE_MAX_FILES` env var.
+- **`defaults.cache-partitions`** — number of eviction partitions, power of 2 (default `256`).
 - **`defaults.chunk-size`** — min:avg:max chunk size in KB (default `16:64:256`).
 - **`defaults.digest`** — hash algorithm: `sha512-256` (default) or `sha256`.
 - **`defaults.concurrency`** — number of concurrent goroutines for chunk I/O (default `10`).
@@ -78,7 +81,8 @@ Example:
   "defaults": {
     "stores": ["s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/"],
     "index-store": "s3+https://s3.amazonaws.com/my-bucket/lfs/index/",
-    "cache": "/var/cache/desync/chunks"
+    "cache": "/var/cache/desync/chunks",
+    "cache-max-size": "10G"
   },
   "s3-credentials": {
     "https://s3.amazonaws.com": {

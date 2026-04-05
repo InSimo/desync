@@ -50,6 +50,9 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `--indexes`                         | `false`                                     | Translate LFS OIDs to desync index names and write to stdout (one per line). Reads OIDs from positional args, or from the first whitespace-delimited token of each stdin line when no args are given (blank lines are skipped). When set, no store configuration is needed and the agent exits immediately without starting the LFS transfer protocol. See [Index and Chunk Pruning](#index-and-chunk-pruning).                                                                                                                                          |
 | `--max-in-flight`                   | `2147483648` (2 GB)                         | Maximum total bytes allowed in-flight across all concurrent agent processes. Limits memory usage when git-lfs spawns multiple agents (`concurrent = true`). Set to `0` to disable. Also settable via `defaults.max-in-flight` in the config or `DESYNC_MAX_INFLIGHT` env var. |
 | `--max-storage-ops`                 | `0` (disabled)                              | Maximum concurrent storage operations (GetChunk, StoreChunk, GetIndex, StoreIndex) across all concurrent agent processes. Limits S3/network backend load. Set to `0` to disable. Also settable via `defaults.max-storage-ops` in the config or `DESYNC_MAX_STORAGE_OPS` env var. |
+| `--cache-max-size`                  | `""` (unlimited)                            | Maximum cache size (e.g. `10G`, `500M`). When exceeded, the oldest chunks are automatically evicted. Also settable via `defaults.cache-max-size` in the config or `DESYNC_CACHE_MAX_SIZE` env var. See [doc/cache-size-limit.md](cache-size-limit.md). |
+| `--cache-max-files`                 | `0` (unlimited)                             | Maximum number of cached files. When exceeded, the oldest chunks are automatically evicted. Also settable via `defaults.cache-max-files` in the config or `DESYNC_CACHE_MAX_FILES` env var. |
+| `--cache-partitions`                | `256`                                       | Number of eviction partitions (power of 2). Higher values reduce per-eviction scan cost for very large caches. Also settable via `defaults.cache-partitions` in the config. |
 | `--safe-pruning`                    | `false`                                     | Enable the safe concurrent pruning protocol on the upload path. After each successful upload, calls `RescueChunks` on the chunk store to recover any chunks that a concurrent `desync prune --safe-pruning` may have quarantined between the `StoreChunk` and `StoreIndex` steps. Must be used together with `desync prune --safe-pruning` and `desync index-prune --safe-index-pruning`. Supported by all writable backends (local, S3, SFTP, GCS). See [Index and Chunk Pruning](#index-and-chunk-pruning) and [doc/safe-pruning.md](safe-pruning.md). |
 
 ## Config defaults
@@ -455,6 +458,33 @@ git config lfs.customtransfer.desync.args \
      --cache ~/.cache/lfs/chunks \
      --safe-pruning"
 ```
+
+### Cache size limit
+
+The cache can be limited by total size (`--cache-max-size`) and/or file count (`--cache-max-files`). When a limit is exceeded after a write, the oldest chunks (by last access time) are automatically evicted from the partition with the most files. No manual cleanup is needed. Multiple concurrent agent processes can safely share the same cache — size tracking uses lock-free atomic counters in a persistent shared-memory file.
+
+```ini
+[lfs "customtransfer.desync"]
+    path = /usr/local/bin/git-lfs-desync
+    args = --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ \
+           --cache /var/cache/lfs/chunks \
+           --cache-max-size 10G \
+           --safe-pruning
+    concurrent = true
+```
+
+Or via the config file:
+
+```json
+{
+  "defaults": {
+    "cache": "/var/cache/lfs/chunks",
+    "cache-max-size": "10G"
+  }
+}
+```
+
+See [doc/cache-size-limit.md](cache-size-limit.md) for the full design.
 
 ### Cache repair
 

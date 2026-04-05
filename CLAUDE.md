@@ -66,6 +66,7 @@ Stores are composed for routing, caching, and failover:
 - **FailoverGroup** (`failover.go`) — failover with active store rotation
 - **Cache** (`cache.go`) — local (fast) + remote (slow) with auto-caching
 - **RepairableCache** — converts ChunkInvalid to ChunkMissing for self-repair
+- **SizeLimitStore** (`sizelimit.go`) — wraps LocalStore with automatic LRU eviction via mmap'd atomic counters
 
 ### Data Pipeline
 

@@ -137,8 +137,9 @@ cd desync/cmd/desync && go install
 
 ### Caching
 
-The `-c <store>` option can be used to either specify an existing store to act as cache or to populate a new store. Whenever a chunk is requested, it is first looked up in the cache before routing the request to the next (possibly remote) store. Any chunks downloaded from the main stores are added to the cache. In addition, when a chunk is read from the cache and it is a local store, mtime of the chunk is updated to allow for basic garbage collection based on file age. The cache store is expected to be writable. If the cache contains an invalid chunk (checksum does not match the chunk ID), the operation will fail. Invalid chunks are not skipped or removed from the cache automatically. `verify -r` can be used to
-evict bad chunks from a local store or cache.
+The `-c <store>` option can be used to either specify an existing store to act as cache or to populate a new store. Whenever a chunk is requested, it is first looked up in the cache before routing the request to the next (possibly remote) store. Any chunks downloaded from the main stores are added to the cache. The cache store is expected to be writable. If the cache contains an invalid chunk (checksum does not match the chunk ID), the operation will fail. Invalid chunks are not skipped or removed from the cache automatically. `verify -r` can be used to evict bad chunks from a local store or cache.
+
+The cache can be configured with a maximum size (`--cache-max-size`) and/or a maximum number of files (`--cache-max-files`). When a limit is exceeded, the oldest chunks (by last access time) are automatically evicted. File modification times are updated on cache reads to track recency. Size and file counts are tracked in a persistent shared-memory file (`.cache-sizes`) using lock-free atomic counters, allowing multiple concurrent processes to share the same cache safely. The `--cache-partitions` option controls the number of eviction partitions (default 256, must be a power of 2). See [doc/cache-size-limit.md](doc/cache-size-limit.md) for the full design.
 
 ### Multiple chunk stores
 
@@ -265,6 +266,9 @@ Available configuration values:
   - `digest` - Default digest algorithm (`sha512-256` or `sha256`). Equivalent to passing `--digest` on every invocation. Must match the algorithm used when the store was originally written.
   - `chunk-size` - Default chunking parameters in `min:avg:max` format (kilobytes), e.g. `"16:64:256"`. Equivalent to passing `--chunk-size` on every invocation.
   - `cache` - Default store location used when `--cache` is not provided on the command line. Applies to all commands that accept `--cache`: `extract`, `cat`, `untar`, `mtree`, `chunk-server`, `mount-index` (transparent read-through cache), `cache` (destination store to populate), and `info` (store to query for chunk presence).
+  - `cache-max-size` - Maximum cache size as a human-friendly string (e.g. `"10G"`, `"500M"`). When exceeded, the oldest chunks are automatically evicted. Default: `""` (unlimited). Can also be set with `--cache-max-size` or the `DESYNC_CACHE_MAX_SIZE` environment variable.
+  - `cache-max-files` - Maximum number of files in the cache. When exceeded, the oldest chunks are automatically evicted. Default: `0` (unlimited). Can also be set with `--cache-max-files` or the `DESYNC_CACHE_MAX_FILES` environment variable.
+  - `cache-partitions` - Number of eviction partitions (must be a power of 2). Higher values reduce per-eviction scan cost for very large caches. Default: `256`. Can also be set with `--cache-partitions`.
 
 #### Example config
 
@@ -316,7 +320,8 @@ Available configuration values:
     "index-store": "/path/to/local/index",
     "digest": "sha512-256",
     "chunk-size": "16:64:256",
-    "cache": "/path/to/local/cache"
+    "cache": "/path/to/local/cache",
+    "cache-max-size": "10G"
   }
 }
 ```
