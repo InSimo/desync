@@ -5,8 +5,8 @@ automatically evict old entries when the total stored data exceeds a size or
 file count limit. Eviction is automatic and requires no manual maintenance.
 
 The eviction logic is implemented in the
-[cacheevict](../cacheevict/README.md) module, which is reusable by other
-projects (e.g. git-lfs) without depending on desync.
+[cacheevict](https://github.com/insimo/cacheevict) module, which is
+reusable by other projects (e.g. git-lfs) without depending on desync.
 
 ## Configuration
 
@@ -40,7 +40,7 @@ desync configures the handler with callbacks for its specific layout:
 - **IsCachedFile**: `.cacnk` extension, excluding `.prunable`/`.protect`
 - **IsTempFile**: `.tmp-cacnk` prefix (stale temp files cleaned during eviction)
 
-See the [cacheevict README](../cacheevict/README.md) for the eviction
+See the [cacheevict README](https://github.com/insimo/cacheevict) for the eviction
 algorithm, mmap file layout, and design rationale.
 
 ## Files

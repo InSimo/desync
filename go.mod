@@ -3,7 +3,6 @@ module github.com/folbricht/desync
 go 1.24.0
 
 require (
-	github.com/insimo/cacheevict v0.0.0
 	cloud.google.com/go/storage v1.30.1
 	github.com/DataDog/zstd v1.5.2
 	github.com/boljen/go-bitmap v0.0.0-20151001105940-23cd2fb0ce7d
@@ -12,6 +11,7 @@ require (
 	github.com/git-lfs/pktline v0.0.0-20230103162542-ca444d533ef1
 	github.com/go-ini/ini v1.67.0
 	github.com/hanwen/go-fuse/v2 v2.2.0
+	github.com/insimo/cacheevict v0.1.0
 	github.com/klauspost/compress v1.16.4
 	github.com/minio/minio-go/v6 v6.0.57
 	github.com/pkg/errors v0.9.1
@@ -70,5 +70,3 @@ require (
 )
 
 replace github.com/git-lfs/pktline => github.com/InSimo/pktline v0.0.0-20260331103642-8dd7e5cb363e
-
-replace github.com/insimo/cacheevict => ./cacheevict
