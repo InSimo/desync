@@ -1,5 +1,7 @@
 # cacheevict
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Automatic LRU cache eviction for disk-based caches. Tracks total cache
 size and file count via a persistent mmap'd file with lock-free atomic
 counters, enabling safe coordination between multiple concurrent processes.
@@ -180,3 +182,4 @@ IsTempFile:   nil  // temp files are in a separate directory
 - **Crash during eviction**: dead PID in eviction lock detected and reclaimed by next process.
 - **File deleted while being read**: safe on Unix (open fd keeps inode); on Windows `os.Remove` fails for open files and is silently skipped.
 - **mmap file wrong size or corrupt**: recreated and rescanned.
+
