@@ -118,6 +118,81 @@ func TestResolveCache(t *testing.T) {
 	}
 }
 
+func TestParseByteSize(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int64
+		err  bool
+	}{
+		{"", 0, false},
+		{"0", 0, false},
+		{"1234", 1234, false},
+		{"1K", 1024, false},
+		{"1KB", 1024, false},
+		{"1k", 1024, false},
+		{"10M", 10 * 1024 * 1024, false},
+		{"10MB", 10 * 1024 * 1024, false},
+		{"1G", 1024 * 1024 * 1024, false},
+		{"1GB", 1024 * 1024 * 1024, false},
+		{"2T", 2 * 1024 * 1024 * 1024 * 1024, false},
+		{"2TB", 2 * 1024 * 1024 * 1024 * 1024, false},
+		{"1.5G", int64(1.5 * 1024 * 1024 * 1024), false},
+		{"100B", 100, false},
+		{"abc", 0, true},
+		{"10X", 0, true},
+	}
+	for _, tt := range tests {
+		got, err := ParseByteSize(tt.in)
+		if tt.err {
+			if err == nil {
+				t.Errorf("ParseByteSize(%q): expected error, got %d", tt.in, got)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("ParseByteSize(%q): unexpected error: %v", tt.in, err)
+			} else if got != tt.want {
+				t.Errorf("ParseByteSize(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		}
+	}
+}
+
+func TestResolveCacheMaxSize(t *testing.T) {
+	cfg := Config{Defaults: Defaults{CacheMaxSize: "5G"}}
+
+	// CLI value wins.
+	if got := cfg.ResolveCacheMaxSize("10G"); got != "10G" {
+		t.Fatalf("expected 10G, got %s", got)
+	}
+	// Empty CLI falls back to config default.
+	if got := cfg.ResolveCacheMaxSize(""); got != "5G" {
+		t.Fatalf("expected 5G, got %s", got)
+	}
+	// Both empty → empty string.
+	empty := Config{}
+	if got := empty.ResolveCacheMaxSize(""); got != "" {
+		t.Fatalf("expected empty, got %s", got)
+	}
+}
+
+func TestResolveCachePartitions(t *testing.T) {
+	cfg := Config{Defaults: Defaults{CachePartitions: 32}}
+
+	// CLI value wins.
+	if got := cfg.ResolveCachePartitions(64); got != 64 {
+		t.Fatalf("expected 64, got %d", got)
+	}
+	// Zero CLI falls back to config default.
+	if got := cfg.ResolveCachePartitions(0); got != 32 {
+		t.Fatalf("expected 32, got %d", got)
+	}
+	// Both zero → 0 (caller uses default).
+	empty := Config{}
+	if got := empty.ResolveCachePartitions(0); got != 0 {
+		t.Fatalf("expected 0, got %d", got)
+	}
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	const json = `{
 		"defaults": {

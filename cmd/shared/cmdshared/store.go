@@ -220,8 +220,44 @@ func MultiStoreWithCache(cfg Config, cmdOpt CmdStoreOptions, cacheLocation strin
 		store.Close()
 		return nil, err
 	}
-	if ls, ok := cache.(desync.LocalStore); ok {
-		ls.UpdateTimes = true
+	// Wrap the local cache store in a SizeLimitStore if a size or file limit is configured.
+	maxSizeStr := cfg.ResolveCacheMaxSize(cmdOpt.CacheMaxSize)
+	maxFiles := cfg.ResolveCacheMaxFiles(cmdOpt.CacheMaxFiles)
+	var maxSize int64
+	if maxSizeStr != "" {
+		var err error
+		maxSize, err = ParseByteSize(maxSizeStr)
+		if err != nil {
+			store.Close()
+			cache.Close()
+			return nil, fmt.Errorf("invalid cache-max-size: %w", err)
+		}
+	}
+	if maxSize > 0 || maxFiles > 0 {
+		partitions := cfg.ResolveCachePartitions(cmdOpt.CachePartitions)
+		var ls desync.LocalStore
+		switch c := cache.(type) {
+		case desync.LocalStore:
+			ls = c
+		case *desync.WriteDedupQueue:
+			if inner, ok := c.S.(desync.LocalStore); ok {
+				ls = inner
+			}
+		}
+		if ls.Base != "" {
+			sls, err := desync.NewSizeLimitStore(ls, maxSize, maxFiles, partitions)
+			if err != nil {
+				store.Close()
+				cache.Close()
+				return nil, fmt.Errorf("init size-limited cache: %w", err)
+			}
+			switch c := cache.(type) {
+			case desync.LocalStore:
+				cache = sls
+			case *desync.WriteDedupQueue:
+				c.S = sls
+			}
+		}
 	}
 	var cacheLayer desync.WriteStore = cache
 	if cmdOpt.CacheRepair {

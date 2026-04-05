@@ -37,15 +37,18 @@ const DefaultChunkSize = "16:64:256"
 // Defaults holds config-file defaults for CLI flags that users often want to
 // set once rather than on every invocation.
 type Defaults struct {
-	Digest      string   `json:"digest,omitempty"`
-	Stores      []string `json:"stores,omitempty"`
-	IndexStore  string   `json:"index-store,omitempty"`
-	ChunkSize   string   `json:"chunk-size,omitempty"`
-	Cache       string   `json:"cache,omitempty"`
-	Concurrency    int   `json:"concurrency,omitempty"`
-	MaxInFlight    int64 `json:"max-in-flight,omitempty"`
-	MaxStorageOps  int32 `json:"max-storage-ops,omitempty"`
-	ConnPoolSize   int   `json:"conn-pool-size,omitempty"`
+	Digest          string   `json:"digest,omitempty"`
+	Stores          []string `json:"stores,omitempty"`
+	IndexStore      string   `json:"index-store,omitempty"`
+	ChunkSize       string   `json:"chunk-size,omitempty"`
+	Cache           string   `json:"cache,omitempty"`
+	CacheMaxSize    string   `json:"cache-max-size,omitempty"`    // e.g. "10G", "500M", or raw bytes
+	CacheMaxFiles   int64    `json:"cache-max-files,omitempty"`  // max cached files; 0 = unlimited
+	CachePartitions int      `json:"cache-partitions,omitempty"` // power of 2, default 256
+	Concurrency     int      `json:"concurrency,omitempty"`
+	MaxInFlight     int64    `json:"max-in-flight,omitempty"`
+	MaxStorageOps   int32    `json:"max-storage-ops,omitempty"`
+	ConnPoolSize    int      `json:"conn-pool-size,omitempty"`
 }
 
 // Config is used to hold the global tool configuration. It's used to customize
@@ -220,6 +223,97 @@ func (c Config) ResolveConnPoolSize(cli int) int {
 		return c.Defaults.ConnPoolSize
 	}
 	return 0
+}
+
+// ResolveCacheMaxSize returns cli if non-empty, otherwise c.Defaults.CacheMaxSize,
+// otherwise the DESYNC_CACHE_MAX_SIZE environment variable, otherwise "" (disabled).
+// The returned value is parsed with ParseByteSize by the caller.
+func (c Config) ResolveCacheMaxSize(cli string) string {
+	if cli != "" {
+		return cli
+	}
+	if c.Defaults.CacheMaxSize != "" {
+		return c.Defaults.CacheMaxSize
+	}
+	if env := os.Getenv("DESYNC_CACHE_MAX_SIZE"); env != "" {
+		return env
+	}
+	return ""
+}
+
+// ResolveCacheMaxFiles returns cli if non-zero, otherwise c.Defaults.CacheMaxFiles,
+// otherwise the DESYNC_CACHE_MAX_FILES environment variable, otherwise 0 (disabled).
+func (c Config) ResolveCacheMaxFiles(cli int64) int64 {
+	if cli != 0 {
+		return cli
+	}
+	if c.Defaults.CacheMaxFiles != 0 {
+		return c.Defaults.CacheMaxFiles
+	}
+	if env := os.Getenv("DESYNC_CACHE_MAX_FILES"); env != "" {
+		if v, err := strconv.ParseInt(env, 10, 64); err == nil {
+			return v
+		}
+	}
+	return 0
+}
+
+// ResolveCachePartitions returns cli if non-zero, otherwise c.Defaults.CachePartitions,
+// otherwise 0 (meaning use the default of 16).
+func (c Config) ResolveCachePartitions(cli int) int {
+	if cli != 0 {
+		return cli
+	}
+	if c.Defaults.CachePartitions != 0 {
+		return c.Defaults.CachePartitions
+	}
+	return 0
+}
+
+// ParseByteSize parses a human-friendly byte size string such as "10G",
+// "500M", "1T", or a plain integer string. Returns the size in bytes.
+// Supported suffixes (case-insensitive): K/KB, M/MB, G/GB, T/TB.
+// Uses binary units (1K = 1024).
+func ParseByteSize(s string) (int64, error) {
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+	s = strings.TrimSpace(s)
+
+	// Find where the numeric part ends.
+	i := 0
+	for i < len(s) && ((s[i] >= '0' && s[i] <= '9') || s[i] == '.') {
+		i++
+	}
+	numStr := s[:i]
+	suffix := strings.ToUpper(strings.TrimSpace(s[i:]))
+
+	num, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid byte size %q: %w", s, err)
+	}
+
+	var multiplier float64
+	switch suffix {
+	case "", "B":
+		multiplier = 1
+	case "K", "KB":
+		multiplier = 1024
+	case "M", "MB":
+		multiplier = 1024 * 1024
+	case "G", "GB":
+		multiplier = 1024 * 1024 * 1024
+	case "T", "TB":
+		multiplier = 1024 * 1024 * 1024 * 1024
+	default:
+		return 0, fmt.Errorf("invalid byte size suffix %q in %q", suffix, s)
+	}
+
+	result := int64(num * multiplier)
+	if result < 0 {
+		return 0, fmt.Errorf("byte size %q is negative", s)
+	}
+	return result, nil
 }
 
 // SetDigestAlgorithm sets the global desync.Digest to the algorithm named by

@@ -19,6 +19,9 @@ type CmdStoreOptions struct {
 	SkipVerify             bool
 	TrustInsecure          bool
 	CacheRepair            bool
+	CacheMaxSize           string
+	CacheMaxFiles          int64
+	CachePartitions        int
 	ErrorRetry             int
 	ErrorRetryBaseInterval time.Duration
 	SafePruning            bool
@@ -79,6 +82,9 @@ func AddStoreOptions(o *CmdStoreOptions, f *pflag.FlagSet) {
 	f.StringVar(&o.CACert, "ca-cert", "", "trust authorities in this file, instead of OS trust store")
 	f.BoolVarP(&o.TrustInsecure, "trust-insecure", "t", false, "trust invalid certificates")
 	f.BoolVarP(&o.CacheRepair, "cache-repair", "r", true, "replace invalid chunks in the cache from source")
+	f.StringVar(&o.CacheMaxSize, "cache-max-size", "", "maximum cache size (e.g. '10G', '500M', 0=unlimited)")
+	f.Int64Var(&o.CacheMaxFiles, "cache-max-files", 0, "maximum number of cached files (0=unlimited)")
+	f.IntVar(&o.CachePartitions, "cache-partitions", 0, "number of cache eviction partitions, power of 2 (default 256)")
 	f.IntVarP(&o.ErrorRetry, "error-retry", "e", desync.DefaultErrorRetry, "number of times to retry in case of network error")
 	f.DurationVarP(&o.ErrorRetryBaseInterval, "error-retry-base-interval", "b", desync.DefaultErrorRetryBaseInterval, "initial retry delay, increases linearly with each subsequent attempt")
 	f.BoolVar(&o.SafePruning, "safe-pruning", false, "enable safe concurrent pruning protocol (see doc/safe-pruning.md)")
