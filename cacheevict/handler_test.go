@@ -173,6 +173,8 @@ func TestOpenClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertEqual(t, h.Hits(), 0, "initial hits")
+	assertEqual(t, h.Misses(), 0, "initial misses")
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -180,23 +182,25 @@ func TestOpenClose(t *testing.T) {
 
 func TestBeforeAfterStore(t *testing.T) {
 	dir := t.TempDir()
-	cfg := desyncConfig(dir, 100*1024*1024, 0, 16)
-	h, err := Open(cfg)
+	h, err := Open(desyncConfig(dir, 100*1024*1024, 0, 16))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Close()
 
-	// Store a new file via the helper (which calls BeforeStore/AfterStore).
+	// Store a new file (miss).
 	path := storeDesyncChunk(t, h, dir, 512)
 	assertEqual(t, h.TotalFiles(), 1, "new file should add 1")
 	assertEqual(t, h.TotalSize(), 512, "size should be 512")
+	assertEqual(t, h.Misses(), 1, "new file = 1 miss")
+	assertEqual(t, h.Hits(), 0, "no hits yet")
 
-	// Overwrite the same file — should not change file count.
+	// Overwrite the same file — not a miss (oldSize != 0).
 	oldSize := h.BeforeStore(path)
 	os.WriteFile(path, make([]byte, 512), 0644)
 	h.AfterStore(path, oldSize)
 	assertEqual(t, h.TotalFiles(), 1, "overwrite should not add files")
+	assertEqual(t, h.Misses(), 1, "overwrite should not add miss")
 }
 
 func TestBeforeRemove(t *testing.T) {
@@ -210,12 +214,13 @@ func TestBeforeRemove(t *testing.T) {
 	filePath := storeDesyncChunk(t, h, dir, 256)
 	assertEqual(t, h.TotalFiles(), 1, "after store")
 	assertGreater(t, h.TotalSize(), 0, "after store")
+	assertEqual(t, h.Misses(), 1, "store = miss")
 
-	// Remove it.
 	h.BeforeRemove(filePath)
 	os.Remove(filePath)
 	assertEqual(t, h.TotalFiles(), 0, "after remove")
 	assertEqual(t, h.TotalSize(), 0, "after remove")
+	assertEqual(t, h.Misses(), 1, "remove should not change misses")
 }
 
 func TestUseFile(t *testing.T) {
@@ -227,6 +232,8 @@ func TestUseFile(t *testing.T) {
 	defer h.Close()
 
 	path := storeDesyncChunk(t, h, dir, 512)
+	assertEqual(t, h.Hits(), 0, "no hits before UseFile")
+
 	info1, _ := os.Stat(path)
 	mtime1 := info1.ModTime()
 
@@ -238,12 +245,16 @@ func TestUseFile(t *testing.T) {
 	if !mtime2.After(mtime1) {
 		t.Errorf("UseFile should update mtime: before=%v after=%v", mtime1, mtime2)
 	}
+	assertEqual(t, h.Hits(), 1, "UseFile should increment hits")
+
+	h.UseFile(path)
+	h.UseFile(path)
+	assertEqual(t, h.Hits(), 3, "multiple UseFile calls")
 }
 
 func TestEvictionBySize(t *testing.T) {
 	dir := t.TempDir()
-	cfg := desyncConfig(dir, 500, 0, 4)
-	h, err := Open(cfg)
+	h, err := Open(desyncConfig(dir, 500, 0, 4))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,16 +264,15 @@ func TestEvictionBySize(t *testing.T) {
 		storeDesyncChunk(t, h, dir, 256)
 	}
 
-	// Should have evicted down near the limit.
 	if h.TotalSize() > 600 {
 		t.Errorf("totalSize %d should be near or below limit 500", h.TotalSize())
 	}
+	assertEqual(t, h.Misses(), 50, "50 stores = 50 misses")
 }
 
 func TestEvictionByFiles(t *testing.T) {
 	dir := t.TempDir()
-	cfg := desyncConfig(dir, 0, 10, 1)
-	h, err := Open(cfg)
+	h, err := Open(desyncConfig(dir, 0, 10, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,18 +285,17 @@ func TestEvictionByFiles(t *testing.T) {
 	if h.TotalFiles() > 11 {
 		t.Errorf("totalFiles %d should be near or below max-files 10", h.TotalFiles())
 	}
+	assertEqual(t, h.Misses(), 20, "20 stores = 20 misses")
 }
 
 func TestEvictionLRU(t *testing.T) {
 	dir := t.TempDir()
-	cfg := desyncConfig(dir, 100*1024*1024, 0, 1)
-	h, err := Open(cfg)
+	h, err := Open(desyncConfig(dir, 100*1024*1024, 0, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Close()
 
-	// Store "old" files.
 	var oldPaths []string
 	for range 5 {
 		path := storeDesyncChunk(t, h, dir, 128)
@@ -295,7 +304,6 @@ func TestEvictionLRU(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Store "new" files (newer mtime).
 	var newPaths []string
 	for range 5 {
 		path := storeDesyncChunk(t, h, dir, 128)
@@ -304,14 +312,16 @@ func TestEvictionLRU(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Touch old files (mtime becomes newest).
 	for _, p := range oldPaths {
 		h.UseFile(p)
 	}
 
-	// Force eviction by lowering limit.
+	assertEqual(t, h.Misses(), 10, "10 stores = 10 misses")
+	assertEqual(t, h.Hits(), 5, "5 UseFile calls = 5 hits")
+
 	h.cfg.MaxSize = 200
 	storeDesyncChunk(t, h, dir, 128)
+	assertEqual(t, h.Misses(), 11, "11th store")
 
 	evictedNew := 0
 	evictedOld := 0
@@ -335,7 +345,6 @@ func TestEvictionLRU(t *testing.T) {
 func TestColdStart(t *testing.T) {
 	dir := t.TempDir()
 
-	// Pre-populate without handler.
 	var totalSize int64
 	for range 10 {
 		path := storeDesyncChunkRaw(t, dir, 512)
@@ -351,24 +360,25 @@ func TestColdStart(t *testing.T) {
 
 	assertEqual(t, h.TotalSize(), totalSize, "cold start size")
 	assertEqual(t, h.TotalFiles(), 10, "cold start files")
+	assertEqual(t, h.Hits(), 0, "cold start hits")
+	assertEqual(t, h.Misses(), 0, "cold start misses")
 }
 
 func TestLFSLayout(t *testing.T) {
 	dir := t.TempDir()
-	cfg := lfsConfig(dir, 100*1024*1024, 0, 16)
-	h, err := Open(cfg)
+	h, err := Open(lfsConfig(dir, 100*1024*1024, 0, 16))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Close()
 
-	// Store LFS-style objects.
 	for range 10 {
 		storeLFSObject(t, h, dir, 1024)
 	}
 
 	assertEqual(t, h.TotalFiles(), 10, "lfs file count")
 	assertGreater(t, h.TotalSize(), 0, "lfs total size")
+	assertEqual(t, h.Misses(), 10, "lfs misses")
 }
 
 func TestLFSColdStart(t *testing.T) {
@@ -381,8 +391,7 @@ func TestLFSColdStart(t *testing.T) {
 		totalSize += info.Size()
 	}
 
-	cfg := lfsConfig(dir, 100*1024*1024, 0, 16)
-	h, err := Open(cfg)
+	h, err := Open(lfsConfig(dir, 100*1024*1024, 0, 16))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,6 +430,7 @@ func TestConcurrency(t *testing.T) {
 	}
 	assertGreater(t, h.TotalSize(), 0, "concurrent writes")
 	assertGreater(t, h.TotalFiles(), 0, "concurrent writes files")
+	assertEqual(t, h.Misses(), 160, "160 stores = 160 misses")
 }
 
 func TestPartitionMismatch(t *testing.T) {
@@ -432,7 +442,6 @@ func TestPartitionMismatch(t *testing.T) {
 	storeDesyncChunk(t, h, dir, 512)
 	h.Close()
 
-	// Reopen with different partitions — should rescan.
 	h2, err := Open(desyncConfig(dir, 100*1024*1024, 0, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -440,11 +449,13 @@ func TestPartitionMismatch(t *testing.T) {
 	defer h2.Close()
 
 	assertGreater(t, h2.TotalSize(), 0, "rescan after partition change")
+	// Stats reset on recreate.
+	assertEqual(t, h2.Hits(), 0, "hits reset after recreate")
+	assertEqual(t, h2.Misses(), 0, "misses reset after recreate")
 }
 
 func TestStaleTempCleanup(t *testing.T) {
 	dir := t.TempDir()
-	// Start with no limit so nothing is evicted during setup.
 	cfg := desyncConfig(dir, 0, 0, 1)
 	h, err := Open(cfg)
 	if err != nil {
@@ -452,7 +463,6 @@ func TestStaleTempCleanup(t *testing.T) {
 	}
 	defer h.Close()
 
-	// Store chunks (no eviction yet).
 	var subdirWithChunks string
 	for range 50 {
 		path := storeDesyncChunk(t, h, dir, 256)
@@ -461,17 +471,14 @@ func TestStaleTempCleanup(t *testing.T) {
 		}
 	}
 
-	// Plant a stale temp file in a subdir that has chunks.
 	tmpPath := filepath.Join(subdirWithChunks, ".tmp-cacnk123456")
 	os.WriteFile(tmpPath, []byte("stale"), 0644)
 	old := time.Now().Add(-2 * time.Hour)
 	os.Chtimes(tmpPath, old, old)
 
-	// Now enable a small limit and trigger eviction.
 	h.cfg.MaxSize = 500
 	storeDesyncChunk(t, h, dir, 256)
 
-	// Stale temp file should have been cleaned up during eviction.
 	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
 		t.Errorf("stale temp file should have been deleted")
 	}
@@ -489,17 +496,126 @@ func TestDisabled(t *testing.T) {
 		storeDesyncChunk(t, h, dir, 1024)
 	}
 
-	// No eviction should have happened.
 	assertEqual(t, h.TotalFiles(), 50, "disabled: all files remain")
+	assertEqual(t, h.Misses(), 50, "50 stores = 50 misses even when disabled")
 }
 
 func TestInvalidPartitions(t *testing.T) {
 	dir := t.TempDir()
 	for _, p := range []int{3, 5, 7, 15, 100} {
-		cfg := desyncConfig(dir, 1024, 0, p)
-		_, err := Open(cfg)
+		_, err := Open(desyncConfig(dir, 1024, 0, p))
 		if err == nil {
 			t.Errorf("partitions=%d should be invalid", p)
 		}
 	}
+}
+
+func TestHitRatio(t *testing.T) {
+	dir := t.TempDir()
+	h, err := Open(desyncConfig(dir, 100*1024*1024, 0, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	// No requests → ratio 0.
+	if r := h.HitRatio(); r != 0 {
+		t.Errorf("empty hit ratio: got %f, want 0", r)
+	}
+
+	// 1 miss (store).
+	storeDesyncChunk(t, h, dir, 256)
+	if r := h.HitRatio(); r != 0 {
+		t.Errorf("after 1 miss: got %f, want 0", r)
+	}
+
+	// 1 hit (use).
+	path := storeDesyncChunk(t, h, dir, 256)
+	h.UseFile(path)
+	// 2 misses, 1 hit → ratio = 1/3 ≈ 0.333
+	r := h.HitRatio()
+	if r < 0.33 || r > 0.34 {
+		t.Errorf("after 2 misses + 1 hit: got %f, want ~0.333", r)
+	}
+}
+
+func TestResetStats(t *testing.T) {
+	dir := t.TempDir()
+	h, err := Open(desyncConfig(dir, 100*1024*1024, 0, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	path := storeDesyncChunk(t, h, dir, 256)
+	h.UseFile(path)
+	assertEqual(t, h.Misses(), 1, "before reset misses")
+	assertEqual(t, h.Hits(), 1, "before reset hits")
+
+	h.ResetStats()
+	assertEqual(t, h.Misses(), 0, "after reset misses")
+	assertEqual(t, h.Hits(), 0, "after reset hits")
+	if r := h.HitRatio(); r != 0 {
+		t.Errorf("after reset: ratio %f, want 0", r)
+	}
+
+	// Counters still work after reset.
+	storeDesyncChunk(t, h, dir, 256)
+	h.UseFile(path)
+	assertEqual(t, h.Misses(), 1, "post-reset misses")
+	assertEqual(t, h.Hits(), 1, "post-reset hits")
+}
+
+func TestVersionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	h, err := Open(desyncConfig(dir, 100*1024*1024, 0, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Close()
+
+	// Corrupt the major version in the tracking file.
+	path := filepath.Join(dir, trackingFileName)
+	f, err := os.OpenFile(path, os.O_RDWR, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write major version 99 at offset 0.
+	buf := []byte{99, 0, 0, 0}
+	f.WriteAt(buf, 0)
+	f.Close()
+
+	// Open should fail with version error.
+	_, err = Open(desyncConfig(dir, 100*1024*1024, 0, 16))
+	if err == nil {
+		t.Fatal("expected version mismatch error")
+	}
+	if !strings.Contains(err.Error(), "incompatible") {
+		t.Errorf("error should mention 'incompatible': %v", err)
+	}
+}
+
+func TestStatsPersistAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	h, err := Open(desyncConfig(dir, 100*1024*1024, 0, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := storeDesyncChunk(t, h, dir, 256)
+	h.UseFile(path)
+	h.UseFile(path)
+	assertEqual(t, h.Misses(), 1, "before close misses")
+	assertEqual(t, h.Hits(), 2, "before close hits")
+	h.Close()
+
+	// Reopen — stats should persist.
+	h2, err := Open(desyncConfig(dir, 100*1024*1024, 0, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h2.Close()
+	assertEqual(t, h2.Misses(), 1, "after reopen misses")
+	assertEqual(t, h2.Hits(), 2, "after reopen hits")
+	assertEqual(t, h2.TotalFiles(), 1, "after reopen files")
 }

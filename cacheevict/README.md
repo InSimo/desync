@@ -98,8 +98,9 @@ file handle.
    the scan.
 5. **Sort by mtime** ascending (oldest first).
 6. **Delete** until `partitionFiles <= 0.9 * totalFiles / P`.
-7. **Update counters**: decrement globalSize, globalFiles, partitionSize,
-   partitionFiles atomically for each deletion.
+7. **Reconcile counters**: set partition counters to the actual remaining
+   values from the listing, then update globals by the delta. This
+   self-heals any counter drift from external file deletions.
 
 ### Subdirectory presence bitmask
 
@@ -112,39 +113,72 @@ readdir). Operations use `atomic.OrUint32` / `atomic.AndUint32` /
 
 ## Mmap file layout
 
-File: `BaseDir/.cache-sizes`
+File: `BaseDir/.cache-sizes` (version 1)
 
 ```
-Header (24 bytes):
-  [0]   int32   eviction lock (0 = free, PID = in-progress)
-  [4]   int32   partition count P
-  [8]   int64   total size in bytes
-  [16]  int64   total file count
+Header (1024 bytes, padded for future fields):
+  [0]    int32   major version (1)
+  [4]    int32   minor version (0)
+  [8]    int32   eviction lock (0 = free, PID = in-progress)
+  [12]   int32   prefix count
+  [16]   int32   partition count
+  [20]   int32   (reserved)
+  [24]   int64   total size in bytes
+  [32]   int64   total file count
+  [40]   int64   hit count (cache hits via UseFile)
+  [48]   int64   miss count (cache misses via AfterStore for new files)
+  [56..1023]     reserved (zero)
 
 Subdirectory presence bitmask (PrefixCount/8 bytes, default 8192):
-  [24]  PrefixCount bits, bit i = subdir i may have files
+  [1024]  PrefixCount bits, bit i = subdir i may have files
 
 Per-partition counters (P × 16 bytes):
-  [24 + PrefixCount/8 + p*16]      int64   partition byte size
-  [24 + PrefixCount/8 + p*16 + 8]  int64   partition file count
+  [1024 + PrefixCount/8 + p*16]      int64   partition byte size
+  [1024 + PrefixCount/8 + p*16 + 8]  int64   partition file count
 
-Total = 24 + PrefixCount/8 + P × 16
+Total = 1024 + PrefixCount/8 + P × 16
 ```
+
+### Versioning
+
+The file starts with a major and minor version number. A major version
+change indicates an incompatible layout — `Open()` returns an error if the
+stored major version differs from the expected one. Minor version changes
+are forward-compatible and ignored on open. The prefix count and partition
+count are also stored and validated; a mismatch triggers a recreate and
+rescan.
 
 ### Counter updates per operation
 
-| Operation | globalSize | globalFiles | partitionSize | partitionFiles |
-|-----------|-----------|-------------|--------------|----------------|
-| AfterStore (new file) | +newSize | +1 | +newSize | +1 |
-| AfterStore (overwrite) | +(new-old) | 0 | +(new-old) | 0 |
-| BeforeRemove | -size | -1 | -size | -1 |
+| Operation | globalSize | globalFiles | hits | misses | partitionSize | partitionFiles |
+|-----------|-----------|-------------|------|--------|--------------|----------------|
+| AfterStore (new file) | +newSize | +1 | | +1 | +newSize | +1 |
+| AfterStore (overwrite) | +(new-old) | | | | +(new-old) | |
+| BeforeRemove | -size | -1 | | | -size | -1 |
+| UseFile | | | +1 | | | |
 
 During eviction, partition counters are **reconciled** from the actual
 directory listing rather than decremented per-deleted-file. The listing
-reveals the true partition state, so if
-files were deleted externally (by the user, another tool, etc.), the
-counters are self-corrected. Global counters are updated by the delta
-between the old partition counter and the new actual value.
+reveals the true partition state, so if files were deleted externally
+(by the user, another tool, etc.), the counters are self-corrected.
+Global counters are updated by the delta between the old partition counter
+and the new actual value.
+
+### Hit/miss statistics
+
+The handler tracks cache hits and misses:
+- **Hit**: each `UseFile()` call increments the hit counter.
+- **Miss**: each `AfterStore()` for a new file (oldSize == 0) increments the miss counter.
+
+```go
+handler.Hits()      // total hits since last reset
+handler.Misses()    // total misses since last reset
+handler.HitRatio()  // hits / (hits + misses), 0 if no requests
+handler.ResetStats() // zero both counters
+```
+
+Counters persist across process restarts (stored in the mmap file) and
+are shared across concurrent processes.
 
 ### Cold start
 

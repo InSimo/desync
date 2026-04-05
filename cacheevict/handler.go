@@ -27,14 +27,49 @@ const (
 	// trackingFileName is the name of the persistent mmap'd file.
 	trackingFileName = ".cache-sizes"
 
+	// File format version. Major version change = incompatible layout.
+	majorVersion = 1
+	minorVersion = 0
+
 	// Default values.
 	DefaultPartitions  = 256
 	DefaultPrefixCount = 65536
 
 	// Mmap layout offsets.
-	headerSize      = 24
-	bitmaskOffset   = headerSize                   // 24
-	partitionStride = 16 // 2 × int64 per partition
+	//
+	//   Header (1024 bytes, padded for future fields):
+	//     [0]    int32   major version
+	//     [4]    int32   minor version
+	//     [8]    int32   eviction lock (PID)
+	//     [12]   int32   prefix count
+	//     [16]   int32   partition count
+	//     [20]   int32   (reserved)
+	//     [24]   int64   total size in bytes
+	//     [32]   int64   total file count
+	//     [40]   int64   hit count
+	//     [48]   int64   miss count
+	//     [56..1023]     reserved (zero)
+	//
+	//   Bitmask (PrefixCount/8 bytes):
+	//     [1024]  PrefixCount bits
+	//
+	//   Per-partition (P × 16 bytes):
+	//     [1024 + PrefixCount/8 + p*16]      int64  partition size
+	//     [1024 + PrefixCount/8 + p*16 + 8]  int64  partition files
+	offMajorVersion  = 0
+	offMinorVersion  = 4
+	offEvictionLock  = 8
+	offPrefixCount   = 12
+	offPartitionCount = 16
+	// offReserved32  = 20
+	offTotalSize     = 24
+	offTotalFiles    = 32
+	offHits          = 40
+	offMisses        = 48
+	headerSize       = 1024
+
+	bitmaskOffset   = headerSize // 1024
+	partitionStride = 16         // 2 × int64 per partition
 
 	// staleTempAge is the minimum age for temp files to be cleaned up.
 	staleTempAge = time.Hour
@@ -111,7 +146,7 @@ func Open(cfg Config) (*Handler, error) {
 	}
 
 	bmSize := cfg.PrefixCount / 8
-	counterOff := headerSize + bmSize
+	counterOff := bitmaskOffset + bmSize
 	fileSize := counterOff + cfg.Partitions*partitionStride
 	path := filepath.Join(cfg.BaseDir, trackingFileName)
 
@@ -131,14 +166,28 @@ func Open(cfg Config) (*Handler, error) {
 	}
 
 	if isNew {
-		atomic.StoreInt32(h.storedPartitionCount(), int32(cfg.Partitions))
+		// Zero the header region (may contain stale data from a
+		// previous file with a different layout/size).
+		for i := range headerSize {
+			h.data[i] = 0
+		}
+		h.writeHeader()
 		if err := h.initCounters(); err != nil {
 			closeCacheSizesFile(data)
 			return nil, fmt.Errorf("cacheevict: init counters: %w", err)
 		}
 	} else {
-		stored := atomic.LoadInt32(h.storedPartitionCount())
-		if int(stored) != cfg.Partitions {
+		// Validate version.
+		storedMajor := atomic.LoadInt32(h.ptrInt32(offMajorVersion))
+		if storedMajor != majorVersion {
+			closeCacheSizesFile(data)
+			return nil, fmt.Errorf("cacheevict: incompatible tracking file version %d (expected %d)", storedMajor, majorVersion)
+		}
+
+		// Check if prefix count or partition count changed → recreate.
+		storedPrefix := atomic.LoadInt32(h.ptrInt32(offPrefixCount))
+		storedPart := atomic.LoadInt32(h.ptrInt32(offPartitionCount))
+		if int(storedPrefix) != cfg.PrefixCount || int(storedPart) != cfg.Partitions {
 			closeCacheSizesFile(data)
 			if err := os.Remove(path); err != nil {
 				return nil, fmt.Errorf("cacheevict: remove stale tracking file: %w", err)
@@ -148,7 +197,7 @@ func Open(cfg Config) (*Handler, error) {
 				return nil, fmt.Errorf("cacheevict: recreate tracking file: %w", err)
 			}
 			h.data = data
-			atomic.StoreInt32(h.storedPartitionCount(), int32(cfg.Partitions))
+			h.writeHeader()
 			if err := h.initCounters(); err != nil {
 				closeCacheSizesFile(data)
 				return nil, fmt.Errorf("cacheevict: init counters after recreate: %w", err)
@@ -157,6 +206,14 @@ func Open(cfg Config) (*Handler, error) {
 	}
 
 	return h, nil
+}
+
+// writeHeader stores version, prefix count, and partition count.
+func (h *Handler) writeHeader() {
+	atomic.StoreInt32(h.ptrInt32(offMajorVersion), majorVersion)
+	atomic.StoreInt32(h.ptrInt32(offMinorVersion), minorVersion)
+	atomic.StoreInt32(h.ptrInt32(offPrefixCount), int32(h.prefixCount))
+	atomic.StoreInt32(h.ptrInt32(offPartitionCount), int32(h.partitions))
 }
 
 // Close flushes counters to disk and releases the mmap'd region.
@@ -172,21 +229,19 @@ func (h *Handler) Close() error {
 
 // --- mmap layout accessors ---
 
-func (h *Handler) evictionLock() *int32 {
-	return (*int32)(unsafe.Pointer(&h.data[0]))
+func (h *Handler) ptrInt32(off int) *int32 {
+	return (*int32)(unsafe.Pointer(&h.data[off]))
 }
 
-func (h *Handler) storedPartitionCount() *int32 {
-	return (*int32)(unsafe.Pointer(&h.data[4]))
+func (h *Handler) ptrInt64(off int) *int64 {
+	return (*int64)(unsafe.Pointer(&h.data[off]))
 }
 
-func (h *Handler) globalSize() *int64 {
-	return (*int64)(unsafe.Pointer(&h.data[8]))
-}
-
-func (h *Handler) globalFiles() *int64 {
-	return (*int64)(unsafe.Pointer(&h.data[16]))
-}
+func (h *Handler) evictionLock() *int32  { return h.ptrInt32(offEvictionLock) }
+func (h *Handler) globalSize() *int64    { return h.ptrInt64(offTotalSize) }
+func (h *Handler) globalFiles() *int64   { return h.ptrInt64(offTotalFiles) }
+func (h *Handler) hitCounter() *int64    { return h.ptrInt64(offHits) }
+func (h *Handler) missCounter() *int64   { return h.ptrInt64(offMisses) }
 
 func (h *Handler) partitionSize(p int) *int64 {
 	return (*int64)(unsafe.Pointer(&h.data[h.counterOff+p*partitionStride]))
@@ -249,6 +304,35 @@ func (h *Handler) TotalFiles() int64 {
 	return atomic.LoadInt64(h.globalFiles())
 }
 
+// Hits returns the number of cache hits (UseFile calls) since last reset.
+func (h *Handler) Hits() int64 {
+	return atomic.LoadInt64(h.hitCounter())
+}
+
+// Misses returns the number of cache misses (new files stored via
+// AfterStore) since last reset.
+func (h *Handler) Misses() int64 {
+	return atomic.LoadInt64(h.missCounter())
+}
+
+// HitRatio returns hits / (hits + misses), or 0 if no requests have been
+// recorded.
+func (h *Handler) HitRatio() float64 {
+	hits := h.Hits()
+	misses := h.Misses()
+	total := hits + misses
+	if total == 0 {
+		return 0
+	}
+	return float64(hits) / float64(total)
+}
+
+// ResetStats zeroes the hit and miss counters.
+func (h *Handler) ResetStats() {
+	atomic.StoreInt64(h.hitCounter(), 0)
+	atomic.StoreInt64(h.missCounter(), 0)
+}
+
 // BeforeStore stats the file at path and returns its current size (0 if
 // absent). Call this before writing the file, then pass the result to
 // AfterStore.
@@ -262,6 +346,7 @@ func (h *Handler) BeforeStore(path string) int64 {
 // AfterStore stats the file at path to get the new size, computes the
 // delta against oldSize (from BeforeStore), atomically updates all
 // counters, sets the bitmask bit, and triggers eviction if over limit.
+// If oldSize is 0 (new file), increments the miss counter.
 func (h *Handler) AfterStore(path string, oldSize int64) {
 	var newSize int64
 	if info, err := os.Stat(path); err == nil {
@@ -281,6 +366,7 @@ func (h *Handler) AfterStore(path string, oldSize int64) {
 	if isNew {
 		atomic.AddInt64(h.globalFiles(), 1)
 		atomic.AddInt64(h.partitionFiles(partition), 1)
+		atomic.AddInt64(h.missCounter(), 1)
 	}
 
 	h.setBitmask(prefixIdx)
@@ -308,9 +394,11 @@ func (h *Handler) BeforeRemove(path string) {
 
 // UseFile marks a cached file as recently used for LRU tracking.
 // Currently updates the file's mtime to now. Best-effort, errors ignored.
+// Increments the hit counter.
 func (h *Handler) UseFile(path string) {
 	now := time.Now()
 	_ = os.Chtimes(path, now, now)
+	atomic.AddInt64(h.hitCounter(), 1)
 }
 
 // --- Eviction ---
