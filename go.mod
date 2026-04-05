@@ -3,6 +3,7 @@ module github.com/folbricht/desync
 go 1.24.0
 
 require (
+	github.com/InSimo/cacheevict v0.0.0
 	cloud.google.com/go/storage v1.30.1
 	github.com/DataDog/zstd v1.5.2
 	github.com/boljen/go-bitmap v0.0.0-20151001105940-23cd2fb0ce7d
@@ -69,3 +70,5 @@ require (
 )
 
 replace github.com/git-lfs/pktline => github.com/InSimo/pktline v0.0.0-20260331103642-8dd7e5cb363e
+
+replace github.com/InSimo/cacheevict => ./cacheevict

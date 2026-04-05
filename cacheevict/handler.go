@@ -229,6 +229,16 @@ func (h *Handler) prefixFromPath(path string) int {
 
 // --- Public API ---
 
+// SetMaxSize updates the maximum cache size limit.
+func (h *Handler) SetMaxSize(maxSize int64) {
+	h.cfg.MaxSize = maxSize
+}
+
+// SetMaxFiles updates the maximum file count limit.
+func (h *Handler) SetMaxFiles(maxFiles int64) {
+	h.cfg.MaxFiles = maxFiles
+}
+
 // TotalSize returns the current tracked total cache size in bytes.
 func (h *Handler) TotalSize() int64 {
 	return atomic.LoadInt64(h.globalSize())
