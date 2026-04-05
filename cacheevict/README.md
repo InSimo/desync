@@ -6,6 +6,12 @@ Automatic LRU cache eviction for disk-based caches. Tracks total cache
 size and file count via a persistent mmap'd file with lock-free atomic
 counters, enabling safe coordination between multiple concurrent processes.
 
+## AI Disclaimer
+
+This code and documentation were created with the assistance of AI agents.
+The design, implementation, and tests were reviewed and directed by human
+developers.
+
 ## Usage
 
 ```go
