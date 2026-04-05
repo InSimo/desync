@@ -3,10 +3,10 @@
 // file with lock-free atomic counters, enabling safe coordination between
 // multiple concurrent processes.
 //
-// The eviction algorithm is inspired by ccache: max_size/max_files are used
-// as trigger conditions, while the actual eviction target is file-count-based
-// (trim the largest partition to 0.9 * totalFiles / P). This avoids
-// pathological behavior with mixed file sizes and amortizes scan cost.
+// The eviction algorithm uses max_size/max_files as trigger conditions,
+// while the actual eviction target is file-count-based (trim the largest
+// partition to 90% of its fair share). This avoids pathological behavior
+// with mixed file sizes and amortizes scan cost.
 //
 // See the README for the full design rationale and mmap file layout.
 package cacheevict
@@ -422,9 +422,9 @@ func (h *Handler) evictPartition(partition int) {
 	}
 
 	// The actual file listing gives us the true partition state, which may
-	// differ from the counters if files were deleted externally. Following
-	// ccache's approach, we reconcile the counters from the listing rather
-	// than decrementing per-file. This self-heals counter drift.
+	// differ from the counters if files were deleted externally. We
+	// reconcile the counters from the listing rather than decrementing
+	// per-file. This self-heals counter drift.
 	var actualSize int64
 	var actualFiles int64
 	for _, f := range files {
@@ -445,7 +445,7 @@ func (h *Handler) evictPartition(partition int) {
 		return files[i].mtime.Before(files[j].mtime)
 	})
 
-	// Eviction target: 0.9 * totalFiles / P (matching ccache).
+	// Eviction target: trim partition to 90% of fair share by file count.
 	targetFiles := atomic.LoadInt64(h.globalFiles()) * 9 / 10 / int64(h.partitions)
 
 	remainingSize := actualSize

@@ -42,9 +42,11 @@ os.Remove(path)
 
 ## Design
 
-### Reference: ccache
+### Design influences
 
-The eviction algorithm is inspired by [ccache](https://ccache.dev/):
+The high-level eviction strategy takes inspiration from
+[ccache](https://ccache.dev/)'s cache management approach (the
+implementation is original):
 
 | Aspect | ccache | cacheevict |
 |--------|--------|------------|
@@ -57,11 +59,10 @@ The eviction algorithm is inspired by [ccache](https://ccache.dev/):
 
 ### Why file-count-based eviction?
 
-ccache's automatic eviction uses `max_size` (bytes) only as a trigger. The
-actual deletion target is file-count-based: trim the chosen partition to
-`0.9 * total_files / P`. This avoids pathological behavior where a few large
-files cause excessive deletion of small files, and amortizes scan cost by
-removing multiple files per eviction pass.
+Using `max_size` (bytes) only as a trigger, with a file-count-based deletion
+target (`0.9 * total_files / P`), avoids pathological behavior where a few
+large files cause excessive deletion of small files, and amortizes scan cost
+by removing multiple files per eviction pass.
 
 ### Why mmap + atomics?
 
@@ -133,8 +134,8 @@ Total = 24 + PrefixCount/8 + P × 16
 | BeforeRemove | -size | -1 | -size | -1 |
 
 During eviction, partition counters are **reconciled** from the actual
-directory listing rather than decremented per-deleted-file (matching
-ccache's approach). The listing reveals the true partition state, so if
+directory listing rather than decremented per-deleted-file. The listing
+reveals the true partition state, so if
 files were deleted externally (by the user, another tool, etc.), the
 counters are self-corrected. Global counters are updated by the delta
 between the old partition counter and the new actual value.
