@@ -842,7 +842,7 @@ func TestAgentInitWithSetup(t *testing.T) {
 	a := &Agent{
 		enc: json.NewEncoder(&buf),
 	}
-	a.setup = func(remote, operation string) error {
+	a.setup = func(remote, operation string, _ *cmdshared.Config) error {
 		gotRemote = remote
 		gotOp = operation
 		a.writeStore = chunkStore

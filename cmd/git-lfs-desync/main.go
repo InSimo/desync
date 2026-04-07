@@ -127,13 +127,47 @@ Configure Git LFS to use this agent:
 			agent := &Agent{tmpDir: os.TempDir(), gate: gate}
 			defer agent.Close()
 
-			agent.setup = func(remote, operation string) error {
+			agent.setup = func(remote, operation string, serverConfig *cmdshared.Config) error {
 				gitObjectName := expandGitObjectName(cfgFromGit, remote, operation)
 				if err := initConfig(gitObjectName); err != nil {
-					return err
+					// If local config loading fails but we have server config,
+					// use the server config as the base config.
+					if serverConfig != nil {
+						cfg = *serverConfig
+					} else {
+						return err
+					}
 				}
+
+				// Merge server config: server-provided values fill in gaps
+				// not covered by local config or command-line flags.
+				if serverConfig != nil {
+					if cfg.S3Credentials == nil {
+						cfg.S3Credentials = serverConfig.S3Credentials
+					}
+					if cfg.StoreOptions == nil {
+						cfg.StoreOptions = serverConfig.StoreOptions
+					}
+				}
+
 				if err := cmdshared.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
 					return err
+				}
+
+				// Server config provides store URLs as defaults when
+				// not specified via flags or local config.
+				if serverConfig != nil && storeURL == "" && cfg.ResolveStore("") == "" {
+					storeURL = serverConfig.ResolveStore("")
+				}
+				if serverConfig != nil && indexURL == "" && cfg.ResolveIndexStore("") == "" {
+					indexURL = serverConfig.ResolveIndexStore("")
+				}
+				// Chunk size from the server always takes priority — it must
+				// match the server's chunking for data compatibility.
+				if serverConfig != nil {
+					if sc := serverConfig.ResolveChunkSize(""); sc != "" {
+						chunkSize = sc
+					}
 				}
 
 				resolvedStore := cfg.ResolveStore(storeURL)
@@ -198,6 +232,18 @@ Configure Git LFS to use this agent:
 				agent.maxChunk = maxChunk
 				agent.safePruning = storeOpt.SafePruning
 				agent.safePropagationTime = storeOpt.SafePropagationTime
+
+				// If the server enables safe-pruning, the client must
+				// also use it to avoid corrupting the pruning protocol.
+				if serverConfig != nil {
+					if opts, err := serverConfig.GetStoreOptionsFor(resolvedStore); err == nil && opts.SafePruning {
+						agent.safePruning = true
+						if opts.SafePropagationTime > agent.safePropagationTime {
+							agent.safePropagationTime = opts.SafePropagationTime
+						}
+					}
+				}
+
 				return nil
 			}
 			return agent.Run(ctx)

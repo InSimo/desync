@@ -19,11 +19,12 @@ import (
 // LFS custom transfer protocol message types.
 
 type initRequest struct {
-	Event               string `json:"event"`
-	Operation           string `json:"operation"`
-	Remote              string `json:"remote"`
-	Concurrent          bool   `json:"concurrent"`
-	ConcurrentTransfers int    `json:"concurrenttransfers"`
+	Event               string           `json:"event"`
+	Operation           string           `json:"operation"`
+	Remote              string           `json:"remote"`
+	Concurrent          bool             `json:"concurrent"`
+	ConcurrentTransfers int              `json:"concurrenttransfers"`
+	Config              *json.RawMessage `json:"config,omitempty"`
 }
 
 type transferRequest struct {
@@ -90,8 +91,11 @@ type Agent struct {
 	// setup is called once from handleInit with remote and operation from the
 	// LFS init message. It expands %(remote)/%(operation) in cfgFromGit, loads
 	// config, and initializes writeStore/readStore/indexWriteStore on the Agent.
-	// Nil means stores are already initialized (used in tests).
-	setup func(remote, operation string) error
+	// serverConfig, when non-nil, is the server-provided config from the init
+	// message; it supplies defaults for store URLs and credentials when the
+	// agent was auto-negotiated rather than manually configured.
+	// Nil setup means stores are already initialized (used in tests).
+	setup func(remote, operation string, serverConfig *cmdshared.Config) error
 }
 
 func (a *Agent) Close() {
@@ -184,11 +188,20 @@ func (a *Agent) handleInit(raw json.RawMessage) {
 	var req initRequest
 	json.Unmarshal(raw, &req) // best-effort; fields have safe zero values
 
+	// Parse server-provided config if present.
+	var serverConfig *cmdshared.Config
+	if req.Config != nil {
+		serverConfig = &cmdshared.Config{}
+		if err := json.Unmarshal(*req.Config, serverConfig); err != nil {
+			serverConfig = nil // ignore malformed config
+		}
+	}
+
 	var errMsg string
 
 	// Initialize stores using remote and operation from the init message.
 	if a.setup != nil {
-		if err := a.setup(req.Remote, req.Operation); err != nil {
+		if err := a.setup(req.Remote, req.Operation, serverConfig); err != nil {
 			errMsg = "initialization failed: " + err.Error()
 		}
 	}
