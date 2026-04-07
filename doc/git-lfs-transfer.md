@@ -216,6 +216,21 @@ git config lfs.url "ssh://git@server.example.com/git/myrepo.git"
 
 No custom transfer agent is needed on the client — Git LFS uses its built-in SSH transport.
 
+### Auto-negotiated desync agent (optional)
+
+If the server has `desync-lfs.advertise` enabled and the client has `git-lfs-desync` installed, the desync transfer agent can be used automatically. The client only needs the agent binary registered — no store URLs, credentials, or `standalonetransferagent` config:
+
+```sh
+# Register the agent binary (globally or per-repo)
+git config lfs.customtransfer.desync.path /usr/local/bin/git-lfs-desync
+```
+
+On the first LFS operation, git-lfs connects to the server via SSH, discovers the desync transfer is available, obtains the store config, and uses `git-lfs-desync` instead of the SSH protocol. Client-local settings like `--cache` can be added via `args`:
+
+```sh
+git config lfs.customtransfer.desync.args "--cache ~/.cache/desync/chunks"
+```
+
 ## Storage Layout
 
 The storage layout is identical to [`git-lfs-desync`](git-lfs-desync.md), making the two tools interoperable:
@@ -240,7 +255,39 @@ The index name for an LFS OID is `<oid[0:2]>/<oid[2:4]>/<oid[4:]>.caibx`. This s
 | `put-object`      | Receives a file, verifies its SHA-256 matches the OID, chunks it, and stores chunks + index.  |
 | `get-object`      | Looks up the index by OID, assembles the file from chunks, and streams it back to the client. |
 | `verify-object`   | Confirms an object exists and its size matches (404 if missing, 409 if size mismatch).        |
+| `authenticate`    | Returns transfer-specific config for a named transfer (see below).                            |
 | `quit`            | Graceful shutdown.                                                                            |
+
+## Transfer Negotiation
+
+`git-lfs-transfer` can advertise that it supports the desync custom transfer agent, allowing clients with `git-lfs-desync` installed to auto-negotiate it instead of using the SSH protocol directly. This is controlled by a per-repository git config:
+
+```sh
+git -C /git/myrepo.git config desync-lfs.advertise <mode>
+```
+
+| Mode | Behavior |
+| ---- | -------- |
+| `no` / `false` (default) | Desync transfer is not advertised. Clients use the SSH protocol. |
+| `without-credentials` | Desync is advertised with store URLs and chunk parameters, but S3 tokens and other credentials are stripped. Clients must have their own credentials configured locally. |
+| `with-credentials` | Desync is advertised with full config including S3 tokens, HTTP auth headers, and TLS certs. Use short-lived tokens with restricted permissions (no delete/overwrite). |
+
+When advertising is enabled, the server sends a `transfers=desync,ssh` capability during version negotiation. Clients that have `git-lfs-desync` registered as a custom transfer agent can then send the `authenticate` command to obtain the desync config:
+
+```
+Client:  authenticate
+         transfer=desync
+         <flush-pkt>
+
+Server:  status 200
+         <delim-pkt>
+         {"config":{"defaults":{"stores":[...],"index-store":"...","chunk-size":"16:64:256"},...},"expires_in":86400}
+         <flush-pkt>
+```
+
+The config JSON uses the same format as desync config files. The client caches this response and uses it to initialize `git-lfs-desync` without any manual client-side store configuration.
+
+Old clients that do not support transfer negotiation ignore the `transfers=` capability and continue using the SSH protocol as before.
 
 ## Escape Hatch / Delegation
 
@@ -430,5 +477,6 @@ rm -rf /tmp/lfs-ssh-repo /tmp/lfs-ssh-clone /tmp/shared_block \
 | **Where it runs**   | Client machine                                   | Server (invoked via SSH)                          |
 | **Protocol**        | Git LFS custom transfer agent (stdin/stdout JSON) | Git LFS SSH transfer protocol (pkt-line)         |
 | **Client setup**    | Custom transfer agent in `.gitconfig`            | Only `lfs.url` pointing to SSH remote             |
-| **Config**          | CLI flags + `~/.config/desync/config.json`       | `desync-lfs.json` (walk-up + global fallback)     |
+| **Auto-negotiation** | Receives config from server when auto-negotiated | Advertises desync transfer via `desync-lfs.advertise` |
+| **Config**          | CLI flags + config file + server config          | `desync-lfs.json` (walk-up + global fallback)     |
 | **Interoperable**   | Yes — same storage layout                        | Yes — same storage layout                         |

@@ -62,13 +62,21 @@ Flags that are the same for every invocation (store URL, index store URL, digest
 ### Precedence
 
 ```
-CLI flag  >  config defaults  >  built-in default
+CLI flag  >  local config defaults  >  server config  >  built-in default
 ```
 
-For `--index-store` the derived-from-store fallback is applied after the config default:
+When the agent is auto-negotiated via SSH transfer negotiation (see
+[Server-Provided Config](#server-provided-config)), the server provides a
+config with store URLs and parameters. Local CLI flags and config file values
+take priority over server-provided values, with two exceptions:
+
+- **Chunk size**: server always wins (must match for data compatibility)
+- **Safe-pruning**: if the server enables it, the client must also use it
+
+For `--index-store` the derived-from-store fallback is applied after all config sources:
 
 ```
-CLI --index-store  >  defaults.index-store  >  derived from --store
+CLI --index-store  >  defaults.index-store  >  server index-store  >  derived from --store
 ```
 
 ### JSON shape
@@ -260,6 +268,44 @@ mkdir -p ~/.cache/desync/chunks
 `git clone` fetches all remote tracking branches by default, so `origin/_desync` is available immediately after cloning without a separate `git fetch`. On machines that already have the repository checked out before `_desync` was pushed, run `git fetch origin _desync` once.
 
 > **Security note:** Anyone with read access to the remote can read the credentials on the `_desync` branch. Use this pattern only when the remote is private and access-controlled. If finer-grained access control is needed (e.g. read access to code but not to S3 keys), store credentials in environment variables or a local file via `--config` instead.
+
+---
+
+## Server-Provided Config
+
+When the server supports SSH transfer negotiation (see [git-lfs-transfer: Transfer Negotiation](git-lfs-transfer.md#transfer-negotiation)), `git-lfs-desync` can be auto-negotiated without any store URLs or credentials in the client config. The server sends the desync config in the standard JSON format via the `config` field of the LFS init message.
+
+### Minimal client setup (auto-negotiated)
+
+When the server advertises the desync transfer, clients only need the agent binary registered:
+
+```ini
+[lfs "customtransfer.desync"]
+    path = /usr/local/bin/git-lfs-desync
+    args = --cache ~/.cache/desync/chunks
+```
+
+No `--store`, `--index-store`, `standalonetransferagent`, or credentials are needed — they come from the server automatically.
+
+### How it works
+
+1. Git LFS connects to the server via SSH and discovers the desync transfer is available (via the `transfers=` capability or the `git-lfs-authenticate` response).
+2. Git LFS obtains the desync config from the server (via the `authenticate` command or the `transfers` JSON field).
+3. Git LFS selects `git-lfs-desync` as the standalone transfer agent and passes the server config in the init message's `config` field.
+4. `git-lfs-desync` parses the config and uses it for store URLs, chunk parameters, and (if advertised) credentials.
+
+### Merge rules
+
+Server config is merged with local config (CLI flags, config file, `--config-from-git`):
+
+| Setting | Priority |
+| ------- | -------- |
+| Store URLs | CLI flag > local config > server config |
+| Index store URL | CLI flag > local config > server config > derived from store |
+| **Chunk size** | **Server always wins** (must match for data compatibility) |
+| **Safe-pruning** | **Server wins if enabled** (client cannot disable it) |
+| S3 credentials | Local config > server config (server only sends if `desync-lfs.advertise = with-credentials`) |
+| Store options | Local config > server config |
 
 ---
 
