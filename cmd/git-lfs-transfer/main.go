@@ -62,7 +62,7 @@ func run() error {
 
 	// Escape hatch: check git config trigger before loading JSON config so that
 	// a per-repo opt-out works even when the config file is shared/global.
-	gitDisabled := gitConfigValue(absPath, "desync-lfs") == "false"
+	gitDisabled := gitConfigValue(absPath, "desync-lfs.transfer") == "false"
 
 	cfg, err := resolveConfig(absPath)
 	if err != nil {

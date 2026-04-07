@@ -300,7 +300,7 @@ Either of the following is sufficient to activate the escape hatch for a reposit
 **Git config key** (per-repository, no config file required):
 
 ```sh
-git -C /git/myrepo.git config desync-lfs false
+git -C /git/myrepo.git config desync-lfs.transfer false
 ```
 
 **JSON config key** (in `desync-lfs.json`):
