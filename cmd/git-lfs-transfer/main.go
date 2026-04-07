@@ -167,24 +167,47 @@ func run() error {
 		indexStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
 	}
 
-	// Build config for the desync custom transfer agent using the same
-	// JSON format as desync config files, so the agent can parse it with
-	// the same code path as local config. We populate the defaults from
-	// the resolved values (which may come from convention-based paths or
-	// git config overrides) rather than copying the original config
-	// defaults verbatim.
-	// Only include fields relevant to the client: store URLs,
-	// chunk parameters, credentials, and per-store options.
-	// Server-local settings (cache paths, concurrency, max-in-flight)
-	// are excluded — they are meaningless for the client.
-	desyncConfig := &cmdshared.Config{
-		S3Credentials: cfg.S3Credentials,
-		StoreOptions:  cfg.StoreOptions,
-		Defaults: cmdshared.Defaults{
-			Stores:     []string{storeURL},
-			IndexStore: indexURL,
-			ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk, avgChunk, maxChunk),
-		},
+	// Control whether the desync custom transfer is advertised to clients.
+	// Configured via git config:
+	//   git config desync-lfs.advertise <mode>
+	//
+	// Modes:
+	//   "no" / "false" (default) — desync is not advertised; clients use
+	//       the SSH protocol. The authenticate command returns an error.
+	//   "without-credentials" — desync is advertised with store URLs and
+	//       chunk parameters, but credentials are stripped. Clients must
+	//       have their own credentials configured locally.
+	//   "with-credentials" — desync is advertised with full config
+	//       including S3 tokens, HTTP auth, and TLS certs. Admins should
+	//       use short-lived tokens with restricted permissions.
+	advertiseMode := gitConfigValue(absPath, "desync-lfs.advertise")
+
+	var desyncConfig *cmdshared.Config
+	var transfers []string
+	switch advertiseMode {
+	case "without-credentials":
+		desyncConfig = &cmdshared.Config{
+			Defaults: cmdshared.Defaults{
+				Stores:     []string{storeURL},
+				IndexStore: indexURL,
+				ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk, avgChunk, maxChunk),
+			},
+		}
+		transfers = []string{"desync", "ssh"}
+	case "with-credentials":
+		desyncConfig = &cmdshared.Config{
+			S3Credentials: cfg.S3Credentials,
+			StoreOptions:  cfg.StoreOptions,
+			Defaults: cmdshared.Defaults{
+				Stores:     []string{storeURL},
+				IndexStore: indexURL,
+				ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk, avgChunk, maxChunk),
+			},
+		}
+		transfers = []string{"desync", "ssh"}
+	default:
+		// "no", "false", or unset — only SSH protocol advertised.
+		transfers = []string{"ssh"}
 	}
 
 	srv := &Server{
@@ -199,7 +222,7 @@ func run() error {
 		safePruning:        storeOpts.SafePruning,
 		safePropTime:       storeOpts.SafePropagationTime,
 		gate:               gate,
-		transfers:          []string{"desync", "ssh"},
+		transfers:          transfers,
 		authenticateConfig: desyncConfig,
 		logDir:             filepath.Join(absPath, "desync-lfs", "logs"),
 	}
