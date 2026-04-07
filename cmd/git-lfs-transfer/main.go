@@ -167,19 +167,41 @@ func run() error {
 		indexStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
 	}
 
+	// Build config for the desync custom transfer agent using the same
+	// JSON format as desync config files, so the agent can parse it with
+	// the same code path as local config. We populate the defaults from
+	// the resolved values (which may come from convention-based paths or
+	// git config overrides) rather than copying the original config
+	// defaults verbatim.
+	// Only include fields relevant to the client: store URLs,
+	// chunk parameters, credentials, and per-store options.
+	// Server-local settings (cache paths, concurrency, max-in-flight)
+	// are excluded — they are meaningless for the client.
+	desyncConfig := &cmdshared.Config{
+		S3Credentials: cfg.S3Credentials,
+		StoreOptions:  cfg.StoreOptions,
+		Defaults: cmdshared.Defaults{
+			Stores:     []string{storeURL},
+			IndexStore: indexURL,
+			ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk, avgChunk, maxChunk),
+		},
+	}
+
 	srv := &Server{
-		operation:    operation,
-		writeStore:   writeStore,
-		readStore:    readStore,
-		indexStore:   indexStore,
-		n:            cmdOpt.N,
-		minChunk:     minChunk,
-		avgChunk:     avgChunk,
-		maxChunk:     maxChunk,
-		safePruning:  storeOpts.SafePruning,
-		safePropTime: storeOpts.SafePropagationTime,
-		gate:         gate,
-		logDir:       filepath.Join(absPath, "desync-lfs", "logs"),
+		operation:          operation,
+		writeStore:         writeStore,
+		readStore:          readStore,
+		indexStore:         indexStore,
+		n:                  cmdOpt.N,
+		minChunk:           minChunk,
+		avgChunk:           avgChunk,
+		maxChunk:           maxChunk,
+		safePruning:        storeOpts.SafePruning,
+		safePropTime:       storeOpts.SafePropagationTime,
+		gate:               gate,
+		transfers:          []string{"desync", "ssh"},
+		authenticateConfig: desyncConfig,
+		logDir:             filepath.Join(absPath, "desync-lfs", "logs"),
 	}
 
 	runErr := srv.Run(ctx, os.Stdin, os.Stdout)

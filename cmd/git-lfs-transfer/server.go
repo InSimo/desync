@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -33,6 +34,15 @@ type Server struct {
 	gate           *bytelimit.Gate // cross-process in-flight byte limit; may be nil
 
 	pl *pktline.Pktline
+
+	// transfers lists the transfer types this server advertises to clients,
+	// in preference order. The first entry is the most preferred.
+	transfers []string
+
+	// authenticateConfig is the config to return for the desync
+	// transfer when a client sends the authenticate command.
+	// Serialized as JSON in the same format as desync config files.
+	authenticateConfig interface{}
 
 	// logDir is the directory for per-session error log files.  Empty
 	// disables logging (e.g. in tests).  The log file and directory are
@@ -95,6 +105,11 @@ func (s *Server) Run(ctx context.Context, stdin io.Reader, stdout io.Writer) err
 func (s *Server) advertiseCapabilities() error {
 	if err := s.pl.WritePacketText("version=1"); err != nil {
 		return err
+	}
+	if len(s.transfers) > 0 {
+		if err := s.pl.WritePacketText("transfers=" + strings.Join(s.transfers, ",")); err != nil {
+			return err
+		}
 	}
 	return s.pl.WriteFlush()
 }
@@ -174,6 +189,11 @@ func (s *Server) commandLoop(ctx context.Context) error {
 				return fmt.Errorf("verify-object: %w", err)
 			}
 
+		case "authenticate":
+			if err := s.handleAuthenticate(ctx); err != nil {
+				return fmt.Errorf("authenticate: %w", err)
+			}
+
 		default:
 			// Unknown command: read until flush, send error.
 			s.drainUntilFlush()
@@ -182,6 +202,51 @@ func (s *Server) commandLoop(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// handleAuthenticate responds to the authenticate command with transfer
+// configuration. The client sends the desired transfer name as an argument.
+func (s *Server) handleAuthenticate(ctx context.Context) error {
+	args, _, err := s.readArgs()
+	if err != nil {
+		return err
+	}
+
+	transfer := args["transfer"]
+	if transfer == "" {
+		return writeErrorStatus(s.pl, 400, "missing transfer argument")
+	}
+
+	var resp struct {
+		Config    interface{} `json:"config"`
+		ExpiresIn int         `json:"expires_in"`
+	}
+	switch transfer {
+	case "desync":
+		if s.authenticateConfig == nil {
+			return writeErrorStatus(s.pl, 404, "desync transfer not configured")
+		}
+		resp.Config = s.authenticateConfig
+		resp.ExpiresIn = 86400
+	default:
+		return writeErrorStatus(s.pl, 404, fmt.Sprintf("unknown transfer %q", transfer))
+	}
+
+	jsonBytes, err := json.Marshal(resp)
+	if err != nil {
+		return writeErrorStatus(s.pl, 500, fmt.Sprintf("failed to marshal response: %v", err))
+	}
+
+	if err := writeStatus(s.pl, 200); err != nil {
+		return err
+	}
+	if err := s.pl.WriteDelim(); err != nil {
+		return err
+	}
+	if err := s.pl.WritePacketText(string(jsonBytes)); err != nil {
+		return err
+	}
+	return s.pl.WriteFlush()
 }
 
 // drainUntilFlush reads and discards packets until a flush-pkt.
