@@ -190,7 +190,7 @@ func run() error {
 			Defaults: cmdshared.Defaults{
 				Stores:     []string{storeURL},
 				IndexStore: indexURL,
-				ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk, avgChunk, maxChunk),
+				ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk/1024, avgChunk/1024, maxChunk/1024),
 			},
 		}
 		transfers = []string{"desync", "ssh"}
@@ -201,7 +201,7 @@ func run() error {
 			Defaults: cmdshared.Defaults{
 				Stores:     []string{storeURL},
 				IndexStore: indexURL,
-				ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk, avgChunk, maxChunk),
+				ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk/1024, avgChunk/1024, maxChunk/1024),
 			},
 		}
 		transfers = []string{"desync", "ssh"}
