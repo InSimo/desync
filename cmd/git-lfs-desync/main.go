@@ -77,6 +77,7 @@ func main() {
 		indexes       bool
 		maxInFlight   int64
 		maxStorageOps int32
+		noPipelined   bool
 		storeOpt      cmdshared.CmdStoreOptions
 	)
 
@@ -124,7 +125,7 @@ Configure Git LFS to use this agent:
 			cleanupProfiling := cmdshared.InitProfiling()
 			defer cleanupProfiling()
 
-			agent := &Agent{tmpDir: os.TempDir(), gate: gate}
+			agent := &Agent{tmpDir: os.TempDir(), gate: gate, pipelinedEnabled: !noPipelined}
 			defer agent.Close()
 
 			agent.setup = func(remote, operation string, serverConfig *cmdshared.Config) error {
@@ -275,6 +276,8 @@ Configure Git LFS to use this agent:
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
 			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")
+	flags.BoolVar(&noPipelined, "no-pipelined", false,
+		"disable pipelined mode (spawn one process per concurrent transfer instead of handling all in one)")
 	cmdshared.AddStoreOptions(&storeOpt, flags)
 
 	if err := cmd.Execute(); err != nil {

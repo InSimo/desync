@@ -24,6 +24,7 @@ type initRequest struct {
 	Remote              string           `json:"remote"`
 	Concurrent          bool             `json:"concurrent"`
 	ConcurrentTransfers int              `json:"concurrenttransfers"`
+	SupportsPipelined   bool             `json:"supportspipelined"`
 	Config              *json.RawMessage `json:"config,omitempty"`
 }
 
@@ -60,7 +61,8 @@ type lfsError struct {
 }
 
 type initResponse struct {
-	Error *lfsError `json:"error,omitempty"`
+	Pipelined bool      `json:"pipelined,omitempty"`
+	Error     *lfsError `json:"error,omitempty"`
 }
 
 // probeIndexName and probeChunkID are dummy values used during init to verify
@@ -85,9 +87,10 @@ type Agent struct {
 	tmpDir              string
 	safePruning         bool
 	safePropagationTime time.Duration
-	gate            *bytelimit.Gate // cross-process in-flight byte limit; may be nil
-	enc             *json.Encoder
-	mu              sync.Mutex
+	gate             *bytelimit.Gate // cross-process in-flight byte limit; may be nil
+	pipelinedEnabled bool            // respond with pipelined=true in init (default true)
+	enc              *json.Encoder
+	mu               sync.Mutex
 	// setup is called once from handleInit with remote and operation from the
 	// LFS init message. It expands %(remote)/%(operation) in cfgFromGit, loads
 	// config, and initializes writeStore/readStore/indexWriteStore on the Agent.
@@ -138,6 +141,9 @@ func (a *Agent) run(ctx context.Context, r io.Reader) error {
 		if n <= 0 {
 			n = 1
 		}
+		if a.pipelinedEnabled && req.SupportsPipelined {
+			return a.pipelinedRunLoop(ctx, dec, n)
+		}
 		return a.runLoop(ctx, dec, n)
 	case "terminate":
 		return nil
@@ -182,6 +188,51 @@ func (a *Agent) runLoop(ctx context.Context, dec *json.Decoder, concurrentTransf
 			// ignore unknown events
 		}
 	}
+}
+
+// pipelinedRunLoop processes transfer events concurrently within a single
+// process. git-lfs sends multiple requests without waiting for completion;
+// responses are dispatched by OID.
+func (a *Agent) pipelinedRunLoop(ctx context.Context, dec *json.Decoder, concurrentTransfers int) error {
+	sem := make(chan struct{}, concurrentTransfers)
+	var wg sync.WaitGroup
+
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			break // EOF
+		}
+		var base struct {
+			Event string `json:"event"`
+		}
+		if err := json.Unmarshal(raw, &base); err != nil {
+			break
+		}
+
+		switch base.Event {
+		case "upload":
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(r json.RawMessage) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				a.handleUpload(ctx, r)
+			}(raw)
+		case "download":
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(r json.RawMessage) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				a.handleDownload(ctx, r)
+			}(raw)
+		case "terminate":
+			wg.Wait()
+			return nil
+		}
+	}
+	wg.Wait()
+	return nil
 }
 
 func (a *Agent) handleInit(raw json.RawMessage) {
@@ -230,6 +281,8 @@ func (a *Agent) handleInit(raw json.RawMessage) {
 	resp := initResponse{}
 	if errMsg != "" {
 		resp.Error = &lfsError{Code: 2, Message: errMsg}
+	} else if a.pipelinedEnabled && req.SupportsPipelined {
+		resp.Pipelined = true
 	}
 
 	a.mu.Lock()

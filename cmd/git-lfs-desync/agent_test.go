@@ -613,6 +613,145 @@ func TestAgentConcurrentTransfers(t *testing.T) {
 	}
 }
 
+func TestAgentPipelinedMode(t *testing.T) {
+	chunkDir := t.TempDir()
+	indexDir := t.TempDir()
+	tmpDir := t.TempDir()
+
+	chunkStore, err := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chunkStore.Close()
+
+	indexStore, err := desync.NewLocalIndexStore(indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer indexStore.Close()
+
+	var buf bytes.Buffer
+	a := &Agent{
+		writeStore:       chunkStore,
+		readStore:        chunkStore,
+		indexWriteStore:  indexStore,
+		n:                2,
+		minChunk:         4 * 1024,
+		avgChunk:         16 * 1024,
+		maxChunk:         64 * 1024,
+		tmpDir:           tmpDir,
+		pipelinedEnabled: true,
+		enc:              json.NewEncoder(&buf),
+	}
+
+	// Build input: init with supportspipelined=true + 5 uploads + terminate.
+	var input bytes.Buffer
+	enc := json.NewEncoder(&input)
+
+	enc.Encode(initRequest{
+		Event: "init", Operation: "upload",
+		Concurrent: true, ConcurrentTransfers: 3,
+		SupportsPipelined: true,
+	})
+
+	oids := []string{"oid-pipe-1", "oid-pipe-2", "oid-pipe-3", "oid-pipe-4", "oid-pipe-5"}
+	content := bytes.Repeat([]byte("pipelined-test "), 5000)
+	for _, oid := range oids {
+		f := filepath.Join(t.TempDir(), "src-"+oid)
+		if err := os.WriteFile(f, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		enc.Encode(transferRequest{Event: "upload", OID: oid, Size: int64(len(content)), Path: f})
+	}
+	enc.Encode(map[string]string{"event": "terminate"})
+
+	if err := a.run(context.Background(), &input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	// Parse all output messages.
+	dec := json.NewDecoder(&buf)
+	var initResp initResponse
+	if err := dec.Decode(&initResp); err != nil {
+		t.Fatalf("decode init response: %v", err)
+	}
+	if !initResp.Pipelined {
+		t.Error("expected pipelined=true in init response")
+	}
+	if initResp.Error != nil {
+		t.Fatalf("init error: %v", initResp.Error.Message)
+	}
+
+	// Collect complete events — they may arrive in any order.
+	completes := map[string]completeEvent{}
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			break
+		}
+		var evt completeEvent
+		json.Unmarshal(raw, &evt)
+		if evt.Event == "complete" {
+			completes[evt.OID] = evt
+		}
+	}
+	for _, oid := range oids {
+		evt, ok := completes[oid]
+		if !ok {
+			t.Errorf("no complete event for OID %s", oid)
+			continue
+		}
+		if evt.Error != nil {
+			t.Errorf("OID %s error: %v", oid, evt.Error.Message)
+		}
+	}
+	if len(completes) != len(oids) {
+		t.Errorf("expected %d completes, got %d", len(oids), len(completes))
+	}
+}
+
+func TestAgentPipelinedDisabled(t *testing.T) {
+	chunkDir := t.TempDir()
+	indexDir := t.TempDir()
+
+	chunkStore, _ := desync.NewLocalStore(chunkDir, desync.StoreOptions{})
+	defer chunkStore.Close()
+	indexStore, _ := desync.NewLocalIndexStore(indexDir)
+	defer indexStore.Close()
+
+	var buf bytes.Buffer
+	a := &Agent{
+		writeStore:       chunkStore,
+		readStore:        chunkStore,
+		indexWriteStore:  indexStore,
+		pipelinedEnabled: false,
+		enc:              json.NewEncoder(&buf),
+	}
+
+	// Send init with supportspipelined=true but agent has it disabled.
+	var input bytes.Buffer
+	enc := json.NewEncoder(&input)
+	enc.Encode(initRequest{
+		Event: "init", Operation: "upload",
+		Concurrent: true, ConcurrentTransfers: 1,
+		SupportsPipelined: true,
+	})
+	enc.Encode(map[string]string{"event": "terminate"})
+
+	if err := a.run(context.Background(), &input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	dec := json.NewDecoder(&buf)
+	var initResp initResponse
+	if err := dec.Decode(&initResp); err != nil {
+		t.Fatalf("decode init response: %v", err)
+	}
+	if initResp.Pipelined {
+		t.Error("expected pipelined=false when disabled")
+	}
+}
+
 type trackingIndexWriteStore struct {
 	desync.IndexWriteStore
 	storeCalls atomic.Int64
