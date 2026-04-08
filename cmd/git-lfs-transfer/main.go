@@ -108,6 +108,12 @@ func run() error {
 	}
 	cmdOpt.ConnPoolSize = cfg.ResolveConnPoolSize(0)
 
+	storageOps := int(cfg.ResolveMaxStorageOps(0))
+	if storageOps <= 0 {
+		storageOps = 20
+	}
+	desync.InitWorkerPool(cmdOpt.N, storageOps)
+
 	// Ensure local store directories exist (created on first use).
 	if err := ensureLocalDir(storeURL); err != nil {
 		return fmt.Errorf("creating store directory: %w", err)

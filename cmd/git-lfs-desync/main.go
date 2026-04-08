@@ -216,6 +216,11 @@ Configure Git LFS to use this agent:
 					return err
 				}
 				desync.Init(maxChunk)
+				storageOps := int(maxStorageOps)
+				if storageOps <= 0 {
+					storageOps = 20
+				}
+				desync.InitWorkerPool(storeOpt.N, storageOps)
 
 				// Wrap stores with ops gating if a storage-ops limit is configured.
 				if gate.MaxOps() > 0 {
