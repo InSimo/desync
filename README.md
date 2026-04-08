@@ -94,6 +94,9 @@ cd desync/cmd/desync && go install
 - `verify`       - verify the integrity of a local store
 - `list-chunks`  - list all chunk IDs contained in an index file
 - `cache`        - populate a cache from index files without extracting a blob or archive
+- `cache-stats`  - show cache size, file count, and hit/miss statistics
+- `cache-clear`  - remove all chunks from the cache
+- `cache-trim`   - remove oldest chunks to bring the cache within size/file/age limits
 - `chop`         - split a blob according to an existing caibx and store the chunks in a local store
 - `pull`         - serve chunks using the casync protocol over stdin/stdout. Set `CASYNC_REMOTE_PATH=desync` on the client to use it.
 - `tar`          - pack a catar file, optionally chunk the catar and create an index file.
@@ -140,6 +143,8 @@ cd desync/cmd/desync && go install
 The `-c <store>` option can be used to either specify an existing store to act as cache or to populate a new store. Whenever a chunk is requested, it is first looked up in the cache before routing the request to the next (possibly remote) store. Any chunks downloaded from the main stores are added to the cache. The cache store is expected to be writable. If the cache contains an invalid chunk (checksum does not match the chunk ID), the operation will fail. Invalid chunks are not skipped or removed from the cache automatically. `verify -r` can be used to evict bad chunks from a local store or cache.
 
 The cache can be configured with a maximum size (`--cache-max-size`) and/or a maximum number of files (`--cache-max-files`). When a limit is exceeded, the oldest chunks (by last access time) are automatically evicted. File modification times are updated on cache reads to track recency. Size and file counts are tracked in a persistent shared-memory file (`.cache-sizes`) using lock-free atomic counters, allowing multiple concurrent processes to share the same cache safely. The `--cache-partitions` option controls the number of eviction partitions (default 256, must be a power of 2). See [doc/cache-size-limit.md](doc/cache-size-limit.md) for the full design.
+
+The `cache-stats`, `cache-clear`, and `cache-trim` commands provide manual cache management. `cache-stats` shows cache size, file count, and (if mmap tracking is active) hit/miss statistics. `cache-clear` removes all cached chunks. `cache-trim` removes the oldest chunks until the cache is within specified limits — useful for periodic cleanup or when mmap-based eviction is not enabled (e.g. shared network caches).
 
 ### Multiple chunk stores
 

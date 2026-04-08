@@ -1,9 +1,6 @@
 package desync
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/insimo/cacheevict"
 )
 
@@ -22,44 +19,10 @@ type SizeLimitStore struct {
 // number of cached files (0 = no file limit). partitions must be a power
 // of 2 (or 0 for the default of 256).
 func NewSizeLimitStore(ls LocalStore, maxSize int64, maxFiles int64, partitions int) (*SizeLimitStore, error) {
-	chunkExt := CompressedChunkExt
-	if ls.Opt.Uncompressed {
-		chunkExt = UncompressedChunkExt
-	}
-
-	cfg := cacheevict.Config{
-		BaseDir:    ls.Base,
-		MaxSize:    maxSize,
-		MaxFiles:   maxFiles,
-		Partitions: partitions,
-		SubdirPath: func(idx int) string {
-			return fmt.Sprintf("%04x", idx)
-		},
-		FilePrefix: func(relPath string) int {
-			// relPath is like "abcd/abcd...cacnk" — extract first 4 hex chars.
-			parts := strings.SplitN(relPath, "/", 2)
-			if len(parts) == 0 || len(parts[0]) != 4 {
-				return 0
-			}
-			var idx int
-			fmt.Sscanf(parts[0], "%04x", &idx)
-			return idx
-		},
-		IsCachedFile: func(name string) bool {
-			if chunkExt == "" {
-				// Uncompressed: no extension, skip known marker extensions.
-				return !strings.HasSuffix(name, PrunableExt) &&
-					!strings.HasSuffix(name, ProtectExt) &&
-					!strings.HasPrefix(name, tmpChunkPrefix)
-			}
-			return strings.HasSuffix(name, chunkExt) &&
-				!strings.HasSuffix(name, PrunableExt) &&
-				!strings.HasSuffix(name, ProtectExt)
-		},
-		IsTempFile: func(name string) bool {
-			return strings.HasPrefix(name, tmpChunkPrefix)
-		},
-	}
+	cfg := DesyncCacheEvictConfig(ls.Base, ls.Opt.Uncompressed)
+	cfg.MaxSize = maxSize
+	cfg.MaxFiles = maxFiles
+	cfg.Partitions = partitions
 
 	handler, err := cacheevict.Open(cfg)
 	if err != nil {

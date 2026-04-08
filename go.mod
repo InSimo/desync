@@ -11,7 +11,7 @@ require (
 	github.com/git-lfs/pktline v0.0.0-20230103162542-ca444d533ef1
 	github.com/go-ini/ini v1.67.0
 	github.com/hanwen/go-fuse/v2 v2.2.0
-	github.com/insimo/cacheevict v0.1.0
+	github.com/insimo/cacheevict v0.2.0
 	github.com/klauspost/compress v1.16.4
 	github.com/minio/minio-go/v6 v6.0.57
 	github.com/pkg/errors v0.9.1
