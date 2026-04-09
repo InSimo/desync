@@ -77,8 +77,9 @@ func main() {
 		chunkSize     string
 		indexes       bool
 		maxInFlight   int64
-		maxStorageOps int32
-		noPipelined   bool
+		maxStorageOps        int32
+		noPipelined          bool
+		maxConcurrentUploads int
 		storeOpt      cmdshared.CmdStoreOptions
 	)
 
@@ -139,7 +140,7 @@ Configure Git LFS to use this agent:
 				}
 			}
 
-			agent := &Agent{tmpDir: os.TempDir(), gate: gate, pipelinedEnabled: !noPipelined}
+			agent := &Agent{tmpDir: os.TempDir(), gate: gate, pipelinedEnabled: !noPipelined, maxConcurrentUploads: maxConcurrentUploads}
 			defer agent.Close()
 
 			agent.setup = func(remote, operation string, serverConfig *cmdshared.Config) error {
@@ -297,6 +298,9 @@ Configure Git LFS to use this agent:
 			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")
 	flags.BoolVar(&noPipelined, "no-pipelined", false,
 		"disable pipelined mode (spawn one process per concurrent transfer instead of handling all in one)")
+	flags.IntVar(&maxConcurrentUploads, "max-concurrent-uploads", 8,
+		"maximum parallel upload/download operations in pipelined mode;\n"+
+			"existence checks (HasIndex) run at full git-lfs concurrency")
 	cmdshared.AddStoreOptions(&storeOpt, flags)
 
 	if err := cmd.Execute(); err != nil {

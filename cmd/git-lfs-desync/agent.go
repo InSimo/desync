@@ -89,9 +89,10 @@ type Agent struct {
 	safePruning         bool
 	safePropagationTime time.Duration
 	gate             *bytelimit.Gate // cross-process in-flight byte limit; may be nil
-	pipelinedEnabled bool            // respond with pipelined=true in init (default true)
-	enc              *json.Encoder
-	mu               sync.Mutex
+	pipelinedEnabled     bool // respond with pipelined=true in init (default true)
+	maxConcurrentUploads int  // max parallel upload/download operations (default 8)
+	enc                  *json.Encoder
+	mu                   sync.Mutex
 	// setup is called once from handleInit with remote and operation from the
 	// LFS init message. It expands %(remote)/%(operation) in cfgFromGit, loads
 	// config, and initializes writeStore/readStore/indexWriteStore on the Agent.
@@ -180,7 +181,7 @@ func (a *Agent) runLoop(ctx context.Context, dec *json.Decoder, concurrentTransf
 
 		switch base.Event {
 		case "upload":
-			a.handleUpload(ctx, raw)
+			a.handleUpload(ctx, raw, nil)
 		case "download":
 			a.handleDownload(ctx, raw)
 		case "terminate":
@@ -194,8 +195,19 @@ func (a *Agent) runLoop(ctx context.Context, dec *json.Decoder, concurrentTransf
 // pipelinedRunLoop processes transfer events concurrently within a single
 // process. git-lfs sends multiple requests without waiting for completion;
 // responses are dispatched by OID.
+//
+// Two-tier concurrency: all incoming requests are dispatched immediately
+// (bounded only by concurrentTransfers from git-lfs). Lightweight checks
+// (HasIndex for uploads, protocol parsing) run at full concurrency. Heavy
+// work (chunking, S3 uploads, assembly) is gated by uploadSem which limits
+// to maxConcurrentUploads parallel operations.
 func (a *Agent) pipelinedRunLoop(ctx context.Context, dec *json.Decoder, concurrentTransfers int) error {
 	sem := make(chan struct{}, concurrentTransfers)
+	maxUploads := a.maxConcurrentUploads
+	if maxUploads <= 0 {
+		maxUploads = 8
+	}
+	uploadSem := make(chan struct{}, maxUploads)
 	var wg sync.WaitGroup
 
 	for {
@@ -217,7 +229,7 @@ func (a *Agent) pipelinedRunLoop(ctx context.Context, dec *json.Decoder, concurr
 			go func(r json.RawMessage) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				a.handleUpload(ctx, r)
+				a.handleUpload(ctx, r, uploadSem)
 			}(raw)
 		case "download":
 			sem <- struct{}{}
@@ -291,7 +303,7 @@ func (a *Agent) handleInit(raw json.RawMessage) {
 	a.enc.Encode(resp)
 }
 
-func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
+func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem chan struct{}) {
 	var req transferRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		a.sendComplete(req.OID, "", fmt.Errorf("parsing upload request: %w", err))
@@ -303,9 +315,19 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	trace.Logf(ctx, "oid", "%.12s size=%d", req.OID, req.Size)
 
 	// Skip re-upload if this OID is already present in the index store.
+	// This check runs at full concurrency (no semaphore) so that
+	// already-uploaded OIDs are dismissed quickly.
 	if exists, err := a.indexWriteStore.HasIndex(oidIndexName(req.OID)); err == nil && exists {
 		a.sendComplete(req.OID, "", nil)
 		return
+	}
+
+	// Acquire upload semaphore to limit heavy work (chunking + S3 uploads).
+	if uploadSem != nil {
+		region := trace.StartRegion(ctx, "acquire-upload-sem")
+		uploadSem <- struct{}{}
+		region.End()
+		defer func() { <-uploadSem }()
 	}
 
 	// Acquire in-flight byte slot (blocks if over the cross-process limit).

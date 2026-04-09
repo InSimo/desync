@@ -199,7 +199,7 @@ func TestAgentUploadDownload(t *testing.T) {
 		Size:  int64(len(content)),
 		Path:  srcFile,
 	})
-	a.handleUpload(context.Background(), uploadMsg)
+	a.handleUpload(context.Background(), uploadMsg, nil)
 
 	// Parse the complete event from the buffer.
 	dec := json.NewDecoder(&buf)
@@ -327,7 +327,7 @@ func TestAgentUploadDownloadViaLocalURL(t *testing.T) {
 		Size:  int64(len(content)),
 		Path:  srcFile,
 	})
-	a.handleUpload(context.Background(), uploadMsg)
+	a.handleUpload(context.Background(), uploadMsg, nil)
 
 	var uploadComplete completeEvent
 	dec := json.NewDecoder(&buf)
@@ -435,7 +435,7 @@ func TestAgentWithCache(t *testing.T) {
 		enc:             json.NewEncoder(&buf),
 	}
 	uploadMsg, _ := json.Marshal(transferRequest{Event: "upload", OID: oid, Size: int64(len(content)), Path: srcFile})
-	uploadAgent.handleUpload(context.Background(), uploadMsg)
+	uploadAgent.handleUpload(context.Background(), uploadMsg, nil)
 	var uploadDone completeEvent
 	dec := json.NewDecoder(&buf)
 	for {
@@ -808,7 +808,7 @@ func TestAgentUploadSkipsRedundantUpload(t *testing.T) {
 
 	// First upload: must succeed and call StoreIndex.
 	a1 := newAgent()
-	a1.handleUpload(context.Background(), uploadMsg)
+	a1.handleUpload(context.Background(), uploadMsg, nil)
 	if trackerIndex.storeCalls.Load() == 0 {
 		t.Fatal("first upload did not call StoreIndex")
 	}
@@ -816,7 +816,7 @@ func TestAgentUploadSkipsRedundantUpload(t *testing.T) {
 	// Reset counter, then upload the same OID again.
 	trackerIndex.storeCalls.Store(0)
 	a2 := newAgent()
-	a2.handleUpload(context.Background(), uploadMsg)
+	a2.handleUpload(context.Background(), uploadMsg, nil)
 
 	// Without the HasIndex fix this assertion FAILS (second upload calls StoreIndex again).
 	if n := trackerIndex.storeCalls.Load(); n != 0 {
@@ -885,7 +885,7 @@ func TestLocalIndexStoreSharding(t *testing.T) {
 		Size:  int64(len(content)),
 		Path:  srcFile,
 	})
-	a.handleUpload(context.Background(), uploadMsg)
+	a.handleUpload(context.Background(), uploadMsg, nil)
 
 	var uploadDone completeEvent
 	dec := json.NewDecoder(&buf)
@@ -1067,7 +1067,7 @@ func TestAgentUploadSafePruning(t *testing.T) {
 				Size:  int64(len(content)),
 				Path:  srcFile,
 			})
-			a.handleUpload(context.Background(), uploadMsg)
+			a.handleUpload(context.Background(), uploadMsg, nil)
 
 			// Verify upload succeeded with and without safe pruning.
 			var evt completeEvent
