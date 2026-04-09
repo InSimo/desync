@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/trace"
 	"strings"
 	"syscall"
 
@@ -124,6 +125,19 @@ Configure Git LFS to use this agent:
 
 			cleanupProfiling := cmdshared.InitProfiling()
 			defer cleanupProfiling()
+
+			// Optional execution tracing: write to DESYNC_TRACE_DIR/<pid>.trace.
+			if traceDir := os.Getenv("DESYNC_TRACE_DIR"); traceDir != "" {
+				os.MkdirAll(traceDir, 0o755)
+				path := fmt.Sprintf("%s/%d.trace", traceDir, os.Getpid())
+				if f, err := os.Create(path); err == nil {
+					trace.Start(f)
+					defer func() {
+						trace.Stop()
+						f.Close()
+					}()
+				}
+			}
 
 			agent := &Agent{tmpDir: os.TempDir(), gate: gate, pipelinedEnabled: !noPipelined}
 			defer agent.Close()

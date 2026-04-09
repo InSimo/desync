@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/trace"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -297,6 +298,10 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 		return
 	}
 
+	ctx, task := trace.NewTask(ctx, "upload")
+	defer task.End()
+	trace.Logf(ctx, "oid", "%.12s size=%d", req.OID, req.Size)
+
 	// Skip re-upload if this OID is already present in the index store.
 	if exists, err := a.indexWriteStore.HasIndex(oidIndexName(req.OID)); err == nil && exists {
 		a.sendComplete(req.OID, "", nil)
@@ -305,7 +310,9 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 
 	// Acquire in-flight byte slot (blocks if over the cross-process limit).
 	if a.gate != nil {
+		region := trace.StartRegion(ctx, "acquire-gate")
 		slot, err := a.gate.Acquire(ctx, req.Size)
+		region.End()
 		if err != nil {
 			a.sendComplete(req.OID, "", fmt.Errorf("in-flight limit: %w", err))
 			return
@@ -314,11 +321,17 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	}
 
 	// Chunk the file and build an index.
-	pb := &lfsProgressBar{agent: a, oid: req.OID, totalBytes: req.Size}
-	idx, _, err := desync.IndexFromFile(ctx, req.Path, a.n, a.minChunk, a.avgChunk, a.maxChunk, pb)
-	if err != nil {
-		a.sendComplete(req.OID, "", err)
-		return
+	var idx desync.Index
+	trace.WithRegion(ctx, "index-from-file", func() {
+		pb := &lfsProgressBar{agent: a, oid: req.OID, totalBytes: req.Size}
+		var err2 error
+		idx, _, err2 = desync.IndexFromFile(ctx, req.Path, a.n, a.minChunk, a.avgChunk, a.maxChunk, pb)
+		if err2 != nil {
+			a.sendComplete(req.OID, "", err2)
+		}
+	})
+	if idx.Chunks == nil {
+		return // error already sent
 	}
 	cmdshared.WriteHeapProfile("upload_after_index")
 
@@ -337,17 +350,25 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage) {
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
 	// Store chunks in the remote store.
-	if err := desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps, a.safePropagationTime); err != nil {
+	var chopErr error
+	trace.WithRegion(ctx, "chop-file", func() {
+		chopErr = desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps, a.safePropagationTime)
+	})
+	if chopErr != nil {
 		stopProgress()
-		a.sendComplete(req.OID, "", err)
+		a.sendComplete(req.OID, "", chopErr)
 		return
 	}
 	cmdshared.WriteHeapProfile("upload_after_chop")
 	stopProgress()
 
 	// Store the index in the S3 index store.
-	if err := a.indexWriteStore.StoreIndex(oidIndexName(req.OID), idx); err != nil {
-		a.sendComplete(req.OID, "", err)
+	var storeIdxErr error
+	trace.WithRegion(ctx, "store-index", func() {
+		storeIdxErr = a.indexWriteStore.StoreIndex(oidIndexName(req.OID), idx)
+	})
+	if storeIdxErr != nil {
+		a.sendComplete(req.OID, "", storeIdxErr)
 		return
 	}
 
@@ -361,9 +382,15 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 		return
 	}
 
+	ctx, task := trace.NewTask(ctx, "download")
+	defer task.End()
+	trace.Logf(ctx, "oid", "%.12s size=%d", req.OID, req.Size)
+
 	// Acquire in-flight byte slot (blocks if over the cross-process limit).
 	if a.gate != nil {
+		region := trace.StartRegion(ctx, "acquire-gate")
 		slot, err := a.gate.Acquire(ctx, req.Size)
+		region.End()
 		if err != nil {
 			a.sendComplete(req.OID, "", fmt.Errorf("in-flight limit: %w", err))
 			return
@@ -372,9 +399,13 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	}
 
 	// Fetch the index from the S3 index store.
-	idx, err := a.indexWriteStore.GetIndex(oidIndexName(req.OID))
-	if err != nil {
-		a.sendComplete(req.OID, "", fmt.Errorf("fetching index for %s: %w", req.OID, err))
+	var idx desync.Index
+	var fetchErr error
+	trace.WithRegion(ctx, "fetch-index", func() {
+		idx, fetchErr = a.indexWriteStore.GetIndex(oidIndexName(req.OID))
+	})
+	if fetchErr != nil {
+		a.sendComplete(req.OID, "", fmt.Errorf("fetching index for %s: %w", req.OID, fetchErr))
 		return
 	}
 
@@ -388,12 +419,15 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
-	_, err = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.n})
+	var assembleErr error
+	trace.WithRegion(ctx, "assemble-file", func() {
+		_, assembleErr = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.n})
+	})
 	stopProgress()
 	cmdshared.WriteHeapProfile("download_after_assemble")
-	if err != nil {
+	if assembleErr != nil {
 		os.Remove(tmpFile)
-		a.sendComplete(req.OID, "", err)
+		a.sendComplete(req.OID, "", assembleErr)
 		return
 	}
 
