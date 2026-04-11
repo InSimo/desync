@@ -119,11 +119,15 @@ func IndexFromFile(ctx context.Context,
 		worker[i-1].next = worker[i]
 	}
 
-	// Start the workers
+	// Start the workers.  Release the chunker's backing buffer only after the
+	// goroutine has exited (signalled by the results channel being closed).
 	for _, w := range worker {
 		go w.start(ctx)
-		defer w.stop()                  // shouldn't be necessary, but better be safe
-		defer w.chunker.Release()       // return backing buffer to pool
+		defer func(w *pChunker) {
+			w.stop()
+			for range w.results {} // drain until goroutine exits and closes the channel
+			w.chunker.Release()
+		}(w)
 	}
 
 	// Go through the workers, starting with the first one, taking all chunks
