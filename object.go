@@ -14,10 +14,11 @@ import (
 //
 // Object implements io.Reader, io.Seeker, and io.Closer.
 type Object struct {
-	idx   Index
-	store Store
-	n     int // max in-flight chunks
-	size  int64
+	idx      Index
+	store    Store
+	n        int // max in-flight chunks
+	size     int64
+	Progress ProgressFunc // optional, called after each chunk is consumed
 
 	// Per-chunk state — allocated once on first Read, indexed by absolute chunk position.
 	chunks []objectChunkSlot
@@ -219,6 +220,9 @@ func (o *Object) advanceToNextChunk() error {
 		o.chunks[o.chunkIdx].chunk.Release()
 	}
 	o.chunks[o.chunkIdx] = objectChunkSlot{}
+	if o.Progress != nil {
+		o.Progress(o.offset)
+	}
 	o.chunkIdx++
 
 	if o.chunkIdx >= len(o.idx.Chunks) {

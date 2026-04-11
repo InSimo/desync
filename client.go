@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"time"
 )
+
+// ProgressFunc is called periodically with the number of bytes processed so far.
+type ProgressFunc func(bytesProcessed int64)
 
 // ClientOptions configures a Client.
 type ClientOptions struct {
@@ -142,3 +146,76 @@ func (c *Client) ListObjects(prefix string) ([]string, error) {
 	}
 	return listable.ListIndexes(context.Background(), prefix)
 }
+
+// PutObjectFromFile chunks a file and stores the chunks + index.
+// The optional progress function is called after each chunk is stored.
+func (c *Client) PutObjectFromFile(name, path string, progress ProgressFunc) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("desync: open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	chunker, err := NewChunker(f, c.MinChunk, c.AvgChunk, c.MaxChunk)
+	if err != nil {
+		return fmt.Errorf("desync: failed to create chunker: %w", err)
+	}
+
+	var progressChunker ChunkerInterface = &chunker
+	if progress != nil {
+		progressChunker = &progressChunkerWrapper{c: &chunker, progress: progress}
+	}
+
+	idx, err := ChunkStream(context.Background(), progressChunker, c.WriteStore, c.N, nil, 0)
+	chunker.Release()
+	if err != nil {
+		return fmt.Errorf("desync: failed to chunk stream for %s: %w", name, err)
+	}
+
+	if err := c.IndexStore.StoreIndex(name, idx); err != nil {
+		return fmt.Errorf("desync: failed to store index %s: %w", name, err)
+	}
+	return nil
+}
+
+// GetObjectToFile fetches an object and writes it to a file.
+// The optional progress function is called after each chunk is written.
+func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error {
+	obj, err := c.GetObject(name)
+	if err != nil {
+		return err
+	}
+	defer obj.Close()
+	obj.Progress = progress
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("desync: create %s: %w", path, err)
+	}
+	if _, err := io.Copy(f, obj); err != nil {
+		f.Close()
+		os.Remove(path)
+		return fmt.Errorf("desync: writing %s: %w", path, err)
+	}
+	return f.Close()
+}
+
+// progressChunkerWrapper wraps a Chunker to report progress after each chunk.
+type progressChunkerWrapper struct {
+	c        ChunkerInterface
+	progress ProgressFunc
+	total    int64
+}
+
+func (w *progressChunkerWrapper) Next() (uint64, []byte, error) {
+	start, b, err := w.c.Next()
+	if err == nil && len(b) > 0 {
+		w.total += int64(len(b))
+		w.progress(w.total)
+	}
+	return start, b, err
+}
+
+func (w *progressChunkerWrapper) Min() uint64 { return w.c.Min() }
+func (w *progressChunkerWrapper) Avg() uint64 { return w.c.Avg() }
+func (w *progressChunkerWrapper) Max() uint64 { return w.c.Max() }
