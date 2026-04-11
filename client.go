@@ -148,8 +148,47 @@ func (c *Client) ListObjects(prefix string) ([]string, error) {
 }
 
 // PutObjectFromFile chunks a file and stores the chunks + index.
-// The optional progress function is called after each chunk is stored.
+//
+// For large files (> MaxChunk * N), uses IndexFromFile for parallel
+// content-defined chunking followed by ChopFile for storage.
+// For small files, uses single-pass ChunkStream which avoids the
+// overhead of parallel chunkers and double file traversal.
+//
+// The optional progress function is called periodically with bytes processed.
 func (c *Client) PutObjectFromFile(name, path string, progress ProgressFunc) error {
+	size, err := GetFileSize(path)
+	if err != nil {
+		return fmt.Errorf("desync: stat %s: %w", path, err)
+	}
+
+	// Small files: single-pass ChunkStream (lower overhead).
+	if size <= c.MaxChunk*uint64(c.N) {
+		return c.putObjectSmall(name, path, progress)
+	}
+
+	// Large files: parallel IndexFromFile + ChopFile (better throughput).
+	var pb ProgressBar = NullProgressBar{}
+	if progress != nil {
+		pb = &progressBarFunc{progress: progress}
+	}
+
+	idx, _, err := IndexFromFile(context.Background(), path, c.N, c.MinChunk, c.AvgChunk, c.MaxChunk, pb)
+	if err != nil {
+		return fmt.Errorf("desync: failed to index %s: %w", path, err)
+	}
+
+	if err := ChopFile(context.Background(), path, idx.Chunks, c.WriteStore, c.N, NullProgressBar{}, nil, 0); err != nil {
+		return fmt.Errorf("desync: failed to store chunks for %s: %w", name, err)
+	}
+
+	if err := c.IndexStore.StoreIndex(name, idx); err != nil {
+		return fmt.Errorf("desync: failed to store index %s: %w", name, err)
+	}
+	return nil
+}
+
+// putObjectSmall uses single-pass ChunkStream for small files.
+func (c *Client) putObjectSmall(name, path string, progress ProgressFunc) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("desync: open %s: %w", path, err)
@@ -161,12 +200,12 @@ func (c *Client) PutObjectFromFile(name, path string, progress ProgressFunc) err
 		return fmt.Errorf("desync: failed to create chunker: %w", err)
 	}
 
-	var progressChunker ChunkerInterface = &chunker
+	var ci ChunkerInterface = &chunker
 	if progress != nil {
-		progressChunker = &progressChunkerWrapper{c: &chunker, progress: progress}
+		ci = &progressChunkerWrapper{c: &chunker, progress: progress}
 	}
 
-	idx, err := ChunkStream(context.Background(), progressChunker, c.WriteStore, c.N, nil, 0)
+	idx, err := ChunkStream(context.Background(), ci, c.WriteStore, c.N, nil, 0)
 	chunker.Release()
 	if err != nil {
 		return fmt.Errorf("desync: failed to chunk stream for %s: %w", name, err)
@@ -177,6 +216,19 @@ func (c *Client) PutObjectFromFile(name, path string, progress ProgressFunc) err
 	}
 	return nil
 }
+
+// progressBarFunc adapts a ProgressFunc to the ProgressBar interface.
+type progressBarFunc struct {
+	progress ProgressFunc
+}
+
+func (p *progressBarFunc) SetTotal(total int)          {}
+func (p *progressBarFunc) Start()                      {}
+func (p *progressBarFunc) Set(current int)             { p.progress(int64(current)) }
+func (p *progressBarFunc) Add(n int) int               { return 0 }
+func (p *progressBarFunc) Increment() int              { return 0 }
+func (p *progressBarFunc) Finish()                     {}
+func (p *progressBarFunc) Write(b []byte) (int, error) { return len(b), nil }
 
 // GetObjectToFile fetches an object and writes it to a file.
 // Chunks are fetched in parallel via the shared worker pool and written
