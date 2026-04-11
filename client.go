@@ -179,24 +179,89 @@ func (c *Client) PutObjectFromFile(name, path string, progress ProgressFunc) err
 }
 
 // GetObjectToFile fetches an object and writes it to a file.
+// Chunks are fetched in parallel via the shared worker pool and written
+// out of order using WriteAt, matching AssembleFile's concurrency.
 // The optional progress function is called after each chunk is written.
 func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error {
-	obj, err := c.GetObject(name)
+	idx, err := c.IndexStore.GetIndex(name)
 	if err != nil {
 		return err
 	}
-	defer obj.Close()
-	obj.Progress = progress
 
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("desync: create %s: %w", path, err)
 	}
-	if _, err := io.Copy(f, obj); err != nil {
+	if err := f.Truncate(idx.TotalSize()); err != nil {
 		f.Close()
 		os.Remove(path)
-		return fmt.Errorf("desync: writing %s: %w", path, err)
+		return fmt.Errorf("desync: truncate %s: %w", path, err)
 	}
+
+	pool := GetWorkerPool()
+	if pool == nil {
+		// No worker pool: fall back to sequential Object read.
+		obj := &Object{idx: idx, store: c.ReadStore, n: c.N, size: idx.TotalSize(), Progress: progress}
+		if _, err := io.Copy(f, obj); err != nil {
+			f.Close()
+			obj.Close()
+			os.Remove(path)
+			return fmt.Errorf("desync: writing %s: %w", path, err)
+		}
+		obj.Close()
+		return f.Close()
+	}
+
+	nChunks := len(idx.Chunks)
+	window := c.N
+	if window <= 0 {
+		window = 10
+	}
+
+	resultCh := make(chan FetchResult, window)
+	pending := 0
+	nextSubmit := 0
+
+	// Fill initial prefetch window.
+	for pending < window && nextSubmit < nChunks {
+		pool.SubmitFetch(idx.Chunks[nextSubmit].ID, c.ReadStore, nextSubmit, resultCh)
+		nextSubmit++
+		pending++
+	}
+
+	var written int64
+	for pending > 0 {
+		fr := <-resultCh
+		pending--
+
+		// Submit more to keep the window full.
+		if nextSubmit < nChunks {
+			pool.SubmitFetch(idx.Chunks[nextSubmit].ID, c.ReadStore, nextSubmit, resultCh)
+			nextSubmit++
+			pending++
+		}
+
+		if fr.Err != nil {
+			f.Close()
+			os.Remove(path)
+			return fmt.Errorf("desync: chunk fetch error: %w", fr.Err)
+		}
+
+		// Write at the chunk's known offset (out of order is fine).
+		if _, err := f.WriteAt(fr.Data, int64(idx.Chunks[fr.Idx].Start)); err != nil {
+			fr.Chunk.Release()
+			f.Close()
+			os.Remove(path)
+			return fmt.Errorf("desync: write chunk at offset %d: %w", idx.Chunks[fr.Idx].Start, err)
+		}
+		fr.Chunk.Release()
+
+		written += int64(len(fr.Data))
+		if progress != nil {
+			progress(written)
+		}
+	}
+
 	return f.Close()
 }
 
