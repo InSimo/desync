@@ -218,50 +218,65 @@ func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error
 		window = 10
 	}
 
-	resultCh := make(chan FetchResult, window)
-	pending := 0
+	// Two-phase pipeline: fetch+decompress → file write.
+	fetchCh := make(chan FetchResult, window)
+	writeCh := make(chan WriteResult, window)
+
+	fetchPending := 0
 	nextSubmit := 0
+	writePending := 0
 
 	// Fill initial prefetch window.
-	for pending < window && nextSubmit < nChunks {
-		pool.SubmitFetch(idx.Chunks[nextSubmit].ID, c.ReadStore, nextSubmit, resultCh)
+	for fetchPending < window && nextSubmit < nChunks {
+		pool.SubmitFetch(idx.Chunks[nextSubmit].ID, c.ReadStore, nextSubmit, fetchCh)
 		nextSubmit++
-		pending++
+		fetchPending++
 	}
 
 	var written int64
-	for pending > 0 {
-		fr := <-resultCh
-		pending--
+	var firstErr error
 
-		// Submit more to keep the window full.
-		if nextSubmit < nChunks {
-			pool.SubmitFetch(idx.Chunks[nextSubmit].ID, c.ReadStore, nextSubmit, resultCh)
-			nextSubmit++
-			pending++
-		}
+	// Drain both channels until all chunks are fetched and written.
+	for fetchPending > 0 || writePending > 0 {
+		select {
+		case fr := <-fetchCh:
+			fetchPending--
 
-		if fr.Err != nil {
-			f.Close()
-			os.Remove(path)
-			return fmt.Errorf("desync: chunk fetch error: %w", fr.Err)
-		}
+			// Submit more fetches to keep the window full.
+			if nextSubmit < nChunks {
+				pool.SubmitFetch(idx.Chunks[nextSubmit].ID, c.ReadStore, nextSubmit, fetchCh)
+				nextSubmit++
+				fetchPending++
+			}
 
-		// Write at the chunk's known offset (out of order is fine).
-		if _, err := f.WriteAt(fr.Data, int64(idx.Chunks[fr.Idx].Start)); err != nil {
-			fr.Chunk.Release()
-			f.Close()
-			os.Remove(path)
-			return fmt.Errorf("desync: write chunk at offset %d: %w", idx.Chunks[fr.Idx].Start, err)
-		}
-		fr.Chunk.Release()
+			if fr.Err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("desync: chunk fetch error: %w", fr.Err)
+				}
+				continue
+			}
 
-		written += int64(len(fr.Data))
-		if progress != nil {
-			progress(written)
+			// Submit write to file I/O workers.
+			pool.SubmitFileWrite(f, fr.Data, int64(idx.Chunks[fr.Idx].Start), fr.Chunk, fr.Idx, writeCh)
+			writePending++
+
+		case wr := <-writeCh:
+			writePending--
+			if wr.Err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("desync: write chunk: %w", wr.Err)
+			}
+			written += int64(wr.Written)
+			if progress != nil {
+				progress(written)
+			}
 		}
 	}
 
+	if firstErr != nil {
+		f.Close()
+		os.Remove(path)
+		return firstErr
+	}
 	return f.Close()
 }
 

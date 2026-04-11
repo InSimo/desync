@@ -6,13 +6,14 @@ import (
 )
 
 // WorkerPool provides fixed-size pools of goroutines for chunk processing
-// (CPU-bound: hashing, compression, decompression) and storage operations
-// (I/O-bound: S3/filesystem PUT/GET).
+// (CPU-bound: hashing, compression, decompression), storage operations
+// (I/O-bound: S3/filesystem PUT/GET), and file I/O (WriteAt for downloads).
 // A single global pool is shared across all concurrent callers,
 // preventing goroutine explosion when multiple LFS sessions run in parallel.
 type WorkerPool struct {
-	processQ chan processTask
-	storageQ chan storageTask
+	processQ    chan processTask
+	storageQ    chan storageTask
+	fileWriteQ  chan fileWriteTask
 }
 
 // processTask is submitted to a ChunkProcessWorker.
@@ -61,6 +62,28 @@ type FetchResult struct {
 	Err   error
 }
 
+// fileWriteTask is submitted to a file I/O worker for WriteAt operations.
+type fileWriteTask struct {
+	f        WriteAtCloser       // file to write to
+	data     []byte              // chunk data to write
+	offset   int64               // file offset
+	chunk    *Chunk              // released after write
+	idx      int                 // caller-provided index, passed through
+	resultCh chan<- WriteResult  // where to send completion
+}
+
+// WriteAtCloser is an interface for concurrent file writes.
+type WriteAtCloser interface {
+	WriteAt(b []byte, off int64) (int, error)
+}
+
+// WriteResult carries the result of a file write operation.
+type WriteResult struct {
+	Idx     int   // caller-provided index, passed through
+	Written int   // bytes written
+	Err     error
+}
+
 // GetWorkerPool returns the global pool, or nil if not initialized.
 // Exported for use by Forgejo's DesyncStorage.
 func GetWorkerPool() *WorkerPool {
@@ -77,6 +100,19 @@ func (p *WorkerPool) SubmitFetch(id ChunkID, store Store, idx int, resultCh chan
 		getData:  true,
 		getIdx:   idx,
 		processQ: p.processQ,
+		resultCh: resultCh,
+	}
+}
+
+// SubmitFileWrite enqueues a file write task. The file write worker
+// writes data at the specified offset and sends the result to resultCh.
+func (p *WorkerPool) SubmitFileWrite(f WriteAtCloser, data []byte, offset int64, chunk *Chunk, idx int, resultCh chan<- WriteResult) {
+	p.fileWriteQ <- fileWriteTask{
+		f:        f,
+		data:     data,
+		offset:   offset,
+		chunk:    chunk,
+		idx:      idx,
 		resultCh: resultCh,
 	}
 }
@@ -123,15 +159,21 @@ func getWorkerPool() *WorkerPool {
 		if sw <= 0 {
 			sw = 20
 		}
+		// File write workers default to same count as storage workers.
+		fw := sw
 		globalWorkerPool = &WorkerPool{
-			processQ: make(chan processTask, pw*2),
-			storageQ: make(chan storageTask, sw*2),
+			processQ:   make(chan processTask, pw*2),
+			storageQ:   make(chan storageTask, sw*2),
+			fileWriteQ: make(chan fileWriteTask, fw*2),
 		}
 		for range pw {
 			go globalWorkerPool.processWorker()
 		}
 		for range sw {
 			go globalWorkerPool.storageWorker()
+		}
+		for range fw {
+			go globalWorkerPool.fileWriteWorker()
 		}
 	})
 	return globalWorkerPool
@@ -201,5 +243,15 @@ func (p *WorkerPool) storageWorker() {
 			task.chunk.Release()
 		}
 		task.wg.Done()
+	}
+}
+
+func (p *WorkerPool) fileWriteWorker() {
+	for task := range p.fileWriteQ {
+		n, err := task.f.WriteAt(task.data, task.offset)
+		if task.chunk != nil {
+			task.chunk.Release()
+		}
+		task.resultCh <- WriteResult{Idx: task.idx, Written: n, Err: err}
 	}
 }
