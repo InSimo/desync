@@ -169,9 +169,11 @@ func getWorkerPool() *WorkerPool {
 		if sw <= 0 {
 			sw = 20
 		}
-		// File write and chunker workers default to same count as their primary tier.
+		// File write workers default to same count as storage workers.
+		// Chunker workers = 2×process workers so two large files can be
+		// chunked in parallel (each needing up to pw chunker tasks).
 		fw := sw
-		cw := pw // chunker workers = process workers (both CPU-bound)
+		cw := pw * 2
 		globalWorkerPool = &WorkerPool{
 			processQ:   make(chan processTask, pw*2),
 			storageQ:   make(chan storageTask, sw*2),
