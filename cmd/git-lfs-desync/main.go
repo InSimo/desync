@@ -238,32 +238,21 @@ Configure Git LFS to use this agent:
 				desync.InitWorkerPool(storeOpt.N, storageOps)
 
 				// Wrap stores with ops gating if a storage-ops limit is configured.
+				var ws desync.WriteStore = chunkStore
+				var rs desync.Store = readStore
+				var is desync.IndexWriteStore = indexStore
 				if gate.MaxOps() > 0 {
-					agent.writeStore = &bytelimit.GatedWriteStore{WriteStore: chunkStore, Gate: gate}
-					agent.readStore = &bytelimit.GatedStore{Store: readStore, Gate: gate}
-					agent.indexWriteStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
-				} else {
-					agent.writeStore = chunkStore
-					agent.readStore = readStore
-					agent.indexWriteStore = indexStore
+					ws = &bytelimit.GatedWriteStore{WriteStore: chunkStore, Gate: gate}
+					rs = &bytelimit.GatedStore{Store: readStore, Gate: gate}
+					is = &bytelimit.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
 				}
-				agent.n = storeOpt.N
-				agent.minChunk = minChunk
-				agent.avgChunk = avgChunk
-				agent.maxChunk = maxChunk
-				agent.safePruning = storeOpt.SafePruning
-				agent.safePropagationTime = storeOpt.SafePropagationTime
 
-				// If the server enables safe-pruning, the client must
-				// also use it to avoid corrupting the pruning protocol.
-				if serverConfig != nil {
-					if opts, err := serverConfig.GetStoreOptionsFor(resolvedStore); err == nil && opts.SafePruning {
-						agent.safePruning = true
-						if opts.SafePropagationTime > agent.safePropagationTime {
-							agent.safePropagationTime = opts.SafePropagationTime
-						}
-					}
-				}
+				agent.client = desync.NewClient(rs, ws, is, desync.ClientOptions{
+					MinChunk: minChunk,
+					AvgChunk: avgChunk,
+					MaxChunk: maxChunk,
+					N:        storeOpt.N,
+				})
 
 				return nil
 			}

@@ -78,13 +78,18 @@ var oidIndexName = cmdshared.OidIndexName
 
 // Agent implements the Git LFS custom transfer agent protocol.
 type Agent struct {
+	client *desync.Client // high-level API wrapping read/write/index stores
+
+	// Legacy fields kept for backward compatibility with tests that
+	// set stores directly.  When client is non-nil, these are ignored.
 	writeStore      desync.WriteStore
-	readStore       desync.Store // used for downloads; may wrap writeStore with a cache
+	readStore       desync.Store
 	indexWriteStore desync.IndexWriteStore
 	n               int
 	minChunk        uint64
 	avgChunk        uint64
 	maxChunk        uint64
+
 	tmpDir              string
 	safePruning         bool
 	safePropagationTime time.Duration
@@ -104,6 +109,18 @@ type Agent struct {
 }
 
 func (a *Agent) Close() {
+	if a.client != nil {
+		if a.client.WriteStore != nil {
+			a.client.WriteStore.Close()
+		}
+		if a.client.ReadStore != nil {
+			a.client.ReadStore.Close()
+		}
+		if a.client.IndexStore != nil {
+			a.client.IndexStore.Close()
+		}
+		return
+	}
 	if a.writeStore != nil {
 		a.writeStore.Close()
 	}
@@ -270,9 +287,19 @@ func (a *Agent) handleInit(raw json.RawMessage) {
 		}
 	}
 
+	// Resolve stores for probing (prefer Client, fall back to legacy fields).
+	probeIndexStore := a.indexWriteStore
+	probeWriteStore := a.writeStore
+	probeReadStore := a.readStore
+	if a.client != nil {
+		probeIndexStore = a.client.IndexStore
+		probeWriteStore = a.client.WriteStore
+		probeReadStore = a.client.ReadStore
+	}
+
 	// Probe the index store (only if setup succeeded).
 	if errMsg == "" {
-		if _, err := a.indexWriteStore.HasIndex(probeIndexName); err != nil {
+		if _, err := probeIndexStore.HasIndex(probeIndexName); err != nil {
 			errMsg = "index store not available: " + err.Error()
 		}
 	}
@@ -282,9 +309,9 @@ func (a *Agent) handleInit(raw json.RawMessage) {
 		var chunkErr error
 		switch req.Operation {
 		case "upload":
-			_, chunkErr = a.writeStore.HasChunk(probeChunkID)
+			_, chunkErr = probeWriteStore.HasChunk(probeChunkID)
 		default: // "download" and anything else
-			_, chunkErr = a.readStore.HasChunk(probeChunkID)
+			_, chunkErr = probeReadStore.HasChunk(probeChunkID)
 		}
 		if chunkErr != nil {
 			errMsg = "chunk store not available: " + chunkErr.Error()
@@ -314,10 +341,16 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem
 	defer task.End()
 	trace.Logf(ctx, "oid", "%.12s size=%d", req.OID, req.Size)
 
+	// Resolve the index store for the HasIndex check.
+	indexStore := a.indexWriteStore
+	if a.client != nil {
+		indexStore = a.client.IndexStore
+	}
+
 	// Skip re-upload if this OID is already present in the index store.
 	// This check runs at full concurrency (no semaphore) so that
 	// already-uploaded OIDs are dismissed quickly.
-	if exists, err := a.indexWriteStore.HasIndex(oidIndexName(req.OID)); err == nil && exists {
+	if exists, err := indexStore.HasIndex(oidIndexName(req.OID)); err == nil && exists {
 		a.sendComplete(req.OID, "", nil)
 		return
 	}
@@ -342,7 +375,22 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem
 		defer slot.Release()
 	}
 
-	// Chunk the file and build an index.
+	if a.client != nil {
+		// Use Client API: single-pass chunking + storage via shared worker pool.
+		var lastBytes atomic.Int64
+		progress := func(bytes int64) {
+			lastBytes.Store(bytes)
+		}
+		progressCtx, stopProgress := context.WithCancel(ctx)
+		go a.progressLoop(progressCtx, req.OID, &lastBytes, req.Size)
+
+		err := a.client.PutObjectFromFile(oidIndexName(req.OID), req.Path, progress)
+		stopProgress()
+		a.sendComplete(req.OID, "", err)
+		return
+	}
+
+	// Legacy path: IndexFromFile + ChopFile + StoreIndex (used by tests).
 	var idx desync.Index
 	trace.WithRegion(ctx, "index-from-file", func() {
 		pb := &lfsProgressBar{agent: a, oid: req.OID, totalBytes: req.Size}
@@ -357,21 +405,16 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem
 	}
 	cmdshared.WriteHeapProfile("upload_after_index")
 
-	// Wrap the chunk store to count bytes stored.
 	cs := &countingWriteStore{WriteStore: a.writeStore}
-
 	var sps desync.SafePruneStore
 	if a.safePruning {
 		if ps, ok := a.writeStore.(desync.SafePruneStore); ok {
 			sps = ps
 		}
 	}
-
-	// Start progress reporting goroutine.
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
-	// Store chunks in the remote store.
 	var chopErr error
 	trace.WithRegion(ctx, "chop-file", func() {
 		chopErr = desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps, a.safePropagationTime)
@@ -384,7 +427,6 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem
 	cmdshared.WriteHeapProfile("upload_after_chop")
 	stopProgress()
 
-	// Store the index in the S3 index store.
 	var storeIdxErr error
 	trace.WithRegion(ctx, "store-index", func() {
 		storeIdxErr = a.indexWriteStore.StoreIndex(oidIndexName(req.OID), idx)
@@ -393,7 +435,6 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem
 		a.sendComplete(req.OID, "", storeIdxErr)
 		return
 	}
-
 	a.sendComplete(req.OID, "", nil)
 }
 
@@ -420,7 +461,29 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 		defer slot.Release()
 	}
 
-	// Fetch the index from the S3 index store.
+	tmpFile := filepath.Join(a.tmpDir, "git-lfs-desync-"+req.OID)
+
+	if a.client != nil {
+		// Use Client API: sequential read with prefetch via shared worker pool.
+		var lastBytes atomic.Int64
+		progress := func(bytes int64) {
+			lastBytes.Store(bytes)
+		}
+		progressCtx, stopProgress := context.WithCancel(ctx)
+		go a.progressLoop(progressCtx, req.OID, &lastBytes, req.Size)
+
+		err := a.client.GetObjectToFile(oidIndexName(req.OID), tmpFile, progress)
+		stopProgress()
+		if err != nil {
+			os.Remove(tmpFile)
+			a.sendComplete(req.OID, "", err)
+			return
+		}
+		a.sendComplete(req.OID, tmpFile, nil)
+		return
+	}
+
+	// Legacy path: GetIndex + AssembleFile (used by tests).
 	var idx desync.Index
 	var fetchErr error
 	trace.WithRegion(ctx, "fetch-index", func() {
@@ -431,13 +494,7 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 		return
 	}
 
-	// Write to a temporary file; git-lfs moves it to the object store on success.
-	tmpFile := filepath.Join(a.tmpDir, "git-lfs-desync-"+req.OID)
-
-	// Wrap the store to count bytes retrieved.
 	cs := newCountingReadStore(a.readStore, idx)
-
-	// Start progress reporting goroutine.
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
@@ -452,7 +509,6 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 		a.sendComplete(req.OID, "", assembleErr)
 		return
 	}
-
 	a.sendComplete(req.OID, tmpFile, nil)
 }
 
