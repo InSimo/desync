@@ -5,15 +5,19 @@ import (
 	"sync/atomic"
 )
 
-// WorkerPool provides fixed-size pools of goroutines for chunk processing
-// (CPU-bound: hashing, compression, decompression), storage operations
-// (I/O-bound: S3/filesystem PUT/GET), and file I/O (WriteAt for downloads).
+// WorkerPool provides fixed-size pools of goroutines for:
+//   - chunk processing (CPU-bound: hashing, compression, decompression)
+//   - storage operations (I/O-bound: S3/filesystem PUT/GET)
+//   - file I/O (WriteAt for downloads)
+//   - chunking (CPU-bound: rolling hash, runs pChunker.start to completion)
+//
 // A single global pool is shared across all concurrent callers,
 // preventing goroutine explosion when multiple LFS sessions run in parallel.
 type WorkerPool struct {
 	processQ    chan processTask
 	storageQ    chan storageTask
 	fileWriteQ  chan fileWriteTask
+	chunkerQ    chan chunkerTask
 }
 
 // processTask is submitted to a ChunkProcessWorker.
@@ -52,6 +56,12 @@ type storageTask struct {
 	getIdx   int                 // caller-provided index, passed through to FetchResult
 	processQ chan<- processTask  // where to enqueue decompress followup
 	resultCh chan<- FetchResult  // passed through to the decompress task
+}
+
+// chunkerTask is a long-running task: run a pChunker's start() to completion.
+// Submitted to the chunker pool by PutObjectFromFile.
+type chunkerTask struct {
+	fn  func() // runs pChunker.start(ctx) — blocks until sync or EOF
 }
 
 // FetchResult carries a decompressed chunk from the download pipeline.
@@ -159,12 +169,14 @@ func getWorkerPool() *WorkerPool {
 		if sw <= 0 {
 			sw = 20
 		}
-		// File write workers default to same count as storage workers.
+		// File write and chunker workers default to same count as their primary tier.
 		fw := sw
+		cw := pw // chunker workers = process workers (both CPU-bound)
 		globalWorkerPool = &WorkerPool{
 			processQ:   make(chan processTask, pw*2),
 			storageQ:   make(chan storageTask, sw*2),
 			fileWriteQ: make(chan fileWriteTask, fw*2),
+			chunkerQ:   make(chan chunkerTask, cw*2),
 		}
 		for range pw {
 			go globalWorkerPool.processWorker()
@@ -174,6 +186,9 @@ func getWorkerPool() *WorkerPool {
 		}
 		for range fw {
 			go globalWorkerPool.fileWriteWorker()
+		}
+		for range cw {
+			go globalWorkerPool.chunkerWorker()
 		}
 	})
 	return globalWorkerPool
@@ -243,6 +258,18 @@ func (p *WorkerPool) storageWorker() {
 			task.chunk.Release()
 		}
 		task.wg.Done()
+	}
+}
+
+// SubmitChunker enqueues a long-running chunker task. The task function
+// runs a pChunker.start() to completion (rolling hash until sync or EOF).
+func (p *WorkerPool) SubmitChunker(fn func()) {
+	p.chunkerQ <- chunkerTask{fn: fn}
+}
+
+func (p *WorkerPool) chunkerWorker() {
+	for task := range p.chunkerQ {
+		task.fn()
 	}
 }
 

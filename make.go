@@ -121,13 +121,29 @@ func IndexFromFile(ctx context.Context,
 
 	// Start the workers.  Release the chunker's backing buffer only after the
 	// goroutine has exited (signalled by the results channel being closed).
-	for _, w := range worker {
-		go w.start(ctx)
-		defer func(w *pChunker) {
-			w.stop()
-			for range w.results {} // drain until goroutine exits and closes the channel
-			w.chunker.Release()
-		}(w)
+	if pool := getWorkerPool(); pool != nil {
+		// Submit to shared chunker pool in REVERSE order: worker N-1 first
+		// (no dependencies), then N-2 (needs N-1 running), etc.
+		// FIFO channel ensures higher-numbered workers start first, which is
+		// correct because worker i calls worker[i+1].syncWith().
+		for i := len(worker) - 1; i >= 0; i-- {
+			w := worker[i]
+			pool.SubmitChunker(func() { w.start(ctx) })
+			defer func(w *pChunker) {
+				w.stop()
+				for range w.results {}
+				w.chunker.Release()
+			}(w)
+		}
+	} else {
+		for _, w := range worker {
+			go w.start(ctx)
+			defer func(w *pChunker) {
+				w.stop()
+				for range w.results {}
+				w.chunker.Release()
+			}(w)
+		}
 	}
 
 	// Go through the workers, starting with the first one, taking all chunks
