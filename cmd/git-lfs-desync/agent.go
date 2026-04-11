@@ -463,44 +463,36 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 
 	tmpFile := filepath.Join(a.tmpDir, "git-lfs-desync-"+req.OID)
 
+	// Resolve stores and concurrency for AssembleFile.
+	var readStore desync.Store
+	var indexStore desync.IndexWriteStore
+	n := a.n
 	if a.client != nil {
-		// Use Client API: sequential read with prefetch via shared worker pool.
-		var lastBytes atomic.Int64
-		progress := func(bytes int64) {
-			lastBytes.Store(bytes)
-		}
-		progressCtx, stopProgress := context.WithCancel(ctx)
-		go a.progressLoop(progressCtx, req.OID, &lastBytes, req.Size)
-
-		err := a.client.GetObjectToFile(oidIndexName(req.OID), tmpFile, progress)
-		stopProgress()
-		if err != nil {
-			os.Remove(tmpFile)
-			a.sendComplete(req.OID, "", err)
-			return
-		}
-		a.sendComplete(req.OID, tmpFile, nil)
-		return
+		readStore = a.client.ReadStore
+		indexStore = a.client.IndexStore
+		n = a.client.N
+	} else {
+		readStore = a.readStore
+		indexStore = a.indexWriteStore
 	}
 
-	// Legacy path: GetIndex + AssembleFile (used by tests).
 	var idx desync.Index
 	var fetchErr error
 	trace.WithRegion(ctx, "fetch-index", func() {
-		idx, fetchErr = a.indexWriteStore.GetIndex(oidIndexName(req.OID))
+		idx, fetchErr = indexStore.GetIndex(oidIndexName(req.OID))
 	})
 	if fetchErr != nil {
 		a.sendComplete(req.OID, "", fmt.Errorf("fetching index for %s: %w", req.OID, fetchErr))
 		return
 	}
 
-	cs := newCountingReadStore(a.readStore, idx)
+	cs := newCountingReadStore(readStore, idx)
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
 	var assembleErr error
 	trace.WithRegion(ctx, "assemble-file", func() {
-		_, assembleErr = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.n})
+		_, assembleErr = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: n})
 	})
 	stopProgress()
 	cmdshared.WriteHeapProfile("download_after_assemble")
