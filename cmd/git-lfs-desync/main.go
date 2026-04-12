@@ -201,7 +201,12 @@ Configure Git LFS to use this agent:
 
 				// Build the read store for downloads, optionally wrapping the remote
 				// store with a local cache tier.
-				readStore, err := cmdshared.MultiStoreWithCache(cfg, storeOpt, cache, resolvedStore)
+				// DESYNC_CACHE_DIR env var provides a default when --cache is not set.
+				resolvedCache := cache
+				if resolvedCache == "" {
+					resolvedCache = os.Getenv("DESYNC_CACHE_DIR")
+				}
+				readStore, err := cmdshared.MultiStoreWithCache(cfg, storeOpt, resolvedCache, resolvedStore)
 				if err != nil {
 					chunkStore.Close()
 					return err
