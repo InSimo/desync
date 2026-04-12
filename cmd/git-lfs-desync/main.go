@@ -206,6 +206,9 @@ Configure Git LFS to use this agent:
 				if resolvedCache == "" {
 					resolvedCache = os.Getenv("DESYNC_CACHE_DIR")
 				}
+				if resolvedCache != "" {
+					os.MkdirAll(resolvedCache, 0o755)
+				}
 				readStore, err := cmdshared.MultiStoreWithCache(cfg, storeOpt, resolvedCache, resolvedStore)
 				if err != nil {
 					chunkStore.Close()
