@@ -492,14 +492,16 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 
 	var assembleErr error
 	if len(idx.Chunks) == 1 {
-		// Fast path: single-chunk object — skip AssembleFile overhead
-		// (seed planner, errgroup, N goroutines, multiple file handles).
+		// Fast path: single-chunk object — skip all assembly overhead.
 		trace.WithRegion(ctx, "single-chunk-write", func() {
 			assembleErr = writeSingleChunk(tmpFile, idx.Chunks[0], cs)
 		})
 	} else {
-		trace.WithRegion(ctx, "assemble-file", func() {
-			_, assembleErr = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: n})
+		// Multi-chunk: use AssembleBlankFile which skips seed machinery,
+		// in-place detection, and plan validation — LFS always writes
+		// to a fresh tmp file with no seeds.
+		trace.WithRegion(ctx, "assemble-blank", func() {
+			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, n)
 		})
 	}
 	stopProgress()

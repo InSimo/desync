@@ -7,6 +7,72 @@ import (
 	"os"
 )
 
+// AssembleBlankFile writes an index to a new file by fetching all chunks
+// from the store. Unlike AssembleFile, it skips seed detection, in-place
+// checking, self-seeding, plan validation, and progress tracking. This is
+// intended for cases where the output file is always new (e.g. LFS downloads).
+//
+// n controls the number of concurrent fetch+write goroutines.
+func AssembleBlankFile(ctx context.Context, name string, idx Index, s Store, n int) error {
+	if n <= 0 {
+		n = 1
+	}
+
+	f, err := os.Create(name)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(idx.Length()); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+
+	g, ctx := errgroup.WithContext(ctx)
+	in := make(chan IndexChunk)
+
+	for i := 0; i < n; i++ {
+		wf, err := os.OpenFile(name, os.O_WRONLY, 0)
+		if err != nil {
+			return fmt.Errorf("open %s for writing: %w", name, err)
+		}
+		defer wf.Close()
+		g.Go(func() error {
+			for c := range in {
+				chunk, err := s.GetChunk(c.ID)
+				if err != nil {
+					return err
+				}
+				b, err := chunk.Data()
+				if err != nil {
+					chunk.Release()
+					return err
+				}
+				if _, err := wf.WriteAt(b, int64(c.Start)); err != nil {
+					chunk.Release()
+					return err
+				}
+				chunk.Release()
+			}
+			return nil
+		})
+	}
+
+	// Feed chunks to workers.
+	go func() {
+		defer close(in)
+		for _, c := range idx.Chunks {
+			select {
+			case <-ctx.Done():
+				return
+			case in <- c:
+			}
+		}
+	}()
+
+	return g.Wait()
+}
+
 // InvalidSeedAction represents the action that we will take if a seed
 // happens to be invalid. There are currently three options:
 // - fail with an error
