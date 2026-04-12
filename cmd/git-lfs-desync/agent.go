@@ -490,16 +490,28 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
+	// DESYNC_DOWNLOAD_MODE selects the download path for A/B testing:
+	//   "" or "optimized": single-chunk fast path + AssembleBlankFile (default)
+	//   "assemble-file":   original AssembleFile for everything
+	//   "assemble-blank":  AssembleBlankFile for everything (no single-chunk fast path)
 	var assembleErr error
-	if len(idx.Chunks) == 1 {
+	dlMode := os.Getenv("DESYNC_DOWNLOAD_MODE")
+	switch {
+	case dlMode == "assemble-file":
+		trace.WithRegion(ctx, "assemble-file", func() {
+			_, assembleErr = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: n})
+		})
+	case dlMode == "assemble-blank":
+		trace.WithRegion(ctx, "assemble-blank", func() {
+			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, n)
+		})
+	case len(idx.Chunks) == 1:
 		// Fast path: single-chunk object — skip all assembly overhead.
 		trace.WithRegion(ctx, "single-chunk-write", func() {
 			assembleErr = writeSingleChunk(tmpFile, idx.Chunks[0], cs)
 		})
-	} else {
-		// Multi-chunk: use AssembleBlankFile which skips seed machinery,
-		// in-place detection, and plan validation — LFS always writes
-		// to a fresh tmp file with no seeds.
+	default:
+		// Multi-chunk: use AssembleBlankFile which skips seed machinery.
 		trace.WithRegion(ctx, "assemble-blank", func() {
 			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, n)
 		})
