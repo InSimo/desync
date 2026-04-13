@@ -17,6 +17,11 @@ func AssembleBlankFile(ctx context.Context, name string, idx Index, s Store, n i
 	if n <= 0 {
 		n = 1
 	}
+	// Don't spawn more workers than chunks — avoids unnecessary goroutines
+	// and file descriptors for objects with few chunks.
+	if n > len(idx.Chunks) {
+		n = len(idx.Chunks)
+	}
 
 	f, err := os.Create(name)
 	if err != nil {
