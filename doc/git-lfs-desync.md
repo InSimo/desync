@@ -53,6 +53,8 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `--cache-max-size`                  | `""` (unlimited)                            | Maximum cache size (e.g. `10G`, `500M`). When exceeded, the oldest chunks are automatically evicted. Also settable via `defaults.cache-max-size` in the config or `DESYNC_CACHE_MAX_SIZE` env var. See [doc/cache-size-limit.md](cache-size-limit.md). |
 | `--cache-max-files`                 | `0` (unlimited)                             | Maximum number of cached files. When exceeded, the oldest chunks are automatically evicted. Also settable via `defaults.cache-max-files` in the config or `DESYNC_CACHE_MAX_FILES` env var. |
 | `--cache-partitions`                | `256`                                       | Number of eviction partitions (power of 2). Higher values reduce per-eviction scan cost for very large caches. Also settable via `defaults.cache-partitions` in the config. |
+| `--no-pipelined`                    | `false`                                     | Disable pipelined mode. When set, the agent falls back to one-object-at-a-time processing even if the client supports pipelining. See [Pipelined Mode](#pipelined-mode). |
+| `--max-concurrent-uploads`          | `8`                                         | Maximum parallel upload/download operations in pipelined mode. Lightweight existence checks (`HasIndex`) run at full concurrency; only heavy work (chunking, S3 storage, assembly) is limited by this value. |
 | `--safe-pruning`                    | `false`                                     | Enable the safe concurrent pruning protocol on the upload path. After each successful upload, calls `RescueChunks` on the chunk store to recover any chunks that a concurrent `desync prune --safe-pruning` may have quarantined between the `StoreChunk` and `StoreIndex` steps. Must be used together with `desync prune --safe-pruning` and `desync index-prune --safe-index-pruning`. Supported by all writable backends (local, S3, SFTP, GCS). See [Index and Chunk Pruning](#index-and-chunk-pruning) and [doc/safe-pruning.md](safe-pruning.md). |
 
 ## Config defaults
@@ -336,9 +338,22 @@ The transfer agent config must be set on every machine that pushes or pulls LFS 
     standalonetransferagent = desync
 ```
 
-`concurrent = true` (the default) tells git-lfs to launch multiple agent processes in parallel, splitting the transfer workload between them. `concurrenttransfers` (default 3 in git-lfs) controls how many agent processes run simultaneously. Each process handles one LFS object at a time (the protocol is serial per process). Cross-process coordination — total in-flight bytes and concurrent storage operations — is handled via shared memory (see `--max-in-flight` and `--max-storage-ops`).
+`concurrent = true` (the default) tells git-lfs to launch multiple agent processes in parallel, splitting the transfer workload between them. `concurrenttransfers` (default 3 in git-lfs) controls how many agent processes run simultaneously. Cross-process coordination — total in-flight bytes and concurrent storage operations — is handled via shared memory (see `--max-in-flight` and `--max-storage-ops`).
 
 With `standalonetransferagent` set, git-lfs bypasses the normal LFS HTTP API entirely — no LFS server is needed.
+
+### Pipelined mode
+
+By default, git-lfs spawns one agent process per concurrent transfer (controlled by `concurrenttransfers`). Each process handles one LFS object at a time — git-lfs sends a transfer request and waits for the completion response before sending the next.
+
+**Pipelined mode** allows a single agent process to handle multiple transfers concurrently. When both the client (`supportspipelined` in the init message) and the agent (not `--no-pipelined`) support it, git-lfs sends all transfer requests to a single process without waiting for completion. The agent dispatches them internally using goroutines:
+
+- **Lightweight checks** (e.g. `HasIndex` to skip already-uploaded objects) run at full concurrency.
+- **Heavy work** (chunking, S3 uploads, file assembly) is limited to `--max-concurrent-uploads` parallel operations (default 8).
+
+Pipelined mode reduces process startup overhead and enables better sharing of connection pools and caches. It is the preferred mode when git-lfs supports it.
+
+To disable pipelined mode (e.g. for debugging or compatibility), pass `--no-pipelined`. The agent will then process one object at a time per process, with parallelism achieved by spawning multiple agent processes as before.
 
 ### Per-repo config
 
