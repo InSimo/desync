@@ -1,4 +1,4 @@
-package bytelimit
+package desync
 
 import (
 	"context"

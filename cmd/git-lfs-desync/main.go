@@ -12,7 +12,6 @@ import (
 	"syscall"
 
 	desync "github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/spf13/cobra"
 )
@@ -118,7 +117,7 @@ Configure Git LFS to use this agent:
 			}
 
 			// Open the cross-process gate for in-flight bytes and/or storage ops.
-			gate, err := bytelimit.OpenGate(maxInFlight, maxStorageOps)
+			gate, err := desync.OpenGate(maxInFlight, maxStorageOps)
 			if err != nil {
 				return fmt.Errorf("opening in-flight byte gate: %w", err)
 			}
@@ -140,7 +139,7 @@ Configure Git LFS to use this agent:
 				}
 			}
 
-			agent := &Agent{tmpDir: os.TempDir(), gate: gate, pipelinedEnabled: !noPipelined, maxConcurrentUploads: maxConcurrentUploads}
+			agent := &Agent{tmpDir: os.TempDir(), pipelinedEnabled: !noPipelined, maxConcurrentUploads: maxConcurrentUploads}
 			defer agent.Close()
 
 			agent.setup = func(remote, operation string, serverConfig *cmdshared.Config) error {
@@ -188,7 +187,7 @@ Configure Git LFS to use this agent:
 
 				client, err := cmdshared.NewClientFromConfig(
 					cfg, storeOpt, resolvedStore, resolvedIndex,
-					resolvedCache, resolvedChunkSize)
+					resolvedCache, resolvedChunkSize, gate)
 				if err != nil {
 					return err
 				}
@@ -198,13 +197,6 @@ Configure Git LFS to use this agent:
 					storageOps = 20
 				}
 				desync.InitWorkerPool(storeOpt.N, storageOps)
-
-				// Wrap stores with ops gating if a storage-ops limit is configured.
-				if gate.MaxOps() > 0 {
-					client.WriteStore = &bytelimit.GatedWriteStore{WriteStore: client.WriteStore, Gate: gate}
-					client.ReadStore = &bytelimit.GatedStore{Store: client.ReadStore, Gate: gate}
-					client.IndexStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: client.IndexStore, Gate: gate}
-				}
 
 				agent.client = client
 				agent.safePruning = storeOpt.SafePruning

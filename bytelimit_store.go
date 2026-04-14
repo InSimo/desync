@@ -1,19 +1,15 @@
-package bytelimit
+package desync
 
-import (
-	"context"
+import "context"
 
-	"github.com/folbricht/desync"
-)
-
-// GatedStore wraps a desync.Store, gating GetChunk (data transfer) but
+// GatedStore wraps a Store, gating GetChunk (data transfer) but
 // not HasChunk (metadata query).
 type GatedStore struct {
-	desync.Store
+	Store
 	Gate *Gate
 }
 
-func (s *GatedStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
+func (s *GatedStore) GetChunk(id ChunkID) (*Chunk, error) {
 	if err := s.Gate.AcquireOp(context.TODO()); err != nil {
 		return nil, err
 	}
@@ -21,14 +17,14 @@ func (s *GatedStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
 	return s.Store.GetChunk(id)
 }
 
-// GatedWriteStore wraps a desync.WriteStore, gating GetChunk and
+// GatedWriteStore wraps a WriteStore, gating GetChunk and
 // StoreChunk (data transfers) but not HasChunk (metadata query).
 type GatedWriteStore struct {
-	desync.WriteStore
+	WriteStore
 	Gate *Gate
 }
 
-func (s *GatedWriteStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
+func (s *GatedWriteStore) GetChunk(id ChunkID) (*Chunk, error) {
 	if err := s.Gate.AcquireOp(context.TODO()); err != nil {
 		return nil, err
 	}
@@ -36,7 +32,7 @@ func (s *GatedWriteStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
 	return s.WriteStore.GetChunk(id)
 }
 
-func (s *GatedWriteStore) StoreChunk(c *desync.Chunk) error {
+func (s *GatedWriteStore) StoreChunk(c *Chunk) error {
 	if err := s.Gate.AcquireOp(context.TODO()); err != nil {
 		return err
 	}
@@ -44,23 +40,23 @@ func (s *GatedWriteStore) StoreChunk(c *desync.Chunk) error {
 	return s.WriteStore.StoreChunk(c)
 }
 
-// GatedIndexWriteStore wraps a desync.IndexWriteStore, gating GetIndex
+// GatedIndexWriteStore wraps a IndexWriteStore, gating GetIndex
 // and StoreIndex (data transfers) but not HasIndex or GetIndexReader
 // (metadata query / called within GetIndex).
 type GatedIndexWriteStore struct {
-	desync.IndexWriteStore
+	IndexWriteStore
 	Gate *Gate
 }
 
-func (s *GatedIndexWriteStore) GetIndex(name string) (desync.Index, error) {
+func (s *GatedIndexWriteStore) GetIndex(name string) (Index, error) {
 	if err := s.Gate.AcquireOp(context.TODO()); err != nil {
-		return desync.Index{}, err
+		return Index{}, err
 	}
 	defer s.Gate.ReleaseOp()
 	return s.IndexWriteStore.GetIndex(name)
 }
 
-func (s *GatedIndexWriteStore) StoreIndex(name string, idx desync.Index) error {
+func (s *GatedIndexWriteStore) StoreIndex(name string, idx Index) error {
 	if err := s.Gate.AcquireOp(context.TODO()); err != nil {
 		return err
 	}

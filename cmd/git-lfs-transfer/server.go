@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/shared/bytelimit"
+	
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/git-lfs/pktline"
 )
@@ -31,7 +31,7 @@ type Server struct {
 	maxChunk       uint64
 	safePruning    bool
 	safePropTime   time.Duration
-	gate           *bytelimit.Gate // cross-process in-flight byte limit; may be nil
+	gate           *desync.Gate // cross-process in-flight byte limit; may be nil
 
 	pl *pktline.Pktline
 

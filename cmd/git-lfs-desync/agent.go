@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/shared/bytelimit"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 )
 
@@ -82,8 +81,7 @@ type Agent struct {
 	tmpDir               string
 	safePruning          bool
 	safePropagationTime  time.Duration
-	gate                 *bytelimit.Gate // cross-process in-flight byte limit; may be nil
-	pipelinedEnabled     bool            // respond with pipelined=true in init (default true)
+	pipelinedEnabled     bool // respond with pipelined=true in init (default true)
 	maxConcurrentUploads int             // max parallel upload/download operations (default 8)
 	enc                  *json.Encoder
 	mu                   sync.Mutex
@@ -315,18 +313,6 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem
 		defer func() { <-uploadSem }()
 	}
 
-	// Acquire in-flight byte slot (blocks if over the cross-process limit).
-	if a.gate != nil {
-		region := trace.StartRegion(ctx, "acquire-gate")
-		slot, err := a.gate.Acquire(ctx, req.Size)
-		region.End()
-		if err != nil {
-			a.sendComplete(req.OID, "", fmt.Errorf("in-flight limit: %w", err))
-			return
-		}
-		defer slot.Release()
-	}
-
 	var lastBytes atomic.Int64
 	progress := func(bytes int64) {
 		lastBytes.Store(bytes)
@@ -349,18 +335,6 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	ctx, task := trace.NewTask(ctx, "download")
 	defer task.End()
 	trace.Logf(ctx, "oid", "%.12s size=%d", req.OID, req.Size)
-
-	// Acquire in-flight byte slot (blocks if over the cross-process limit).
-	if a.gate != nil {
-		region := trace.StartRegion(ctx, "acquire-gate")
-		slot, err := a.gate.Acquire(ctx, req.Size)
-		region.End()
-		if err != nil {
-			a.sendComplete(req.OID, "", fmt.Errorf("in-flight limit: %w", err))
-			return
-		}
-		defer slot.Release()
-	}
 
 	tmpFile := filepath.Join(a.tmpDir, "git-lfs-desync-"+req.OID)
 

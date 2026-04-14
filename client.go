@@ -18,6 +18,11 @@ type ClientOptions struct {
 	MinChunk, AvgChunk, MaxChunk uint64
 	// N is the max number of in-flight chunks for prefetch (default 10).
 	N int
+	// Gate, if non-nil, provides cross-process admission control.
+	// Per-storage-operation gating (AcquireOp/ReleaseOp) is applied
+	// automatically to stores in NewClient. Per-transfer byte gating
+	// (Acquire/Release) is applied in PutObjectFromFile/GetObjectToFile.
+	Gate *Gate
 }
 
 // ObjectInfo holds metadata for a stored object.
@@ -41,7 +46,8 @@ type Client struct {
 	MinChunk      uint64
 	AvgChunk      uint64
 	MaxChunk      uint64
-	N             int // max in-flight chunks for prefetch
+	N    int   // max in-flight chunks for prefetch
+	Gate *Gate // optional cross-process admission control
 }
 
 // NewClient creates a Client from pre-opened stores.
@@ -60,7 +66,7 @@ func NewClient(readStore Store, writeStore WriteStore, indexStore IndexWriteStor
 	if n <= 0 {
 		n = 10
 	}
-	return &Client{
+	c := &Client{
 		ReadStore:     readStore,
 		WriteStore:    writeStore,
 		IndexStore:    indexStore,
@@ -69,7 +75,17 @@ func NewClient(readStore Store, writeStore WriteStore, indexStore IndexWriteStor
 		AvgChunk:      opts.AvgChunk,
 		MaxChunk:      opts.MaxChunk,
 		N:             n,
+		Gate:          opts.Gate,
 	}
+
+	// Wrap stores with per-operation gating if ops limiting is active.
+	if opts.Gate != nil && opts.Gate.MaxOps() > 0 {
+		c.WriteStore = &GatedWriteStore{WriteStore: writeStore, Gate: opts.Gate}
+		c.ReadStore = &GatedStore{Store: readStore, Gate: opts.Gate}
+		c.IndexStore = &GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: opts.Gate}
+	}
+
+	return c
 }
 
 // Close closes all underlying stores. Safe to call multiple times.
@@ -181,6 +197,14 @@ func (c *Client) PutObjectFromFile(name, path string, progress ProgressFunc) err
 		return fmt.Errorf("desync: stat %s: %w", path, err)
 	}
 
+	if c.Gate != nil {
+		slot, err := c.Gate.Acquire(context.Background(), int64(size))
+		if err != nil {
+			return fmt.Errorf("desync: in-flight limit: %w", err)
+		}
+		defer slot.Release()
+	}
+
 	// Small files: single-pass ChunkStream (lower overhead).
 	if size <= c.MaxChunk*uint64(c.N) {
 		return c.putObjectSmall(name, path, progress)
@@ -258,6 +282,14 @@ func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error
 	idx, err := c.IndexStore.GetIndex(name)
 	if err != nil {
 		return err
+	}
+
+	if c.Gate != nil {
+		slot, err := c.Gate.Acquire(context.Background(), idx.TotalSize())
+		if err != nil {
+			return fmt.Errorf("desync: in-flight limit: %w", err)
+		}
+		defer slot.Release()
 	}
 
 	f, err := os.Create(path)

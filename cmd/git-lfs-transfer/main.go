@@ -12,7 +12,7 @@ import (
 	"syscall"
 
 	desync "github.com/folbricht/desync"
-	"github.com/folbricht/desync/cmd/shared/bytelimit"
+	
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
 	"github.com/git-lfs/pktline"
 )
@@ -157,9 +157,9 @@ func run() error {
 	// Open the cross-process gate for in-flight bytes and/or storage ops.
 	maxInFlight := cfg.ResolveMaxInFlight(0)
 	maxOps := cfg.ResolveMaxStorageOps(0)
-	var gate *bytelimit.Gate
+	var gate *desync.Gate
 	if maxInFlight > 0 || maxOps > 0 {
-		gate, err = bytelimit.OpenGate(maxInFlight, maxOps)
+		gate, err = desync.OpenGate(maxInFlight, maxOps)
 		if err != nil {
 			return fmt.Errorf("opening in-flight byte gate: %w", err)
 		}
@@ -168,9 +168,9 @@ func run() error {
 
 	// Wrap stores with ops gating if a storage-ops limit is configured.
 	if gate != nil && gate.MaxOps() > 0 {
-		writeStore = &bytelimit.GatedWriteStore{WriteStore: writeStore, Gate: gate}
-		readStore = &bytelimit.GatedStore{Store: readStore, Gate: gate}
-		indexStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
+		writeStore = &desync.GatedWriteStore{WriteStore: writeStore, Gate: gate}
+		readStore = &desync.GatedStore{Store: readStore, Gate: gate}
+		indexStore = &desync.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
 	}
 
 	// Control whether the desync custom transfer is advertised to clients.

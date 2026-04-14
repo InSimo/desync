@@ -13,8 +13,9 @@ import (
 // storeURL and indexURL are resolved store locations (not raw CLI flags).
 // If indexURL is empty, it is derived from storeURL. cacheURL may be empty
 // to disable caching. chunkSize is a resolved "min:avg:max" string (use
-// cfg.ResolveChunkSize to get it).
-func NewClientFromConfig(cfg Config, cmdOpt CmdStoreOptions, storeURL, indexURL, cacheURL, chunkSize string) (*desync.Client, error) {
+// cfg.ResolveChunkSize to get it). gate may be nil to disable admission
+// control.
+func NewClientFromConfig(cfg Config, cmdOpt CmdStoreOptions, storeURL, indexURL, cacheURL, chunkSize string, gate *desync.Gate) (*desync.Client, error) {
 	if storeURL == "" {
 		return nil, fmt.Errorf("store URL is required")
 	}
@@ -61,5 +62,6 @@ func NewClientFromConfig(cfg Config, cmdOpt CmdStoreOptions, storeURL, indexURL,
 		AvgChunk: avgChunk,
 		MaxChunk: maxChunk,
 		N:        cmdOpt.N,
+		Gate:     gate,
 	}), nil
 }

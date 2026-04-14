@@ -16,7 +16,7 @@
 // Crash safety: if a process dies without releasing its slot, the stale
 // PID is detected by other processes via kill(pid, 0) and the slot is
 // reclaimed.
-package bytelimit
+package desync
 
 import (
 	"context"
