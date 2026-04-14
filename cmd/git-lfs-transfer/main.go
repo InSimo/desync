@@ -188,28 +188,17 @@ func run() error {
 	//       use short-lived tokens with restricted permissions.
 	advertiseMode := gitConfigValue(absPath, "desync-lfs.advertise")
 
+	chunkSizeStr := fmt.Sprintf("%d:%d:%d", minChunk/1024, avgChunk/1024, maxChunk/1024)
 	var desyncConfig *cmdshared.Config
 	var transfers []string
 	switch advertiseMode {
 	case "without-credentials":
-		desyncConfig = &cmdshared.Config{
-			Defaults: cmdshared.Defaults{
-				Stores:     []string{storeURL},
-				IndexStore: indexURL,
-				ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk/1024, avgChunk/1024, maxChunk/1024),
-			},
-		}
+		filtered := cmdshared.FilterServerConfig(cfg, storeURL, indexURL, chunkSizeStr, cfg.ResolveDigest(""), false)
+		desyncConfig = &filtered
 		transfers = []string{"desync", "ssh"}
 	case "with-credentials":
-		desyncConfig = &cmdshared.Config{
-			S3Credentials: cfg.S3Credentials,
-			StoreOptions:  cfg.StoreOptions,
-			Defaults: cmdshared.Defaults{
-				Stores:     []string{storeURL},
-				IndexStore: indexURL,
-				ChunkSize:  fmt.Sprintf("%d:%d:%d", minChunk/1024, avgChunk/1024, maxChunk/1024),
-			},
-		}
+		filtered := cmdshared.FilterServerConfig(cfg, storeURL, indexURL, chunkSizeStr, cfg.ResolveDigest(""), true)
+		desyncConfig = &filtered
 		transfers = []string{"desync", "ssh"}
 	default:
 		// "no", "false", or unset — only SSH protocol advertised.
