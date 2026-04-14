@@ -12,46 +12,12 @@ import (
 // ProgressFunc is called periodically with the number of bytes processed so far.
 type ProgressFunc func(bytesProcessed int64)
 
-// ByteReservation represents an in-flight byte reservation that must be
-// released when the operation completes.
-type ByteReservation interface {
-	Release()
-}
-
-// TransferGate controls admission for transfer operations. It provides
-// per-transfer byte limiting and per-storage-operation concurrency
-// limiting. Implementations must be safe for concurrent use.
-//
-// The bytelimit.Gate type in cmd/shared/bytelimit satisfies this interface.
-type TransferGate interface {
-	// Acquire reserves size bytes for a transfer operation. It blocks
-	// until the reservation can be made or ctx is cancelled.
-	Acquire(ctx context.Context, size int64) (ByteReservation, error)
-
-	// AcquireOp reserves a storage operation slot. Blocks if at the
-	// configured maximum. Returns nil immediately if ops limiting is
-	// disabled.
-	AcquireOp(ctx context.Context) error
-
-	// ReleaseOp releases a storage operation slot.
-	ReleaseOp()
-
-	// MaxOps returns the configured maximum concurrent storage operations.
-	// Returns 0 if ops limiting is disabled.
-	MaxOps() int32
-}
-
 // ClientOptions configures a Client.
 type ClientOptions struct {
 	// MinChunk, AvgChunk, MaxChunk are chunk size boundaries in bytes.
 	MinChunk, AvgChunk, MaxChunk uint64
 	// N is the max number of in-flight chunks for prefetch (default 10).
 	N int
-	// Gate, if non-nil, provides per-transfer byte admission control and
-	// per-storage-operation concurrency limiting. PutObjectFromFile and
-	// GetObjectToFile will call Gate.Acquire before starting and release
-	// after completion. Store operations will be wrapped with AcquireOp/ReleaseOp.
-	Gate TransferGate
 }
 
 // ObjectInfo holds metadata for a stored object.
@@ -75,8 +41,7 @@ type Client struct {
 	MinChunk      uint64
 	AvgChunk      uint64
 	MaxChunk      uint64
-	N             int          // max in-flight chunks for prefetch
-	Gate          TransferGate // optional admission control; nil = disabled
+	N             int // max in-flight chunks for prefetch
 }
 
 // NewClient creates a Client from pre-opened stores.
@@ -95,7 +60,7 @@ func NewClient(readStore Store, writeStore WriteStore, indexStore IndexWriteStor
 	if n <= 0 {
 		n = 10
 	}
-	c := &Client{
+	return &Client{
 		ReadStore:     readStore,
 		WriteStore:    writeStore,
 		IndexStore:    indexStore,
@@ -104,17 +69,7 @@ func NewClient(readStore Store, writeStore WriteStore, indexStore IndexWriteStor
 		AvgChunk:      opts.AvgChunk,
 		MaxChunk:      opts.MaxChunk,
 		N:             n,
-		Gate:          opts.Gate,
 	}
-
-	// Wrap stores with per-operation gating if ops limiting is active.
-	if opts.Gate != nil && opts.Gate.MaxOps() > 0 {
-		c.WriteStore = &gatedWriteStore{WriteStore: writeStore, gate: opts.Gate}
-		c.ReadStore = &gatedStore{Store: readStore, gate: opts.Gate}
-		c.IndexStore = &gatedIndexWriteStore{IndexWriteStore: indexStore, gate: opts.Gate}
-	}
-
-	return c
 }
 
 // Close closes all underlying stores. Safe to call multiple times.
@@ -226,15 +181,6 @@ func (c *Client) PutObjectFromFile(name, path string, progress ProgressFunc) err
 		return fmt.Errorf("desync: stat %s: %w", path, err)
 	}
 
-	// Acquire per-transfer byte reservation if gating is configured.
-	if c.Gate != nil {
-		slot, err := c.Gate.Acquire(context.Background(), int64(size))
-		if err != nil {
-			return fmt.Errorf("desync: in-flight limit: %w", err)
-		}
-		defer slot.Release()
-	}
-
 	// Small files: single-pass ChunkStream (lower overhead).
 	if size <= c.MaxChunk*uint64(c.N) {
 		return c.putObjectSmall(name, path, progress)
@@ -312,15 +258,6 @@ func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error
 	idx, err := c.IndexStore.GetIndex(name)
 	if err != nil {
 		return err
-	}
-
-	// Acquire per-transfer byte reservation if gating is configured.
-	if c.Gate != nil {
-		slot, err := c.Gate.Acquire(context.Background(), idx.TotalSize())
-		if err != nil {
-			return fmt.Errorf("desync: in-flight limit: %w", err)
-		}
-		defer slot.Release()
 	}
 
 	f, err := os.Create(path)
@@ -434,60 +371,3 @@ func (w *progressChunkerWrapper) Next() (uint64, []byte, error) {
 func (w *progressChunkerWrapper) Min() uint64 { return w.c.Min() }
 func (w *progressChunkerWrapper) Avg() uint64 { return w.c.Avg() }
 func (w *progressChunkerWrapper) Max() uint64 { return w.c.Max() }
-
-// --- Gated store wrappers (per-storage-operation concurrency control) ---
-
-type gatedStore struct {
-	Store
-	gate TransferGate
-}
-
-func (s *gatedStore) GetChunk(id ChunkID) (*Chunk, error) {
-	if err := s.gate.AcquireOp(context.Background()); err != nil {
-		return nil, err
-	}
-	defer s.gate.ReleaseOp()
-	return s.Store.GetChunk(id)
-}
-
-type gatedWriteStore struct {
-	WriteStore
-	gate TransferGate
-}
-
-func (s *gatedWriteStore) GetChunk(id ChunkID) (*Chunk, error) {
-	if err := s.gate.AcquireOp(context.Background()); err != nil {
-		return nil, err
-	}
-	defer s.gate.ReleaseOp()
-	return s.WriteStore.GetChunk(id)
-}
-
-func (s *gatedWriteStore) StoreChunk(c *Chunk) error {
-	if err := s.gate.AcquireOp(context.Background()); err != nil {
-		return err
-	}
-	defer s.gate.ReleaseOp()
-	return s.WriteStore.StoreChunk(c)
-}
-
-type gatedIndexWriteStore struct {
-	IndexWriteStore
-	gate TransferGate
-}
-
-func (s *gatedIndexWriteStore) GetIndex(name string) (Index, error) {
-	if err := s.gate.AcquireOp(context.Background()); err != nil {
-		return Index{}, err
-	}
-	defer s.gate.ReleaseOp()
-	return s.IndexWriteStore.GetIndex(name)
-}
-
-func (s *gatedIndexWriteStore) StoreIndex(name string, idx Index) error {
-	if err := s.gate.AcquireOp(context.Background()); err != nil {
-		return err
-	}
-	defer s.gate.ReleaseOp()
-	return s.IndexWriteStore.StoreIndex(name, idx)
-}

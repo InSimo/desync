@@ -140,7 +140,7 @@ Configure Git LFS to use this agent:
 				}
 			}
 
-			agent := &Agent{tmpDir: os.TempDir(), pipelinedEnabled: !noPipelined, maxConcurrentUploads: maxConcurrentUploads}
+			agent := &Agent{tmpDir: os.TempDir(), gate: gate, pipelinedEnabled: !noPipelined, maxConcurrentUploads: maxConcurrentUploads}
 			defer agent.Close()
 
 			agent.setup = func(remote, operation string, serverConfig *cmdshared.Config) error {
@@ -188,7 +188,7 @@ Configure Git LFS to use this agent:
 
 				client, err := cmdshared.NewClientFromConfig(
 					cfg, storeOpt, resolvedStore, resolvedIndex,
-					resolvedCache, resolvedChunkSize, gate.AsTransferGate())
+					resolvedCache, resolvedChunkSize)
 				if err != nil {
 					return err
 				}
@@ -198,6 +198,13 @@ Configure Git LFS to use this agent:
 					storageOps = 20
 				}
 				desync.InitWorkerPool(storeOpt.N, storageOps)
+
+				// Wrap stores with ops gating if a storage-ops limit is configured.
+				if gate.MaxOps() > 0 {
+					client.WriteStore = &bytelimit.GatedWriteStore{WriteStore: client.WriteStore, Gate: gate}
+					client.ReadStore = &bytelimit.GatedStore{Store: client.ReadStore, Gate: gate}
+					client.IndexStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: client.IndexStore, Gate: gate}
+				}
 
 				agent.client = client
 				agent.safePruning = storeOpt.SafePruning
