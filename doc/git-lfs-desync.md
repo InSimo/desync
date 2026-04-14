@@ -355,6 +355,8 @@ Pipelined mode reduces process startup overhead and enables better sharing of co
 
 To disable pipelined mode (e.g. for debugging or compatibility), pass `--no-pipelined`. The agent will then process one object at a time per process, with parallelism achieved by spawning multiple agent processes as before.
 
+> **Note:** Pipelined mode is experimental and may change or be removed depending on feedback. It requires a custom git-lfs build with pipelining support (`supportspipelined` in the init message). This feature is not yet available in upstream git-lfs. Until it is accepted upstream, use the InSimo fork of git-lfs.
+
 ### Per-repo config
 
 To scope the agent to a single repository instead of globally:
