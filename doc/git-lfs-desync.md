@@ -296,16 +296,27 @@ No `--store`, `--index-store`, `standalonetransferagent`, or credentials are nee
 
 ### Merge rules
 
-Server config is merged with local config (CLI flags, config file, `--config-from-git`):
+Server config is merged with local config (CLI flags, config file, `--config-from-git`) via the `MergeServerConfig` function. Fields are classified into two categories:
 
-| Setting | Priority |
-| ------- | -------- |
-| Store URLs | CLI flag > local config > server config |
-| Index store URL | CLI flag > local config > server config > derived from store |
-| **Chunk size** | **Server always wins** (must match for data compatibility) |
-| **Safe-pruning** | **Server wins if enabled** (client cannot disable it) |
-| S3 credentials | Local config > server config (server only sends if `desync-lfs.advertise = with-credentials`) |
-| Store options | Local config > server config |
+**Server-mergeable fields** — included in the server config and merged into the client:
+
+| Setting | Rule |
+| ------- | ---- |
+| Store URLs | CLI flag > local config > server *(fills gaps)* |
+| Index store URL | CLI flag > local config > server *(fills gaps)* > derived from store |
+| S3 credentials | Local config > server *(fills gaps; server only sends if `with-credentials`)* |
+| Store options | Local config > server *(fills gaps)* |
+| **Chunk size** | **Server overrides** *(must match for data compatibility)* |
+| **Digest** | **Server overrides** *(must match for chunk ID consistency)* |
+| **Safe-pruning** | **Server wins if enabled** *(client cannot disable it)* |
+
+- *Fills gaps* means server values are used only when the local config doesn't have them.
+- *Overrides* means the server's value always takes precedence for protocol compatibility.
+
+**Local-only fields** — never sent by the server, never merged from server config:
+
+- `cache`, `cache-max-size`, `cache-max-files`, `cache-partitions`
+- `concurrency`, `max-in-flight`, `max-storage-ops`, `conn-pool-size`
 
 ---
 

@@ -266,11 +266,11 @@ The index name for an LFS OID is `<oid[0:2]>/<oid[2:4]>/<oid[4:]>.caibx`. This s
 git -C /git/myrepo.git config desync-lfs.advertise <mode>
 ```
 
-| Mode | Behavior |
-| ---- | -------- |
-| `no` / `false` (default) | Desync transfer is not advertised. Clients use the SSH protocol. |
-| `without-credentials` | Desync is advertised with store URLs and chunk parameters, but S3 tokens and other credentials are stripped. Clients must have their own credentials configured locally. |
-| `with-credentials` | Desync is advertised with full config including S3 tokens, HTTP auth headers, and TLS certs. Use short-lived tokens with restricted permissions (no delete/overwrite). |
+| Mode | Config fields sent |
+| ---- | ------------------ |
+| `no` / `false` (default) | Nothing — desync transfer is not advertised. Clients use the SSH protocol. |
+| `without-credentials` | Store URLs, index URL, chunk size, digest. No S3 credentials, no store options. Clients must have their own credentials configured locally. |
+| `with-credentials` | Store URLs, index URL, chunk size, digest, plus S3 credentials and store options **filtered to only include entries matching the active store/index URLs**. Unrelated credentials are never exposed. Use short-lived tokens with restricted permissions (no delete/overwrite). |
 
 When advertising is enabled, the server sends a `transfers=desync,ssh` capability during version negotiation. Clients that have `git-lfs-desync` registered as a custom transfer agent can then send the `authenticate` command to obtain the desync config:
 
@@ -281,11 +281,16 @@ Client:  authenticate
 
 Server:  status 200
          <delim-pkt>
-         {"config":{"defaults":{"stores":[...],"index-store":"...","chunk-size":"16:64:256"},...},"expires_in":86400}
+         {"config":{"defaults":{"stores":[...],"index-store":"...","chunk-size":"16:64:256","digest":"sha512-256"},...},"expires_in":86400}
          <flush-pkt>
 ```
 
-The config JSON uses the same format as desync config files. The client caches this response and uses it to initialize `git-lfs-desync` without any manual client-side store configuration.
+The config JSON uses the same format as desync config files. The server constructs it via `FilterServerConfig`, which:
+- Always includes chunk size and digest (required for data compatibility).
+- Never includes local-only fields (cache, concurrency, limits).
+- In `with-credentials` mode, S3 credentials are matched by scheme+host (e.g. only the `https://s3.amazonaws.com` entry is sent for an `s3+https://s3.amazonaws.com/bucket/` store URL), and store options are matched by URL pattern. Credentials for unrelated endpoints are never exposed.
+
+The client merges this config with its local config via `MergeServerConfig` (see [git-lfs-desync: Merge rules](git-lfs-desync.md#merge-rules)).
 
 Old clients that do not support transfer negotiation ignore the `transfers=` capability and continue using the SSH protocol as before.
 
