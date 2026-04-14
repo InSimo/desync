@@ -3,6 +3,8 @@ package cmdshared
 import (
 	"strings"
 	"testing"
+
+	"github.com/folbricht/desync"
 )
 
 func TestResolveDigest(t *testing.T) {
@@ -190,6 +192,118 @@ func TestResolveCachePartitions(t *testing.T) {
 	empty := Config{}
 	if got := empty.ResolveCachePartitions(0); got != 0 {
 		t.Fatalf("expected 0, got %d", got)
+	}
+}
+
+func TestMergeServerConfig(t *testing.T) {
+	local := Config{
+		Defaults: Defaults{
+			Cache:       "/local/cache",
+			Concurrency: 8,
+		},
+	}
+	server := Config{
+		S3Credentials: map[string]S3Creds{
+			"https://s3.amazonaws.com": {AccessKey: "AKID", SecretKey: "secret"},
+		},
+		Defaults: Defaults{
+			Stores:     []string{"s3+https://s3.amazonaws.com/bucket/chunks/"},
+			IndexStore: "s3+https://s3.amazonaws.com/bucket/index/",
+			ChunkSize:  "8:32:128",
+			Digest:     "sha256",
+			Cache:      "/server/cache", // should be ignored
+		},
+	}
+
+	MergeServerConfig(&local, &server)
+
+	if len(local.Defaults.Stores) != 1 || local.Defaults.Stores[0] != "s3+https://s3.amazonaws.com/bucket/chunks/" {
+		t.Fatalf("stores not merged: %v", local.Defaults.Stores)
+	}
+	if local.S3Credentials == nil || local.S3Credentials["https://s3.amazonaws.com"].AccessKey != "AKID" {
+		t.Fatal("s3 credentials not merged")
+	}
+	if local.Defaults.ChunkSize != "8:32:128" {
+		t.Fatalf("chunk size not overridden: %s", local.Defaults.ChunkSize)
+	}
+	if local.Defaults.Digest != "sha256" {
+		t.Fatalf("digest not overridden: %s", local.Defaults.Digest)
+	}
+	if local.Defaults.Cache != "/local/cache" {
+		t.Fatalf("cache should be preserved: %s", local.Defaults.Cache)
+	}
+}
+
+func TestMergeServerConfigLocalTakesPrecedence(t *testing.T) {
+	local := Config{
+		S3Credentials: map[string]S3Creds{
+			"https://local.example.com": {AccessKey: "local"},
+		},
+		Defaults: Defaults{
+			Stores: []string{"/local/store"},
+		},
+	}
+	server := Config{
+		S3Credentials: map[string]S3Creds{
+			"https://server.example.com": {AccessKey: "server"},
+		},
+		Defaults: Defaults{
+			Stores: []string{"s3+https://server/store"},
+		},
+	}
+
+	MergeServerConfig(&local, &server)
+
+	if local.Defaults.Stores[0] != "/local/store" {
+		t.Fatalf("local store should win: %v", local.Defaults.Stores)
+	}
+	if _, ok := local.S3Credentials["https://server.example.com"]; ok {
+		t.Fatal("server creds should not be merged when local has creds")
+	}
+}
+
+func TestFilterServerConfig(t *testing.T) {
+	full := Config{
+		S3Credentials: map[string]S3Creds{
+			"https://s3.amazonaws.com":  {AccessKey: "AKID", SecretKey: "secret"},
+			"https://other.example.com": {AccessKey: "other"},
+		},
+		StoreOptions: map[string]desync.StoreOptions{
+			"s3+https://s3.amazonaws.com/bucket/chunks/": {SafePruning: true},
+			"s3+https://other.example.com/other/":        {SkipVerify: true},
+		},
+	}
+
+	// Without credentials.
+	filtered := FilterServerConfig(full,
+		"s3+https://s3.amazonaws.com/bucket/chunks/",
+		"s3+https://s3.amazonaws.com/bucket/index/",
+		"16:64:256", "sha512-256", false)
+
+	if filtered.S3Credentials != nil {
+		t.Fatal("credentials should be excluded")
+	}
+	if filtered.Defaults.ChunkSize != "16:64:256" {
+		t.Fatalf("chunk size: %s", filtered.Defaults.ChunkSize)
+	}
+
+	// With credentials — only matching entries.
+	filtered = FilterServerConfig(full,
+		"s3+https://s3.amazonaws.com/bucket/chunks/",
+		"s3+https://s3.amazonaws.com/bucket/index/",
+		"16:64:256", "", true)
+
+	if _, ok := filtered.S3Credentials["https://s3.amazonaws.com"]; !ok {
+		t.Fatal("matching creds should be included")
+	}
+	if _, ok := filtered.S3Credentials["https://other.example.com"]; ok {
+		t.Fatal("non-matching creds should be excluded")
+	}
+	if _, ok := filtered.StoreOptions["s3+https://s3.amazonaws.com/bucket/chunks/"]; !ok {
+		t.Fatal("matching store opts should be included")
+	}
+	if _, ok := filtered.StoreOptions["s3+https://other.example.com/other/"]; ok {
+		t.Fatal("non-matching store opts should be excluded")
 	}
 }
 

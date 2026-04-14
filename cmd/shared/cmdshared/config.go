@@ -316,6 +316,131 @@ func ParseByteSize(s string) (int64, error) {
 	return result, nil
 }
 
+// Config field classification for server/client config exchange
+//
+// Server-mergeable fields (server fills gaps, or overrides for compatibility):
+//   - S3Credentials     — per-endpoint credentials (server fills if local is nil)
+//   - StoreOptions      — per-store options (server fills if local is nil)
+//   - Defaults.Stores   — chunk store URL(s) (server fills if local is empty)
+//   - Defaults.IndexStore — index store URL (server fills if local is empty)
+//   - Defaults.ChunkSize — server OVERRIDES local (must match for data compatibility)
+//   - Defaults.Digest   — server OVERRIDES local (must match for chunk ID consistency)
+//
+// Local-only fields (never merged from server, never sent to clients):
+//   - Defaults.Cache, CacheMaxSize, CacheMaxFiles, CachePartitions
+//   - Defaults.Concurrency, MaxInFlight, MaxStorageOps, ConnPoolSize
+
+// MergeServerConfig merges server-provided config into local config.
+// Server values fill gaps not covered by the local config. ChunkSize and
+// Digest always take the server's value when present, because they must
+// match for data compatibility. Local-only fields (cache, concurrency,
+// limits) are never overwritten.
+func MergeServerConfig(local *Config, server *Config) {
+	if server == nil {
+		return
+	}
+
+	// Credentials and store options: server fills if local has none.
+	if local.S3Credentials == nil {
+		local.S3Credentials = server.S3Credentials
+	}
+	if local.StoreOptions == nil {
+		local.StoreOptions = server.StoreOptions
+	}
+
+	// Store URLs: server fills if local is empty.
+	if len(local.Defaults.Stores) == 0 && len(server.Defaults.Stores) > 0 {
+		local.Defaults.Stores = server.Defaults.Stores
+	}
+	if local.Defaults.IndexStore == "" && server.Defaults.IndexStore != "" {
+		local.Defaults.IndexStore = server.Defaults.IndexStore
+	}
+
+	// ChunkSize and Digest: server always overrides (must match for compatibility).
+	if server.Defaults.ChunkSize != "" {
+		local.Defaults.ChunkSize = server.Defaults.ChunkSize
+	}
+	if server.Defaults.Digest != "" {
+		local.Defaults.Digest = server.Defaults.Digest
+	}
+}
+
+// FilterServerConfig returns a Config suitable for sending to clients via
+// the authenticate protocol. It includes only server-mergeable fields
+// relevant to the given store and index URLs. Local-only fields (cache,
+// concurrency, limits) are always excluded.
+//
+// When includeCredentials is false, S3Credentials and StoreOptions are
+// omitted entirely. When true, only entries matching the active store or
+// index URLs are included to avoid exposing unrelated credentials.
+func FilterServerConfig(full Config, storeURL, indexURL, chunkSize, digest string, includeCredentials bool) Config {
+	filtered := Config{
+		Defaults: Defaults{
+			ChunkSize: chunkSize,
+			Digest:    digest,
+		},
+	}
+	if storeURL != "" {
+		filtered.Defaults.Stores = []string{storeURL}
+	}
+	if indexURL != "" {
+		filtered.Defaults.IndexStore = indexURL
+	}
+
+	if !includeCredentials {
+		return filtered
+	}
+
+	// Collect scheme://host keys for the active URLs (S3 credentials are
+	// keyed by scheme://host, matching GetS3CredentialsFor's lookup).
+	activeHosts := make(map[string]bool)
+	for _, u := range []string{storeURL, indexURL} {
+		if u == "" {
+			continue
+		}
+		parsed, err := url.Parse(u)
+		if err != nil {
+			continue
+		}
+		scheme := strings.TrimPrefix(parsed.Scheme, "s3+")
+		key := (&url.URL{Scheme: scheme, Host: parsed.Host}).String()
+		activeHosts[key] = true
+	}
+
+	// Include only S3 credentials matching the active store/index hosts.
+	if full.S3Credentials != nil {
+		for key, creds := range full.S3Credentials {
+			if activeHosts[key] {
+				if filtered.S3Credentials == nil {
+					filtered.S3Credentials = make(map[string]S3Creds)
+				}
+				filtered.S3Credentials[key] = creds
+			}
+		}
+	}
+
+	// Include only store options matching the active store/index URLs.
+	if full.StoreOptions != nil {
+		for key, opts := range full.StoreOptions {
+			match := false
+			if storeURL != "" && locationMatch(key, storeURL) {
+				match = true
+			}
+			if indexURL != "" && locationMatch(key, indexURL) {
+				match = true
+			}
+			if match {
+				if filtered.StoreOptions == nil {
+					filtered.StoreOptions = make(map[string]desync.StoreOptions)
+				}
+				filtered.StoreOptions[key] = opts
+			}
+		}
+	}
+
+	return filtered
+}
+
 // SetDigestAlgorithm sets the global desync.Digest to the algorithm named by
 // algorithm. Valid values are "" or "sha512-256" (the default) and "sha256".
 // Returns an error for any other value.
