@@ -160,8 +160,13 @@ func AssembleFile(ctx context.Context, name string, idx Index, s Store, seeds []
 	stats.Seeds = len(seeds)
 	stats.Blocksize = blocksize
 
-	// Start the workers, each having its own filehandle to write concurrently
-	for i := 0; i < options.N; i++ {
+	// Start the workers, each having its own filehandle to write concurrently.
+	// Cap to the number of chunks to avoid unnecessary goroutines for small files.
+	n := options.N
+	if n > len(idx.Chunks) {
+		n = len(idx.Chunks)
+	}
+	for i := 0; i < n; i++ {
 		f, err := os.OpenFile(name, os.O_RDWR, 0666)
 		if err != nil {
 			return stats, fmt.Errorf("unable to open file %s, %s", name, err)
