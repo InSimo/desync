@@ -338,51 +338,19 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 
 	tmpFile := filepath.Join(a.tmpDir, "git-lfs-desync-"+req.OID)
 
-	var idx desync.Index
-	var fetchErr error
-	trace.WithRegion(ctx, "fetch-index", func() {
-		idx, fetchErr = a.client.IndexStore.GetIndex(oidIndexName(req.OID))
-	})
-	if fetchErr != nil {
-		a.sendComplete(req.OID, "", fmt.Errorf("fetching index for %s: %w", req.OID, fetchErr))
-		return
+	var lastBytes atomic.Int64
+	progress := func(bytes int64) {
+		lastBytes.Store(bytes)
 	}
-
-	cs := newCountingReadStore(a.client.ReadStore, idx)
 	progressCtx, stopProgress := context.WithCancel(ctx)
-	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
+	go a.progressLoop(progressCtx, req.OID, &lastBytes, req.Size)
 
-	// DESYNC_DOWNLOAD_MODE selects the download path for A/B testing:
-	//   "" or "optimized": single-chunk fast path + AssembleBlankFile (default)
-	//   "assemble-file":   original AssembleFile for everything
-	//   "assemble-blank":  AssembleBlankFile for everything (no single-chunk fast path)
-	var assembleErr error
-	dlMode := os.Getenv("DESYNC_DOWNLOAD_MODE")
-	switch {
-	case dlMode == "assemble-file":
-		trace.WithRegion(ctx, "assemble-file", func() {
-			_, assembleErr = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.client.N})
-		})
-	case dlMode == "assemble-blank":
-		trace.WithRegion(ctx, "assemble-blank", func() {
-			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, a.client.N)
-		})
-	case len(idx.Chunks) == 1:
-		// Fast path: single-chunk object — skip all assembly overhead.
-		trace.WithRegion(ctx, "single-chunk-write", func() {
-			assembleErr = writeSingleChunk(tmpFile, idx.Chunks[0], cs)
-		})
-	default:
-		// Multi-chunk: use AssembleBlankFile which skips seed machinery.
-		trace.WithRegion(ctx, "assemble-blank", func() {
-			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, a.client.N)
-		})
-	}
+	err := a.client.GetObjectToFile(oidIndexName(req.OID), tmpFile, progress)
 	stopProgress()
 	cmdshared.WriteHeapProfile("download_after_assemble")
-	if assembleErr != nil {
+	if err != nil {
 		os.Remove(tmpFile)
-		a.sendComplete(req.OID, "", assembleErr)
+		a.sendComplete(req.OID, "", err)
 		return
 	}
 	a.sendComplete(req.OID, tmpFile, nil)
@@ -442,51 +410,6 @@ func (s *countingWriteStore) StoreChunk(chunk *desync.Chunk) error {
 		}
 	}
 	return err
-}
-
-// countingReadStore wraps a Store and counts bytes retrieved, using the index
-// chunk sizes so progress tracking works without decompressing chunks.
-type countingReadStore struct {
-	desync.Store
-	chunkSizes map[desync.ChunkID]uint64
-	bytes      atomic.Int64
-}
-
-func newCountingReadStore(s desync.Store, idx desync.Index) *countingReadStore {
-	m := make(map[desync.ChunkID]uint64, len(idx.Chunks))
-	for _, c := range idx.Chunks {
-		m[c.ID] = c.Size
-	}
-	return &countingReadStore{Store: s, chunkSizes: m}
-}
-
-// writeSingleChunk fetches a single chunk from the store and writes it to a
-// file. This is a fast path for objects that consist of exactly one chunk,
-// avoiding the overhead of AssembleFile (seed planner, errgroup, goroutines).
-func writeSingleChunk(path string, c desync.IndexChunk, s desync.Store) error {
-	chunk, err := s.GetChunk(c.ID)
-	if err != nil {
-		return fmt.Errorf("fetch chunk %s: %w", c.ID, err)
-	}
-	defer chunk.Release()
-
-	b, err := chunk.Data()
-	if err != nil {
-		return fmt.Errorf("decompress chunk %s: %w", c.ID, err)
-	}
-	if uint64(len(b)) != c.Size {
-		return fmt.Errorf("chunk %s: expected %d bytes, got %d", c.ID, c.Size, len(b))
-	}
-
-	return os.WriteFile(path, b, 0o644)
-}
-
-func (s *countingReadStore) GetChunk(id desync.ChunkID) (*desync.Chunk, error) {
-	chunk, err := s.Store.GetChunk(id)
-	if err == nil {
-		s.bytes.Add(int64(s.chunkSizes[id]))
-	}
-	return chunk, err
 }
 
 // lfsProgressBar is a desync.ProgressBar used during IndexFromFile (chunking phase).

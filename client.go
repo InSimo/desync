@@ -304,16 +304,14 @@ func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error
 
 	pool := GetWorkerPool()
 	if pool == nil {
-		// No worker pool: fall back to sequential Object read.
-		obj := &Object{idx: idx, store: c.ReadStore, n: c.N, size: idx.TotalSize(), Progress: progress}
-		if _, err := io.Copy(f, obj); err != nil {
-			f.Close()
-			obj.Close()
+		// No worker pool: fall back to AssembleFile.
+		f.Close()
+		_, err := AssembleFile(context.Background(), path, idx, c.ReadStore, nil, AssembleOptions{N: c.N})
+		if err != nil {
 			os.Remove(path)
-			return fmt.Errorf("desync: writing %s: %w", path, err)
+			return fmt.Errorf("desync: assembling %s: %w", path, err)
 		}
-		obj.Close()
-		return f.Close()
+		return nil
 	}
 
 	nChunks := len(idx.Chunks)
