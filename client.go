@@ -2,6 +2,7 @@ package desync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -69,6 +70,25 @@ func NewClient(readStore Store, writeStore WriteStore, indexStore IndexWriteStor
 		MaxChunk:      opts.MaxChunk,
 		N:             n,
 	}
+}
+
+// Close closes all underlying stores. Safe to call multiple times.
+func (c *Client) Close() error {
+	var errs []error
+	if c.ReadStore != nil {
+		errs = append(errs, c.ReadStore.Close())
+		c.ReadStore = nil
+	}
+	if c.WriteStore != nil {
+		errs = append(errs, c.WriteStore.Close())
+		c.WriteStore = nil
+	}
+	if c.IndexStore != nil {
+		errs = append(errs, c.IndexStore.Close())
+		c.IndexStore = nil
+	}
+	c.RawIndexStore = nil
+	return errors.Join(errs...)
 }
 
 // GetObject loads a desync index and returns a readable Object with
