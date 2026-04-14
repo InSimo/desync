@@ -89,10 +89,8 @@ func TestAgentInit(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := &Agent{
-		writeStore:      chunkStore,
-		readStore:       chunkStore,
-		indexWriteStore: indexStore,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{}),
+		enc:    json.NewEncoder(&buf),
 	}
 
 	raw, _ := json.Marshal(initRequest{Event: "init", Operation: "upload"})
@@ -128,10 +126,8 @@ func TestAgentInitStoreError(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := &Agent{
-		writeStore:      bad,
-		readStore:       bad,
-		indexWriteStore: bad,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(bad, bad, bad, desync.ClientOptions{}),
+		enc:    json.NewEncoder(&buf),
 	}
 
 	raw, _ := json.Marshal(initRequest{Event: "init", Operation: "upload"})
@@ -179,15 +175,14 @@ func TestAgentUploadDownload(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := &Agent{
-		writeStore:      chunkStore,
-		readStore:       chunkStore,
-		indexWriteStore: indexStore,
-		n:               4,
-		minChunk:        4 * 1024,
-		avgChunk:        16 * 1024,
-		maxChunk:        64 * 1024,
-		tmpDir:          tmpDir,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{
+			MinChunk: 4 * 1024,
+			AvgChunk: 16 * 1024,
+			MaxChunk: 64 * 1024,
+			N:        4,
+		}),
+		tmpDir: tmpDir,
+		enc:    json.NewEncoder(&buf),
 	}
 
 	oid := "abc123def456"
@@ -307,15 +302,14 @@ func TestAgentUploadDownloadViaLocalURL(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := &Agent{
-		writeStore:      chunkStore,
-		readStore:       chunkStore,
-		indexWriteStore: indexStore,
-		n:               4,
-		minChunk:        4 * 1024,
-		avgChunk:        16 * 1024,
-		maxChunk:        64 * 1024,
-		tmpDir:          tmpDir,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{
+			MinChunk: 4 * 1024,
+			AvgChunk: 16 * 1024,
+			MaxChunk: 64 * 1024,
+			N:        4,
+		}),
+		tmpDir: tmpDir,
+		enc:    json.NewEncoder(&buf),
 	}
 
 	oid := "localurl-test-oid-abc123"
@@ -424,15 +418,14 @@ func TestAgentWithCache(t *testing.T) {
 	var buf bytes.Buffer
 	oid := "cache-test-oid-xyz"
 	uploadAgent := &Agent{
-		writeStore:      remoteStore,
-		readStore:       remoteStore,
-		indexWriteStore: indexStore,
-		n:               4,
-		minChunk:        4 * 1024,
-		avgChunk:        16 * 1024,
-		maxChunk:        64 * 1024,
-		tmpDir:          tmpDir,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(remoteStore, remoteStore, indexStore, desync.ClientOptions{
+			MinChunk: 4 * 1024,
+			AvgChunk: 16 * 1024,
+			MaxChunk: 64 * 1024,
+			N:        4,
+		}),
+		tmpDir: tmpDir,
+		enc:    json.NewEncoder(&buf),
 	}
 	uploadMsg, _ := json.Marshal(transferRequest{Event: "upload", OID: oid, Size: int64(len(content)), Path: srcFile})
 	uploadAgent.handleUpload(context.Background(), uploadMsg, nil)
@@ -455,15 +448,14 @@ func TestAgentWithCache(t *testing.T) {
 	// from the remote store and automatically saved to cacheDir.
 	buf.Reset()
 	downloadAgent := &Agent{
-		writeStore:      remoteStore,
-		readStore:       desync.NewCache(remoteStore, cacheStore),
-		indexWriteStore: indexStore,
-		n:               4,
-		minChunk:        4 * 1024,
-		avgChunk:        16 * 1024,
-		maxChunk:        64 * 1024,
-		tmpDir:          tmpDir,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(desync.NewCache(remoteStore, cacheStore), remoteStore, indexStore, desync.ClientOptions{
+			MinChunk: 4 * 1024,
+			AvgChunk: 16 * 1024,
+			MaxChunk: 64 * 1024,
+			N:        4,
+		}),
+		tmpDir: tmpDir,
+		enc:    json.NewEncoder(&buf),
 	}
 	dlMsg, _ := json.Marshal(transferRequest{Event: "download", OID: oid, Size: int64(len(content))})
 	downloadAgent.handleDownload(context.Background(), dlMsg)
@@ -502,15 +494,14 @@ func TestAgentWithCache(t *testing.T) {
 	// must be served from the cache without touching the remote store.
 	buf.Reset()
 	cacheOnlyAgent := &Agent{
-		writeStore:      cacheStore,
-		readStore:       cacheStore,
-		indexWriteStore: indexStore,
-		n:               4,
-		minChunk:        4 * 1024,
-		avgChunk:        16 * 1024,
-		maxChunk:        64 * 1024,
-		tmpDir:          tmpDir,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(cacheStore, cacheStore, indexStore, desync.ClientOptions{
+			MinChunk: 4 * 1024,
+			AvgChunk: 16 * 1024,
+			MaxChunk: 64 * 1024,
+			N:        4,
+		}),
+		tmpDir: tmpDir,
+		enc:    json.NewEncoder(&buf),
 	}
 	cacheOnlyAgent.handleDownload(context.Background(), dlMsg)
 	var dl2Complete completeEvent
@@ -555,15 +546,14 @@ func TestAgentConcurrentTransfers(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := &Agent{
-		writeStore:      chunkStore,
-		readStore:       chunkStore,
-		indexWriteStore: indexStore,
-		n:               2,
-		minChunk:        4 * 1024,
-		avgChunk:        16 * 1024,
-		maxChunk:        64 * 1024,
-		tmpDir:          tmpDir,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{
+			MinChunk: 4 * 1024,
+			AvgChunk: 16 * 1024,
+			MaxChunk: 64 * 1024,
+			N:        2,
+		}),
+		tmpDir: tmpDir,
+		enc:    json.NewEncoder(&buf),
 	}
 
 	// Build input: init (concurrenttransfers=3) + 3 uploads + terminate.
@@ -632,13 +622,12 @@ func TestAgentPipelinedMode(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := &Agent{
-		writeStore:       chunkStore,
-		readStore:        chunkStore,
-		indexWriteStore:  indexStore,
-		n:                2,
-		minChunk:         4 * 1024,
-		avgChunk:         16 * 1024,
-		maxChunk:         64 * 1024,
+		client: desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{
+			MinChunk: 4 * 1024,
+			AvgChunk: 16 * 1024,
+			MaxChunk: 64 * 1024,
+			N:        2,
+		}),
 		tmpDir:           tmpDir,
 		pipelinedEnabled: true,
 		enc:              json.NewEncoder(&buf),
@@ -721,9 +710,7 @@ func TestAgentPipelinedDisabled(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := &Agent{
-		writeStore:       chunkStore,
-		readStore:        chunkStore,
-		indexWriteStore:  indexStore,
+		client:           desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{}),
 		pipelinedEnabled: false,
 		enc:              json.NewEncoder(&buf),
 	}
@@ -789,15 +776,14 @@ func TestAgentUploadSkipsRedundantUpload(t *testing.T) {
 	newAgent := func() *Agent {
 		var buf bytes.Buffer
 		return &Agent{
-			writeStore:      chunkStore,
-			readStore:       chunkStore,
-			indexWriteStore: trackerIndex,
-			n:               4,
-			minChunk:        4 * 1024,
-			avgChunk:        16 * 1024,
-			maxChunk:        64 * 1024,
-			tmpDir:          tmpDir,
-			enc:             json.NewEncoder(&buf),
+			client: desync.NewClient(chunkStore, chunkStore, trackerIndex, desync.ClientOptions{
+				MinChunk: 4 * 1024,
+				AvgChunk: 16 * 1024,
+				MaxChunk: 64 * 1024,
+				N:        4,
+			}),
+			tmpDir: tmpDir,
+			enc:    json.NewEncoder(&buf),
 		}
 	}
 
@@ -868,15 +854,14 @@ func TestLocalIndexStoreSharding(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := &Agent{
-		writeStore:      chunkStore,
-		readStore:       chunkStore,
-		indexWriteStore: indexStore,
-		n:               4,
-		minChunk:        4 * 1024,
-		avgChunk:        16 * 1024,
-		maxChunk:        64 * 1024,
-		tmpDir:          tmpDir,
-		enc:             json.NewEncoder(&buf),
+		client: desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{
+			MinChunk: 4 * 1024,
+			AvgChunk: 16 * 1024,
+			MaxChunk: 64 * 1024,
+			N:        4,
+		}),
+		tmpDir: tmpDir,
+		enc:    json.NewEncoder(&buf),
 	}
 
 	uploadMsg, _ := json.Marshal(transferRequest{
@@ -984,9 +969,7 @@ func TestAgentInitWithSetup(t *testing.T) {
 	a.setup = func(remote, operation string, _ *cmdshared.Config) error {
 		gotRemote = remote
 		gotOp = operation
-		a.writeStore = chunkStore
-		a.readStore = chunkStore
-		a.indexWriteStore = indexStore
+		a.client = desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{})
 		return nil
 	}
 
@@ -1049,16 +1032,15 @@ func TestAgentUploadSafePruning(t *testing.T) {
 
 			var buf bytes.Buffer
 			a := &Agent{
-				writeStore:      chunkStore,
-				readStore:       chunkStore,
-				indexWriteStore: indexStore,
-				n:               4,
-				minChunk:        4 * 1024,
-				avgChunk:        16 * 1024,
-				maxChunk:        64 * 1024,
-				tmpDir:          t.TempDir(),
-				safePruning:     enabled,
-				enc:             json.NewEncoder(&buf),
+				client: desync.NewClient(chunkStore, chunkStore, indexStore, desync.ClientOptions{
+					MinChunk: 4 * 1024,
+					AvgChunk: 16 * 1024,
+					MaxChunk: 64 * 1024,
+					N:        4,
+				}),
+				tmpDir:      t.TempDir(),
+				safePruning: enabled,
+				enc:         json.NewEncoder(&buf),
 			}
 
 			uploadMsg, _ := json.Marshal(transferRequest{

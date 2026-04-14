@@ -146,8 +146,6 @@ Configure Git LFS to use this agent:
 			agent.setup = func(remote, operation string, serverConfig *cmdshared.Config) error {
 				gitObjectName := expandGitObjectName(cfgFromGit, remote, operation)
 				if err := initConfig(gitObjectName); err != nil {
-					// If local config loading fails but we have server config,
-					// use the server config as the base config.
 					if serverConfig != nil {
 						cfg = *serverConfig
 					} else {
@@ -155,35 +153,12 @@ Configure Git LFS to use this agent:
 					}
 				}
 
-				// Merge server config: server-provided values fill in gaps
-				// not covered by local config or command-line flags.
-				if serverConfig != nil {
-					if cfg.S3Credentials == nil {
-						cfg.S3Credentials = serverConfig.S3Credentials
-					}
-					if cfg.StoreOptions == nil {
-						cfg.StoreOptions = serverConfig.StoreOptions
-					}
-				}
+				// Merge server config into local config using the documented
+				// field classification (server-mergeable vs local-only).
+				cmdshared.MergeServerConfig(&cfg, serverConfig)
 
 				if err := cmdshared.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
 					return err
-				}
-
-				// Server config provides store URLs as defaults when
-				// not specified via flags or local config.
-				if serverConfig != nil && storeURL == "" && cfg.ResolveStore("") == "" {
-					storeURL = serverConfig.ResolveStore("")
-				}
-				if serverConfig != nil && indexURL == "" && cfg.ResolveIndexStore("") == "" {
-					indexURL = serverConfig.ResolveIndexStore("")
-				}
-				// Chunk size from the server always takes priority — it must
-				// match the server's chunking for data compatibility.
-				if serverConfig != nil {
-					if sc := serverConfig.ResolveChunkSize(""); sc != "" {
-						chunkSize = sc
-					}
 				}
 
 				resolvedStore := cfg.ResolveStore(storeURL)
@@ -194,51 +169,30 @@ Configure Git LFS to use this agent:
 					return fmt.Errorf("--store is required")
 				}
 
-				chunkStore, err := cmdshared.WritableStore(resolvedStore, cfg, storeOpt)
-				if err != nil {
-					return err
+				if resolvedIndex == "" {
+					var err error
+					resolvedIndex, err = deriveIndexURL(resolvedStore)
+					if err != nil {
+						return err
+					}
 				}
 
-				// Build the read store for downloads, optionally wrapping the remote
-				// store with a local cache tier.
-				// DESYNC_CACHE_DIR env var provides a default when --cache is not set.
-				resolvedCache := cache
+				// Resolve cache directory (DESYNC_CACHE_DIR env var as fallback).
+				resolvedCache := cfg.ResolveCache(cache)
 				if resolvedCache == "" {
 					resolvedCache = os.Getenv("DESYNC_CACHE_DIR")
 				}
 				if resolvedCache != "" {
 					os.MkdirAll(resolvedCache, 0o755)
 				}
-				readStore, err := cmdshared.MultiStoreWithCache(cfg, storeOpt, resolvedCache, resolvedStore)
+
+				client, err := cmdshared.NewClientFromConfig(
+					cfg, storeOpt, resolvedStore, resolvedIndex,
+					resolvedCache, resolvedChunkSize)
 				if err != nil {
-					chunkStore.Close()
 					return err
 				}
 
-				if resolvedIndex == "" {
-					resolvedIndex, err = deriveIndexURL(resolvedStore)
-					if err != nil {
-						readStore.Close()
-						chunkStore.Close()
-						return err
-					}
-				}
-
-				indexStore, err := cmdshared.WritableIndexStore(resolvedIndex, cfg, storeOpt)
-				if err != nil {
-					readStore.Close()
-					chunkStore.Close()
-					return err
-				}
-
-				minChunk, avgChunk, maxChunk, err := cmdshared.ParseChunkSizeParam(resolvedChunkSize)
-				if err != nil {
-					readStore.Close()
-					chunkStore.Close()
-					indexStore.Close()
-					return err
-				}
-				desync.Init(maxChunk)
 				storageOps := int(maxStorageOps)
 				if storageOps <= 0 {
 					storageOps = 20
@@ -246,21 +200,26 @@ Configure Git LFS to use this agent:
 				desync.InitWorkerPool(storeOpt.N, storageOps)
 
 				// Wrap stores with ops gating if a storage-ops limit is configured.
-				var ws desync.WriteStore = chunkStore
-				var rs desync.Store = readStore
-				var is desync.IndexWriteStore = indexStore
 				if gate.MaxOps() > 0 {
-					ws = &bytelimit.GatedWriteStore{WriteStore: chunkStore, Gate: gate}
-					rs = &bytelimit.GatedStore{Store: readStore, Gate: gate}
-					is = &bytelimit.GatedIndexWriteStore{IndexWriteStore: indexStore, Gate: gate}
+					client.WriteStore = &bytelimit.GatedWriteStore{WriteStore: client.WriteStore, Gate: gate}
+					client.ReadStore = &bytelimit.GatedStore{Store: client.ReadStore, Gate: gate}
+					client.IndexStore = &bytelimit.GatedIndexWriteStore{IndexWriteStore: client.IndexStore, Gate: gate}
 				}
 
-				agent.client = desync.NewClient(rs, ws, is, desync.ClientOptions{
-					MinChunk: minChunk,
-					AvgChunk: avgChunk,
-					MaxChunk: maxChunk,
-					N:        storeOpt.N,
-				})
+				agent.client = client
+				agent.safePruning = storeOpt.SafePruning
+				agent.safePropagationTime = storeOpt.SafePropagationTime
+
+				// If the server enables safe-pruning, the client must
+				// also use it to avoid corrupting the pruning protocol.
+				if serverConfig != nil {
+					if opts, err := serverConfig.GetStoreOptionsFor(resolvedStore); err == nil && opts.SafePruning {
+						agent.safePruning = true
+						if opts.SafePropagationTime > agent.safePropagationTime {
+							agent.safePropagationTime = opts.SafePropagationTime
+						}
+					}
+				}
 
 				return nil
 			}

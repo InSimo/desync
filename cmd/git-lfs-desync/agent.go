@@ -78,57 +78,25 @@ var oidIndexName = cmdshared.OidIndexName
 
 // Agent implements the Git LFS custom transfer agent protocol.
 type Agent struct {
-	client *desync.Client // high-level API wrapping read/write/index stores
-
-	// Legacy fields kept for backward compatibility with tests that
-	// set stores directly.  When client is non-nil, these are ignored.
-	writeStore      desync.WriteStore
-	readStore       desync.Store
-	indexWriteStore desync.IndexWriteStore
-	n               int
-	minChunk        uint64
-	avgChunk        uint64
-	maxChunk        uint64
-
-	tmpDir              string
-	safePruning         bool
-	safePropagationTime time.Duration
-	gate             *bytelimit.Gate // cross-process in-flight byte limit; may be nil
-	pipelinedEnabled     bool // respond with pipelined=true in init (default true)
-	maxConcurrentUploads int  // max parallel upload/download operations (default 8)
+	client               *desync.Client
+	tmpDir               string
+	safePruning          bool
+	safePropagationTime  time.Duration
+	gate                 *bytelimit.Gate // cross-process in-flight byte limit; may be nil
+	pipelinedEnabled     bool            // respond with pipelined=true in init (default true)
+	maxConcurrentUploads int             // max parallel upload/download operations (default 8)
 	enc                  *json.Encoder
 	mu                   sync.Mutex
 	// setup is called once from handleInit with remote and operation from the
-	// LFS init message. It expands %(remote)/%(operation) in cfgFromGit, loads
-	// config, and initializes writeStore/readStore/indexWriteStore on the Agent.
-	// serverConfig, when non-nil, is the server-provided config from the init
-	// message; it supplies defaults for store URLs and credentials when the
-	// agent was auto-negotiated rather than manually configured.
-	// Nil setup means stores are already initialized (used in tests).
+	// LFS init message. It merges server config, initializes stores via
+	// NewClientFromConfig, and sets the client on the Agent.
+	// Nil setup means client is already initialized (used in tests).
 	setup func(remote, operation string, serverConfig *cmdshared.Config) error
 }
 
 func (a *Agent) Close() {
 	if a.client != nil {
-		if a.client.WriteStore != nil {
-			a.client.WriteStore.Close()
-		}
-		if a.client.ReadStore != nil {
-			a.client.ReadStore.Close()
-		}
-		if a.client.IndexStore != nil {
-			a.client.IndexStore.Close()
-		}
-		return
-	}
-	if a.writeStore != nil {
-		a.writeStore.Close()
-	}
-	if a.readStore != nil {
-		a.readStore.Close()
-	}
-	if a.indexWriteStore != nil {
-		a.indexWriteStore.Close()
+		a.client.Close()
 	}
 }
 
@@ -287,31 +255,21 @@ func (a *Agent) handleInit(raw json.RawMessage) {
 		}
 	}
 
-	// Resolve stores for probing (prefer Client, fall back to legacy fields).
-	probeIndexStore := a.indexWriteStore
-	probeWriteStore := a.writeStore
-	probeReadStore := a.readStore
-	if a.client != nil {
-		probeIndexStore = a.client.IndexStore
-		probeWriteStore = a.client.WriteStore
-		probeReadStore = a.client.ReadStore
-	}
-
 	// Probe the index store (only if setup succeeded).
 	if errMsg == "" {
-		if _, err := probeIndexStore.HasIndex(probeIndexName); err != nil {
+		if _, err := a.client.IndexStore.HasIndex(probeIndexName); err != nil {
 			errMsg = "index store not available: " + err.Error()
 		}
 	}
 
-	// Probe the chunk store (writeStore for uploads, readStore for downloads).
+	// Probe the chunk store (WriteStore for uploads, ReadStore for downloads).
 	if errMsg == "" {
 		var chunkErr error
 		switch req.Operation {
 		case "upload":
-			_, chunkErr = probeWriteStore.HasChunk(probeChunkID)
-		default: // "download" and anything else
-			_, chunkErr = probeReadStore.HasChunk(probeChunkID)
+			_, chunkErr = a.client.WriteStore.HasChunk(probeChunkID)
+		default:
+			_, chunkErr = a.client.ReadStore.HasChunk(probeChunkID)
 		}
 		if chunkErr != nil {
 			errMsg = "chunk store not available: " + chunkErr.Error()
@@ -341,16 +299,10 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem
 	defer task.End()
 	trace.Logf(ctx, "oid", "%.12s size=%d", req.OID, req.Size)
 
-	// Resolve the index store for the HasIndex check.
-	indexStore := a.indexWriteStore
-	if a.client != nil {
-		indexStore = a.client.IndexStore
-	}
-
 	// Skip re-upload if this OID is already present in the index store.
 	// This check runs at full concurrency (no semaphore) so that
 	// already-uploaded OIDs are dismissed quickly.
-	if exists, err := indexStore.HasIndex(oidIndexName(req.OID)); err == nil && exists {
+	if exists, err := a.client.IndexStore.HasIndex(oidIndexName(req.OID)); err == nil && exists {
 		a.sendComplete(req.OID, "", nil)
 		return
 	}
@@ -375,67 +327,16 @@ func (a *Agent) handleUpload(ctx context.Context, raw json.RawMessage, uploadSem
 		defer slot.Release()
 	}
 
-	if a.client != nil {
-		// Use Client API: single-pass chunking + storage via shared worker pool.
-		var lastBytes atomic.Int64
-		progress := func(bytes int64) {
-			lastBytes.Store(bytes)
-		}
-		progressCtx, stopProgress := context.WithCancel(ctx)
-		go a.progressLoop(progressCtx, req.OID, &lastBytes, req.Size)
-
-		err := a.client.PutObjectFromFile(oidIndexName(req.OID), req.Path, progress)
-		stopProgress()
-		a.sendComplete(req.OID, "", err)
-		return
-	}
-
-	// Legacy path: IndexFromFile + ChopFile + StoreIndex (used by tests).
-	var idx desync.Index
-	trace.WithRegion(ctx, "index-from-file", func() {
-		pb := &lfsProgressBar{agent: a, oid: req.OID, totalBytes: req.Size}
-		var err2 error
-		idx, _, err2 = desync.IndexFromFile(ctx, req.Path, a.n, a.minChunk, a.avgChunk, a.maxChunk, pb)
-		if err2 != nil {
-			a.sendComplete(req.OID, "", err2)
-		}
-	})
-	if idx.Chunks == nil {
-		return // error already sent
-	}
-	cmdshared.WriteHeapProfile("upload_after_index")
-
-	cs := &countingWriteStore{WriteStore: a.writeStore}
-	var sps desync.SafePruneStore
-	if a.safePruning {
-		if ps, ok := a.writeStore.(desync.SafePruneStore); ok {
-			sps = ps
-		}
+	var lastBytes atomic.Int64
+	progress := func(bytes int64) {
+		lastBytes.Store(bytes)
 	}
 	progressCtx, stopProgress := context.WithCancel(ctx)
-	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
+	go a.progressLoop(progressCtx, req.OID, &lastBytes, req.Size)
 
-	var chopErr error
-	trace.WithRegion(ctx, "chop-file", func() {
-		chopErr = desync.ChopFile(ctx, req.Path, idx.Chunks, cs, a.n, desync.NullProgressBar{}, sps, a.safePropagationTime)
-	})
-	if chopErr != nil {
-		stopProgress()
-		a.sendComplete(req.OID, "", chopErr)
-		return
-	}
-	cmdshared.WriteHeapProfile("upload_after_chop")
+	err := a.client.PutObjectFromFile(oidIndexName(req.OID), req.Path, progress)
 	stopProgress()
-
-	var storeIdxErr error
-	trace.WithRegion(ctx, "store-index", func() {
-		storeIdxErr = a.indexWriteStore.StoreIndex(oidIndexName(req.OID), idx)
-	})
-	if storeIdxErr != nil {
-		a.sendComplete(req.OID, "", storeIdxErr)
-		return
-	}
-	a.sendComplete(req.OID, "", nil)
+	a.sendComplete(req.OID, "", err)
 }
 
 func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
@@ -463,30 +364,17 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 
 	tmpFile := filepath.Join(a.tmpDir, "git-lfs-desync-"+req.OID)
 
-	// Resolve stores and concurrency for AssembleFile.
-	var readStore desync.Store
-	var indexStore desync.IndexWriteStore
-	n := a.n
-	if a.client != nil {
-		readStore = a.client.ReadStore
-		indexStore = a.client.IndexStore
-		n = a.client.N
-	} else {
-		readStore = a.readStore
-		indexStore = a.indexWriteStore
-	}
-
 	var idx desync.Index
 	var fetchErr error
 	trace.WithRegion(ctx, "fetch-index", func() {
-		idx, fetchErr = indexStore.GetIndex(oidIndexName(req.OID))
+		idx, fetchErr = a.client.IndexStore.GetIndex(oidIndexName(req.OID))
 	})
 	if fetchErr != nil {
 		a.sendComplete(req.OID, "", fmt.Errorf("fetching index for %s: %w", req.OID, fetchErr))
 		return
 	}
 
-	cs := newCountingReadStore(readStore, idx)
+	cs := newCountingReadStore(a.client.ReadStore, idx)
 	progressCtx, stopProgress := context.WithCancel(ctx)
 	go a.progressLoop(progressCtx, req.OID, &cs.bytes, req.Size)
 
@@ -499,11 +387,11 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	switch {
 	case dlMode == "assemble-file":
 		trace.WithRegion(ctx, "assemble-file", func() {
-			_, assembleErr = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: n})
+			_, assembleErr = desync.AssembleFile(ctx, tmpFile, idx, cs, nil, desync.AssembleOptions{N: a.client.N})
 		})
 	case dlMode == "assemble-blank":
 		trace.WithRegion(ctx, "assemble-blank", func() {
-			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, n)
+			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, a.client.N)
 		})
 	case len(idx.Chunks) == 1:
 		// Fast path: single-chunk object — skip all assembly overhead.
@@ -513,7 +401,7 @@ func (a *Agent) handleDownload(ctx context.Context, raw json.RawMessage) {
 	default:
 		// Multi-chunk: use AssembleBlankFile which skips seed machinery.
 		trace.WithRegion(ctx, "assemble-blank", func() {
-			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, n)
+			assembleErr = desync.AssembleBlankFile(ctx, tmpFile, idx, cs, a.client.N)
 		})
 	}
 	stopProgress()
