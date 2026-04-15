@@ -320,13 +320,27 @@ func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error
 		window = 10
 	}
 
-	// Two-phase pipeline: fetch+decompress → file write.
+	// Three-stage pipeline: storage fetch → decompress → file write.
+	// All stages share the global worker pool with bounded queues.
+	//
+	// Backpressure handling: we may be holding a fetch result that needs
+	// to be submitted to fileWriteQ, but the queue could be full (other
+	// concurrent downloads filling it).  We must NOT block on the submit,
+	// because that would prevent us from draining writeCh — and writeCh
+	// not being drained is what keeps fileWriteQ full (file write workers
+	// block sending to per-call writeCh when its buffer is exhausted).
+	// Use a single select that handles all three operations concurrently:
+	// new fetch results in (when no pending submit), submit pending task
+	// out (when one is held), and write completions in.  Setting a channel
+	// to nil disables that case in select, which lets us pause new fetch
+	// arrivals while we wait for fileWriteQ space.
 	fetchCh := make(chan FetchResult, window)
 	writeCh := make(chan WriteResult, window)
 
 	fetchPending := 0
 	nextSubmit := 0
 	writePending := 0
+	var pendingTask *fileWriteTask // fetch result waiting to be submitted to fileWriteQ
 
 	// Fill initial prefetch window.
 	for fetchPending < window && nextSubmit < nChunks {
@@ -338,10 +352,28 @@ func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error
 	var written int64
 	var firstErr error
 
-	// Drain both channels until all chunks are fetched and written.
-	for fetchPending > 0 || writePending > 0 {
+	for fetchPending > 0 || writePending > 0 || pendingTask != nil {
+		// Enable submit case only when we have a task waiting to send.
+		var submitCh chan<- fileWriteTask
+		var submitTask fileWriteTask
+		if pendingTask != nil {
+			submitCh = pool.fileWriteQ
+			submitTask = *pendingTask
+		}
+		// Pause new fetch arrivals while holding a pending submit; this
+		// gives the runtime a reason to favour the submit and writeCh
+		// branches and prevents unbounded growth of decoded data.
+		var fetchInCh <-chan FetchResult
+		if pendingTask == nil {
+			fetchInCh = fetchCh
+		}
+
 		select {
-		case fr := <-fetchCh:
+		case submitCh <- submitTask:
+			pendingTask = nil
+			writePending++
+
+		case fr := <-fetchInCh:
 			fetchPending--
 
 			// Submit more fetches to keep the window full.
@@ -358,9 +390,14 @@ func (c *Client) GetObjectToFile(name, path string, progress ProgressFunc) error
 				continue
 			}
 
-			// Submit write to file I/O workers.
-			pool.SubmitFileWrite(f, fr.Data, int64(idx.Chunks[fr.Idx].Start), fr.Chunk, fr.Idx, writeCh)
-			writePending++
+			pendingTask = &fileWriteTask{
+				f:        f,
+				data:     fr.Data,
+				offset:   int64(idx.Chunks[fr.Idx].Start),
+				chunk:    fr.Chunk,
+				idx:      fr.Idx,
+				resultCh: writeCh,
+			}
 
 		case wr := <-writeCh:
 			writePending--
