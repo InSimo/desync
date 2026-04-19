@@ -187,14 +187,16 @@ Place a config at `/etc/desync/desync-lfs.json` to enable desync-LFS across ever
 cat > /etc/desync/desync-lfs.json << 'EOF'
 {
   "defaults": {
-    "stores": ["%(path)/desync-lfs/chunks"],
-    "index-store": "%(path)/desync-lfs/index"
+    "stores": ["desync-lfs/chunks"],
+    "index-store": "desync-lfs/index"
   }
 }
 EOF
 ```
 
-With this file in place, any repository served through SSH will automatically get a per-repo `desync-lfs/chunks/` and `desync-lfs/index/` directory created on first upload. Repositories that should use a different LFS backend can opt out with `git config desync-lfs.transfer false` (see [Escape Hatch](#escape-hatch--delegation)).
+Relative paths in the config are resolved against the repository path (see [Relative Paths](#relative-paths)), so a global config like this automatically gives each repo its own `desync-lfs/chunks/` and `desync-lfs/index/` directory, created on first upload. If the store lives on a shared path instead of inside each repo, use `%(path)` interpolation (e.g. `"/srv/lfs/%(path)/chunks"`) — see [Path Templates](#path-templates).
+
+Repositories that should use a different LFS backend can opt out with `git config desync-lfs.transfer false` (see [Escape Hatch](#escape-hatch--delegation)).
 
 A global config can also point at a shared backend — for example a single S3 bucket for the whole server:
 
