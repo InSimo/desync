@@ -34,7 +34,7 @@ The same backends supported by desync are available:
 
 ## Configuration
 
-`git-lfs-transfer` is configured via a JSON file (`desync-lfs.json`), with a convention-based fallback for zero-configuration setups.
+`git-lfs-transfer` is configured via a JSON file (`desync-lfs.json`). **If no config file is found at any of the locations below, desync LFS is considered disabled for that repository** and the server either delegates to another binary (see [Escape Hatch](#escape-hatch--delegation)) or rejects the session with a `403`. This makes it safe to install `git-lfs-transfer` on a server that already hosts repositories using other LFS backends — only repositories that are explicitly configured are affected.
 
 ### Config File Resolution
 
@@ -44,7 +44,8 @@ The server resolves configuration in this order:
 2. **`desync-lfs.config.path` git config key** — If set, overrides the config filename to search for. The value may be an absolute path (used directly) or a relative filename (searched by walking up directories, same as step 3). Defaults to `desync-lfs.json`.
 3. **Walk up from `<path>`** — Walk up parent directories looking for the config filename. The first match is used.
 4. **Global fallback** — If no config file is found in the directory tree, look for `/etc/desync/<filename>`.
-5. **Convention-based** — If no config file exists at all, use `<path>/desync-lfs/chunks` as the chunk store and `<path>/desync-lfs/index` as the index store.
+
+If none of those steps locate a config file, the repository is treated as if `desync-lfs.transfer=false` was set: `git-lfs-transfer` hands off to the delegate configured with `desync-lfs.transfer.exec` if one is set, otherwise it returns a `403` to the client (see [Escape Hatch](#escape-hatch--delegation)).
 
 The git config keys are read with `git -C <path> config <key>`. If `<path>` is not a git repository or git is not available, the keys are silently ignored and resolution continues from step 3.
 
@@ -144,12 +145,6 @@ go build -o /usr/local/bin/git-lfs-transfer ./cmd/git-lfs-transfer
 
 2. Ensure `git-lfs-transfer` is accessible to the SSH user (e.g. the `git` user). If using a restricted shell or `authorized_keys` with `command=`, make sure `git-lfs-transfer` is allowed.
 
-### Convention-Based Setup (Zero Config)
-
-The simplest setup requires no config file. Place the tool in `$PATH` and the server will automatically use `<path>/desync-lfs/chunks` and `<path>/desync-lfs/index` as the chunk and index stores. The directories are created automatically on first upload.
-
-For example, with a repository at `/git/myrepo.git`, the first `git push` will create `/git/myrepo.git/desync-lfs/chunks/` and `/git/myrepo.git/desync-lfs/index/`.
-
 ### Per-Repository Config
 
 Place a `desync-lfs.json` in the repository directory:
@@ -186,7 +181,22 @@ The `%(path)` template ensures each repository gets its own storage directory.
 
 ### Global Config
 
-Place the config at `/etc/desync/desync-lfs.json` as a fallback for all repositories:
+Place a config at `/etc/desync/desync-lfs.json` to enable desync-LFS across every repository on the server. This is the simplest way to replicate the old "zero-config" behavior where each repo stored its chunks next to itself:
+
+```sh
+cat > /etc/desync/desync-lfs.json << 'EOF'
+{
+  "defaults": {
+    "stores": ["%(path)/desync-lfs/chunks"],
+    "index-store": "%(path)/desync-lfs/index"
+  }
+}
+EOF
+```
+
+With this file in place, any repository served through SSH will automatically get a per-repo `desync-lfs/chunks/` and `desync-lfs/index/` directory created on first upload. Repositories that should use a different LFS backend can opt out with `git config desync-lfs.transfer false` (see [Escape Hatch](#escape-hatch--delegation)).
+
+A global config can also point at a shared backend — for example a single S3 bucket for the whole server:
 
 ```sh
 cat > /etc/desync/desync-lfs.json << 'EOF'
@@ -395,6 +405,19 @@ docker exec lfs-ssh-test chmod 600 /home/git/.ssh/authorized_keys
 docker exec -u git lfs-ssh-test git init --bare /home/git/test-repo.git
 ```
 
+Drop a per-repo `desync-lfs.json` so the server knows to handle LFS uploads for this repository. Relative paths are resolved against the repository directory, so this places the chunk and index stores under `/home/git/test-repo.git/desync-lfs/`:
+
+```sh
+docker exec -u git lfs-ssh-test sh -c 'cat > /home/git/test-repo.git/desync-lfs.json' << 'EOF'
+{
+  "defaults": {
+    "stores": ["desync-lfs/chunks"],
+    "index-store": "desync-lfs/index"
+  }
+}
+EOF
+```
+
 ### 5. Set up a test repository and push two files
 
 The two test files share a 3 MB block of pseudo-random data, followed by 1 MB of different compressible data each. This demonstrates both deduplication (shared chunks stored once) and compression (compressible chunks shrink on disk).
@@ -440,7 +463,7 @@ git commit -m "Add file_b"
 git push origin master
 ```
 
-Git LFS automatically derives the SSH endpoint from the `origin` remote URL and invokes `git-lfs-transfer` on the server via SSH. The convention-based store directories (`desync-lfs/chunks` and `desync-lfs/index`) are created automatically on first upload.
+Git LFS automatically derives the SSH endpoint from the `origin` remote URL and invokes `git-lfs-transfer` on the server via SSH. The store directories (`desync-lfs/chunks` and `desync-lfs/index` inside the bare repo, as configured in step 4) are created automatically on first upload.
 
 ### 6. Verify compression and deduplication
 
@@ -483,5 +506,5 @@ rm -rf /tmp/lfs-ssh-repo /tmp/lfs-ssh-clone /tmp/shared_block \
 | **Protocol**        | Git LFS custom transfer agent (stdin/stdout JSON) | Git LFS SSH transfer protocol (pkt-line)         |
 | **Client setup**    | Custom transfer agent in `.gitconfig`            | Only `lfs.url` pointing to SSH remote             |
 | **Auto-negotiation** | Receives config from server when auto-negotiated | Advertises desync transfer via `desync-lfs.advertise` |
-| **Config**          | CLI flags + config file + server config          | `desync-lfs.json` (walk-up + global fallback)     |
+| **Config**          | CLI flags + config file + server config          | `desync-lfs.json` required (per-repo, walk-up, or `/etc/desync/`) |
 | **Interoperable**   | Yes — same storage layout                        | Yes — same storage layout                         |
