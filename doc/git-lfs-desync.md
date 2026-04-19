@@ -47,7 +47,8 @@ SSH stores (`ssh://`) are read-only in desync and cannot be used with this agent
 | `--config`                          | `$HOME/.config/desync/config.json`          | desync config file for S3 credentials and store options. Mutually exclusive with `--config-from-git`.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `--config-from-git`                 | —                                           | Read the desync config from a git object. `%(remote)` and `%(operation)` are replaced with values from the LFS init message (e.g. `%(remote)/_desync:config.json`). `%(remote)` defaults to `origin` when the remote is not available (e.g. smudge filter during `git clone`). Mutually exclusive with `--config`.                                                                                                                                                                                                                                       |
 | `--digest`                          | config default, then `sha512-256`           | Hash algorithm used to identify chunks: `sha512-256` (default) or `sha256`. Must match the algorithm used when the store was originally written. May be set via the `defaults.digest` config key.                                                                                                                                                                                                                                                                                                                                                        |
-| `--indexes`                         | `false`                                     | Translate LFS OIDs to desync index names and write to stdout (one per line). Reads OIDs from positional args, or from the first whitespace-delimited token of each stdin line when no args are given (blank lines are skipped). When set, no store configuration is needed and the agent exits immediately without starting the LFS transfer protocol. See [Index and Chunk Pruning](#index-and-chunk-pruning).                                                                                                                                          |
+| `--indexes`                         | `false`                                     | Translate LFS OIDs to desync index names and write to stdout (one per line). Reads OIDs from positional args, or from the first whitespace-delimited token of each stdin line when no args are given (blank lines are skipped). When set, no store configuration is needed and the agent exits immediately without starting the LFS transfer protocol. See [Index and Chunk Pruning](#index-and-chunk-pruning). Mutually exclusive with `--import`.                                                                                                       |
+| `--import`                          | _(empty)_                                   | Bulk-import LFS objects from a local directory instead of running as a transfer agent. Walks the given directory recursively, verifies each file's SHA-256 against its filename (the LFS OID), and uploads missing objects to the chunk and index stores. Already-present objects are skipped (idempotent). See [Bulk Import](#bulk-import). Mutually exclusive with `--indexes`.                                                                                                                                                                           |
 | `--max-in-flight`                   | `2147483648` (2 GB)                         | Maximum total bytes allowed in-flight across all concurrent agent processes. Limits memory usage when git-lfs spawns multiple agents (`concurrent = true`). Set to `0` to disable. Also settable via `defaults.max-in-flight` in the config or `DESYNC_MAX_INFLIGHT` env var. |
 | `--max-storage-ops`                 | `0` (disabled)                              | Maximum concurrent storage operations (GetChunk, StoreChunk, GetIndex, StoreIndex) across all concurrent agent processes. Limits S3/network backend load. Set to `0` to disable. Also settable via `defaults.max-storage-ops` in the config or `DESYNC_MAX_STORAGE_OPS` env var. |
 | `--cache-max-size`                  | `""` (unlimited)                            | Maximum cache size (e.g. `10G`, `500M`). When exceeded, the oldest chunks are automatically evicted. Also settable via `defaults.cache-max-size` in the config or `DESYNC_CACHE_MAX_SIZE` env var. See [doc/cache-size-limit.md](cache-size-limit.md). |
@@ -494,6 +495,52 @@ git-lfs-desync --indexes \
 
 - `--indexes` mode does not read any store configuration. `--store`, `--config`, and all other store-related flags are ignored.
 - The index name format is `<oid[0:2]>/<oid[2:4]>/<oid[4:]>.caibx`, matching how `git-lfs-desync` stores indexes during upload and Forgejo's `Pointer.RelativePath()` convention.
+
+---
+
+## Bulk Import
+
+`git-lfs-desync --import <dir>` ingests all LFS objects from a local directory into the chunk and index stores without going through the git-lfs transfer protocol. It is useful for:
+
+- **Migrating** an existing LFS-backed repository to a desync backend: point `--import` at the source `.git/lfs/objects/` directory and all objects are chunked, deduplicated, and uploaded to the desync stores.
+- **Disaster recovery**: re-seed a store from a local backup of LFS objects.
+- **Priming a new store**: warm a fresh chunk store with objects from a known-good source before switching traffic to it.
+
+The command walks the given directory recursively. For each regular file whose basename is a valid 64-character lowercase hex SHA-256 (the shape of an LFS OID), it:
+
+1. Checks the index store; if an index for the OID already exists, the file is **skipped** (idempotent — re-running on the same directory is cheap).
+2. Verifies the file's content SHA-256 matches its filename. A mismatch is reported as **invalid** and the object is not uploaded.
+3. Chunks the file and stores chunks + index using the same pipeline as a normal LFS upload.
+
+Files whose basename is not a valid OID (e.g. `README`, LFS tmp files) are silently ignored.
+
+### Usage
+
+Store configuration is supplied via the same flags as agent mode — `--store`, `--index-store`, `--config`, `--config-from-git`, etc. The `--config-from-git` template substitutes `origin` for `%(remote)` and `upload` for `%(operation)`.
+
+```sh
+git-lfs-desync \
+    --store s3+https://s3.amazonaws.com/my-bucket/lfs/chunks/ \
+    --import /path/to/repo/.git/lfs/objects
+```
+
+Output on stderr shows a live-updating progress line:
+
+```
+discovered=4312 skipped=1200 uploaded=3110 invalid=2
+```
+
+Invalid-file error messages are printed above the progress line as they occur. The exit code is non-zero if `invalid > 0`.
+
+### Concurrency
+
+Uploads run in parallel up to the value of `--max-concurrent-uploads` (default 8). The same cross-process gates as agent mode apply (`--max-in-flight`, `--max-storage-ops`).
+
+### Notes
+
+- `--import` is mutually exclusive with `--indexes`.
+- SHA-256 verification reads the file once before chunking reads it again. On large imports where the input directory is hot in the page cache, this overhead is effectively free; for cold-cache imports from slow storage, expect the import to be I/O-bound.
+- If an OID is already in the index store but its chunks are actually missing (e.g. a partial prune), `--import` still treats it as already present and does not re-upload. Run `desync verify-index` separately to detect that case.
 
 ---
 
