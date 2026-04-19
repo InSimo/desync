@@ -159,6 +159,30 @@ func TestParseByteSize(t *testing.T) {
 	}
 }
 
+func TestResolveMaxInFlight(t *testing.T) {
+	cfg := Config{Defaults: Defaults{MaxInFlight: "5G"}}
+
+	// CLI value wins.
+	if got := cfg.ResolveMaxInFlight("10G"); got != "10G" {
+		t.Fatalf("expected 10G, got %s", got)
+	}
+	// Empty CLI falls back to config default.
+	if got := cfg.ResolveMaxInFlight(""); got != "5G" {
+		t.Fatalf("expected 5G, got %s", got)
+	}
+	// Env var fallback when CLI and config are empty.
+	t.Setenv("DESYNC_MAX_INFLIGHT", "3G")
+	empty := Config{}
+	if got := empty.ResolveMaxInFlight(""); got != "3G" {
+		t.Fatalf("expected 3G from env, got %s", got)
+	}
+	// All empty → empty string (caller applies its own default).
+	t.Setenv("DESYNC_MAX_INFLIGHT", "")
+	if got := empty.ResolveMaxInFlight(""); got != "" {
+		t.Fatalf("expected empty, got %s", got)
+	}
+}
+
 func TestResolveCacheMaxSize(t *testing.T) {
 	cfg := Config{Defaults: Defaults{CacheMaxSize: "5G"}}
 

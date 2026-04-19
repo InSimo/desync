@@ -155,7 +155,14 @@ func run() error {
 	defer indexStore.Close()
 
 	// Open the cross-process gate for in-flight bytes and/or storage ops.
-	maxInFlight := cfg.ResolveMaxInFlight(0)
+	maxInFlightStr := cfg.ResolveMaxInFlight("")
+	var maxInFlight int64
+	if maxInFlightStr != "" {
+		maxInFlight, err = cmdshared.ParseByteSize(maxInFlightStr)
+		if err != nil {
+			return fmt.Errorf("invalid max-in-flight %q: %w", maxInFlightStr, err)
+		}
+	}
 	maxOps := cfg.ResolveMaxStorageOps(0)
 	var gate *desync.Gate
 	if maxInFlight > 0 || maxOps > 0 {

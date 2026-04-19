@@ -46,7 +46,7 @@ type Defaults struct {
 	CacheMaxFiles   int64    `json:"cache-max-files,omitempty"`  // max cached files; 0 = unlimited
 	CachePartitions int      `json:"cache-partitions,omitempty"` // power of 2, default 256
 	Concurrency     int      `json:"concurrency,omitempty"`
-	MaxInFlight     int64    `json:"max-in-flight,omitempty"`
+	MaxInFlight     string   `json:"max-in-flight,omitempty"`   // e.g. "2G", "500M", or raw bytes
 	MaxStorageOps   int32    `json:"max-storage-ops,omitempty"`
 	ConnPoolSize    int      `json:"conn-pool-size,omitempty"`
 }
@@ -178,22 +178,21 @@ func (c Config) ResolveChunkSize(cli string) string {
 	return DefaultChunkSize
 }
 
-// ResolveMaxInFlight returns cli if non-zero, otherwise c.Defaults.MaxInFlight,
-// otherwise the DESYNC_MAX_INFLIGHT environment variable (parsed as bytes),
-// otherwise 0 (disabled).
-func (c Config) ResolveMaxInFlight(cli int64) int64 {
-	if cli != 0 {
+// ResolveMaxInFlight returns cli if non-empty, otherwise c.Defaults.MaxInFlight,
+// otherwise the DESYNC_MAX_INFLIGHT environment variable, otherwise "" (caller
+// applies its own built-in default). The returned value is parsed with
+// ParseByteSize by the caller.
+func (c Config) ResolveMaxInFlight(cli string) string {
+	if cli != "" {
 		return cli
 	}
-	if c.Defaults.MaxInFlight != 0 {
+	if c.Defaults.MaxInFlight != "" {
 		return c.Defaults.MaxInFlight
 	}
 	if env := os.Getenv("DESYNC_MAX_INFLIGHT"); env != "" {
-		if v, err := strconv.ParseInt(env, 10, 64); err == nil {
-			return v
-		}
+		return env
 	}
-	return 0
+	return ""
 }
 
 // ResolveMaxStorageOps returns cli if non-zero, otherwise c.Defaults.MaxStorageOps,

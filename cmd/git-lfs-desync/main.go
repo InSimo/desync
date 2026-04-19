@@ -161,7 +161,7 @@ func main() {
 		chunkSize     string
 		indexes       bool
 		importDir     string
-		maxInFlight   int64
+		maxInFlight          string
 		maxStorageOps        int32
 		noPipelined          bool
 		maxConcurrentUploads int
@@ -205,8 +205,21 @@ Configure Git LFS to use this agent:
 				return runIndexes(args, os.Stdin, os.Stdout)
 			}
 
+			// Resolve the in-flight byte limit. max-in-flight is a local-only
+			// field (never merged from server config or --config-from-git), so
+			// we read the local config file directly here.
+			localCfg, _, _ := cmdshared.LoadConfig(cfgFile)
+			maxInFlightStr := localCfg.ResolveMaxInFlight(maxInFlight)
+			if maxInFlightStr == "" {
+				maxInFlightStr = "2G"
+			}
+			maxInFlightBytes, err := cmdshared.ParseByteSize(maxInFlightStr)
+			if err != nil {
+				return fmt.Errorf("invalid --max-in-flight %q: %w", maxInFlightStr, err)
+			}
+
 			// Open the cross-process gate for in-flight bytes and/or storage ops.
-			gate, err := desync.OpenGate(maxInFlight, maxStorageOps)
+			gate, err := desync.OpenGate(maxInFlightBytes, maxStorageOps)
 			if err != nil {
 				return fmt.Errorf("opening in-flight byte gate: %w", err)
 			}
@@ -278,10 +291,11 @@ Configure Git LFS to use this agent:
 			"with values from the LFS init message (e.g. %(remote)/_desync:config.json);\n"+
 			"%(remote) defaults to \"origin\" when the remote is not available (e.g. smudge filter during git clone)")
 	flags.StringVar(&digestAlgorithm, "digest", "", "digest algorithm, sha512-256 or sha256 (default sha512-256)")
-	flags.Int64Var(&maxInFlight, "max-in-flight", 2*1024*1024*1024,
+	flags.StringVar(&maxInFlight, "max-in-flight", "",
 		"maximum total bytes allowed in-flight across all concurrent agent processes;\n"+
+			"accepts human-readable suffixes (e.g. 2G, 500M, 1.5GB; binary units);\n"+
 			"limits memory usage when git-lfs spawns multiple agents (concurrent=true);\n"+
-			"set to 0 to disable the limit (default 2 GB)")
+			"set to 0 to disable the limit (default 2G)")
 	flags.Int32Var(&maxStorageOps, "max-storage-ops", 0,
 		"maximum concurrent storage operations (GetChunk/StoreChunk/GetIndex/StoreIndex)\n"+
 			"across all concurrent agent processes; limits S3/network backend load;\n"+
