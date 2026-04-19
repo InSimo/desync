@@ -425,8 +425,9 @@ func TestResolveConfigWalk(t *testing.T) {
 	}`
 	require.NoError(t, os.WriteFile(filepath.Join(root, configFileName), []byte(configContent), 0644))
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 
 	// Relative paths should be resolved against repoDir.
 	require.Equal(t, filepath.Join(repoDir, "desync-lfs", "chunks"), cfg.ResolveStore(""))
@@ -444,22 +445,22 @@ func TestResolveConfigPerRepo(t *testing.T) {
 	}`
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, configFileName), []byte(configContent), 0644))
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 
 	require.Equal(t, "/absolute/chunks", cfg.ResolveStore(""))
 	require.Equal(t, "/absolute/index", cfg.ResolveIndexStore(""))
 }
 
-func TestResolveConfigConventionFallback(t *testing.T) {
+func TestResolveConfigNotFound(t *testing.T) {
 	repoDir := t.TempDir()
-	// No config file anywhere — should fall back to convention.
+	// No config file anywhere — resolveConfig must signal "not found" so the
+	// caller can delegate or reject rather than auto-creating stores.
 
-	cfg, err := resolveConfig(repoDir)
+	_, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
-
-	require.Equal(t, filepath.Join(repoDir, "desync-lfs", "chunks"), cfg.ResolveStore(""))
-	require.Equal(t, filepath.Join(repoDir, "desync-lfs", "index"), cfg.ResolveIndexStore(""))
+	require.False(t, found)
 }
 
 func TestResolveConfigDeriveIndex(t *testing.T) {
@@ -468,8 +469,9 @@ func TestResolveConfigDeriveIndex(t *testing.T) {
 	configContent := `{"defaults": {"stores": ["desync-lfs/chunks"]}}`
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, configFileName), []byte(configContent), 0644))
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 
 	require.Equal(t, filepath.Join(repoDir, "desync-lfs", "chunks"), cfg.ResolveStore(""))
 	// Index derived from store.
@@ -487,8 +489,9 @@ func TestResolveConfigPathTemplate(t *testing.T) {
 	}`
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, configFileName), []byte(configContent), 0644))
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 
 	require.Equal(t, fmt.Sprintf("s3+https://bucket/%s/chunks/", repoDir), cfg.ResolveStore(""))
 	require.Equal(t, fmt.Sprintf("s3+https://bucket/%s/index/", repoDir), cfg.ResolveIndexStore(""))
@@ -523,8 +526,9 @@ func TestResolveConfigGitConfigPath_Relative(t *testing.T) {
 	configContent := `{"defaults": {"stores": ["/custom/chunks"], "index-store": "/custom/index"}}`
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "myconfig.json"), []byte(configContent), 0644))
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 	require.Equal(t, "/custom/chunks", cfg.ResolveStore(""))
 	require.Equal(t, "/custom/index", cfg.ResolveIndexStore(""))
 }
@@ -538,8 +542,9 @@ func TestResolveConfigGitConfigPath_Absolute(t *testing.T) {
 	require.NoError(t, os.WriteFile(cfgFile, []byte(configContent), 0644))
 	gitSetConfig(t, repoDir, "desync-lfs.config.path", cfgFile)
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 	require.Equal(t, "/abs/chunks", cfg.ResolveStore(""))
 	require.Equal(t, "/abs/index", cfg.ResolveIndexStore(""))
 }
@@ -555,8 +560,9 @@ func TestResolveConfigGitConfigPath_WalkUp(t *testing.T) {
 	configContent := `{"defaults": {"stores": ["/walked/chunks"], "index-store": "/walked/index"}}`
 	require.NoError(t, os.WriteFile(filepath.Join(root, "custom.json"), []byte(configContent), 0644))
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 	require.Equal(t, "/walked/chunks", cfg.ResolveStore(""))
 }
 
@@ -572,8 +578,9 @@ func TestResolveConfigGitConfigObject_Found(t *testing.T) {
 
 	gitSetConfig(t, repoDir, "desync-lfs.config.object", "HEAD:desync-lfs.json")
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 	require.Equal(t, "/git/obj/chunks", cfg.ResolveStore(""))
 	require.Equal(t, "/git/obj/index", cfg.ResolveIndexStore(""))
 }
@@ -588,8 +595,9 @@ func TestResolveConfigGitConfigObject_NotFound_FallsBackToPath(t *testing.T) {
 	configContent := `{"defaults": {"stores": ["/fallback/chunks"], "index-store": "/fallback/index"}}`
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, configFileName), []byte(configContent), 0644))
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 	require.Equal(t, "/fallback/chunks", cfg.ResolveStore(""))
 }
 
@@ -610,8 +618,9 @@ func TestResolveConfigGitConfigObject_TakesPrecedenceOverPath(t *testing.T) {
 	gitSetConfig(t, repoDir, "desync-lfs.config.object", "HEAD:desync-lfs.json")
 	gitSetConfig(t, repoDir, "desync-lfs.config.path", "other.json")
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 	// Object must win.
 	require.Equal(t, "/from/object/chunks", cfg.ResolveStore(""))
 }
@@ -622,8 +631,9 @@ func TestResolveConfigNoGitRepo(t *testing.T) {
 	configContent := `{"defaults": {"stores": ["/plain/chunks"], "index-store": "/plain/index"}}`
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, configFileName), []byte(configContent), 0644))
 
-	cfg, err := resolveConfig(repoDir)
+	cfg, found, err := resolveConfig(repoDir)
 	require.NoError(t, err)
+	require.True(t, found)
 	require.Equal(t, "/plain/chunks", cfg.ResolveStore(""))
 }
 

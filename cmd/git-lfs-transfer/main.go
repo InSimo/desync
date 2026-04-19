@@ -64,7 +64,7 @@ func run() error {
 	// a per-repo opt-out works even when the config file is shared/global.
 	gitDisabled := gitConfigValue(absPath, "desync-lfs.transfer") == "false"
 
-	cfg, err := resolveConfig(absPath)
+	cfg, found, err := resolveConfig(absPath)
 	if err != nil {
 		if gitDisabled {
 			// Config load failed but the git config already opted out — try to
@@ -72,6 +72,12 @@ func run() error {
 			return tryDelegate(absPath)
 		}
 		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// No config file anywhere — desync LFS is not available for this repo.
+	// Behave as if "desync-lfs.transfer=false" was set: delegate or reject.
+	if !found {
+		return tryDelegate(absPath)
 	}
 
 	// JSON config trigger: "desync-lfs": false in desync-lfs.json.
@@ -248,19 +254,23 @@ func run() error {
 //     Default filename is "desync-lfs.json".
 //  3. Walk up from repoPath looking for the config filename.
 //  4. Global fallback: /etc/desync/<filename>.
-//  5. Convention-based: <repoPath>/desync-lfs/{chunks,index}.
 //
 // The config file uses the same format as the main desync config.json.
 // Relative store paths in the config are resolved against repoPath.
-func resolveConfig(repoPath string) (cmdshared.Config, error) {
+//
+// Returns (cfg, true, nil) when a config was located and loaded, (_, false, nil)
+// when no config file exists at any of the searched locations, and an error if
+// a located file failed to load.
+func resolveConfig(repoPath string) (cmdshared.Config, bool, error) {
 	// 1. desync-lfs.config.object — read config from a git object.
 	if objectRef := gitConfigValue(repoPath, "desync-lfs.config.object"); objectRef != "" {
 		cfg, found, err := cmdshared.LoadConfigFromGitObject(repoPath, objectRef)
 		if err != nil {
-			return cmdshared.Config{}, fmt.Errorf("git object config %q: %w", objectRef, err)
+			return cmdshared.Config{}, false, fmt.Errorf("git object config %q: %w", objectRef, err)
 		}
 		if found {
-			return applyConfigDefaults(cfg, repoPath, objectRef)
+			cfg, err = applyConfigDefaults(cfg, repoPath, objectRef)
+			return cfg, true, err
 		}
 		// Object absent in repo — fall through to path-based strategy.
 	}
@@ -274,9 +284,10 @@ func resolveConfig(repoPath string) (cmdshared.Config, error) {
 	// Absolute path: use directly.
 	if filepath.IsAbs(configName) {
 		if !fileExists(configName) {
-			return cmdshared.Config{}, fmt.Errorf("config file not found: %s", configName)
+			return cmdshared.Config{}, false, fmt.Errorf("config file not found: %s", configName)
 		}
-		return loadConfig(configName, repoPath)
+		cfg, err := loadConfig(configName, repoPath)
+		return cfg, true, err
 	}
 
 	// 3. Walk up from repoPath.
@@ -284,7 +295,8 @@ func resolveConfig(repoPath string) (cmdshared.Config, error) {
 	for {
 		candidate := filepath.Join(dir, configName)
 		if fileExists(candidate) {
-			return loadConfig(candidate, repoPath)
+			cfg, err := loadConfig(candidate, repoPath)
+			return cfg, true, err
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -295,14 +307,13 @@ func resolveConfig(repoPath string) (cmdshared.Config, error) {
 
 	// 4. Global fallback.
 	if globalConfig := filepath.Join("/etc", "desync", configName); fileExists(globalConfig) {
-		return loadConfig(globalConfig, repoPath)
+		cfg, err := loadConfig(globalConfig, repoPath)
+		return cfg, true, err
 	}
 
-	// 5. Convention-based: <repoPath>/desync-lfs/{chunks,index}.
-	var cfg cmdshared.Config
-	cfg.Defaults.Stores = []string{filepath.Join(repoPath, "desync-lfs", "chunks")}
-	cfg.Defaults.IndexStore = filepath.Join(repoPath, "desync-lfs", "index")
-	return cfg, nil
+	// No config file found — caller will treat this repository as if desync LFS
+	// is disabled and delegate or reject.
+	return cmdshared.Config{}, false, nil
 }
 
 // containsParentRef reports whether path contains a ".." component that would
