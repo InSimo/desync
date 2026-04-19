@@ -10,6 +10,7 @@ import (
 	"runtime/trace"
 	"strings"
 	"syscall"
+	"time"
 
 	desync "github.com/folbricht/desync"
 	"github.com/folbricht/desync/cmd/shared/cmdshared"
@@ -58,6 +59,90 @@ func initConfig(gitObjectName string) error {
 // deriveIndexURL is a package-local alias for cmdshared.DeriveIndexURL.
 var deriveIndexURL = cmdshared.DeriveIndexURL
 
+// buildClientParams groups the CLI flag values consumed by buildClient.
+type buildClientParams struct {
+	storeURL, indexURL, cache, chunkSize string
+	storeOpt                             cmdshared.CmdStoreOptions
+	maxStorageOps                        int32
+	gate                                 *desync.Gate
+}
+
+// buildClient resolves configuration, opens stores, and returns a ready
+// desync.Client. remote/operation/serverConfig come from the LFS init
+// message in agent mode, or are supplied with defaults in import mode.
+func buildClient(p buildClientParams, remote, operation string, serverConfig *cmdshared.Config) (*desync.Client, bool, time.Duration, error) {
+	gitObjectName := expandGitObjectName(cfgFromGit, remote, operation)
+	if err := initConfig(gitObjectName); err != nil {
+		if serverConfig != nil {
+			cfg = *serverConfig
+		} else {
+			return nil, false, 0, err
+		}
+	}
+
+	// Merge server config into local config using the documented
+	// field classification (server-mergeable vs local-only).
+	cmdshared.MergeServerConfig(&cfg, serverConfig)
+
+	if err := cmdshared.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
+		return nil, false, 0, err
+	}
+
+	resolvedStore := cfg.ResolveStore(p.storeURL)
+	resolvedIndex := cfg.ResolveIndexStore(p.indexURL)
+	resolvedChunkSize := cfg.ResolveChunkSize(p.chunkSize)
+
+	if resolvedStore == "" {
+		return nil, false, 0, fmt.Errorf("--store is required")
+	}
+
+	if resolvedIndex == "" {
+		var err error
+		resolvedIndex, err = deriveIndexURL(resolvedStore)
+		if err != nil {
+			return nil, false, 0, err
+		}
+	}
+
+	// Resolve cache directory (DESYNC_CACHE_DIR env var as fallback).
+	resolvedCache := cfg.ResolveCache(p.cache)
+	if resolvedCache == "" {
+		resolvedCache = os.Getenv("DESYNC_CACHE_DIR")
+	}
+	if resolvedCache != "" {
+		os.MkdirAll(resolvedCache, 0o755)
+	}
+
+	client, err := cmdshared.NewClientFromConfig(
+		cfg, p.storeOpt, resolvedStore, resolvedIndex,
+		resolvedCache, resolvedChunkSize, p.gate)
+	if err != nil {
+		return nil, false, 0, err
+	}
+
+	storageOps := int(p.maxStorageOps)
+	if storageOps <= 0 {
+		storageOps = 20
+	}
+	desync.InitWorkerPool(p.storeOpt.N, storageOps)
+
+	safePruning := p.storeOpt.SafePruning
+	safePropTime := p.storeOpt.SafePropagationTime
+
+	// If the server enables safe-pruning, the client must
+	// also use it to avoid corrupting the pruning protocol.
+	if serverConfig != nil {
+		if opts, err := serverConfig.GetStoreOptionsFor(resolvedStore); err == nil && opts.SafePruning {
+			safePruning = true
+			if opts.SafePropagationTime > safePropTime {
+				safePropTime = opts.SafePropagationTime
+			}
+		}
+	}
+
+	return client, safePruning, safePropTime, nil
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -75,6 +160,7 @@ func main() {
 		cache         string
 		chunkSize     string
 		indexes       bool
+		importDir     string
 		maxInFlight   int64
 		maxStorageOps        int32
 		noPipelined          bool
@@ -103,6 +189,9 @@ Configure Git LFS to use this agent:
     standalonetransferagent = desync`,
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if indexes && importDir != "" {
+				return fmt.Errorf("--indexes and --import are mutually exclusive")
+			}
 			if indexes {
 				return nil
 			}
@@ -139,80 +228,36 @@ Configure Git LFS to use this agent:
 				}
 			}
 
+			p := buildClientParams{
+				storeURL:      storeURL,
+				indexURL:      indexURL,
+				cache:         cache,
+				chunkSize:     chunkSize,
+				storeOpt:      storeOpt,
+				maxStorageOps: maxStorageOps,
+				gate:          gate,
+			}
+
+			if importDir != "" {
+				client, _, _, err := buildClient(p, "", "upload", nil)
+				if err != nil {
+					return err
+				}
+				defer client.Close()
+				return runImport(ctx, importDir, client, maxConcurrentUploads)
+			}
+
 			agent := &Agent{tmpDir: os.TempDir(), pipelinedEnabled: !noPipelined, maxConcurrentUploads: maxConcurrentUploads}
 			defer agent.Close()
 
 			agent.setup = func(remote, operation string, serverConfig *cmdshared.Config) error {
-				gitObjectName := expandGitObjectName(cfgFromGit, remote, operation)
-				if err := initConfig(gitObjectName); err != nil {
-					if serverConfig != nil {
-						cfg = *serverConfig
-					} else {
-						return err
-					}
-				}
-
-				// Merge server config into local config using the documented
-				// field classification (server-mergeable vs local-only).
-				cmdshared.MergeServerConfig(&cfg, serverConfig)
-
-				if err := cmdshared.SetDigestAlgorithm(cfg.ResolveDigest(digestAlgorithm)); err != nil {
-					return err
-				}
-
-				resolvedStore := cfg.ResolveStore(storeURL)
-				resolvedIndex := cfg.ResolveIndexStore(indexURL)
-				resolvedChunkSize := cfg.ResolveChunkSize(chunkSize)
-
-				if resolvedStore == "" {
-					return fmt.Errorf("--store is required")
-				}
-
-				if resolvedIndex == "" {
-					var err error
-					resolvedIndex, err = deriveIndexURL(resolvedStore)
-					if err != nil {
-						return err
-					}
-				}
-
-				// Resolve cache directory (DESYNC_CACHE_DIR env var as fallback).
-				resolvedCache := cfg.ResolveCache(cache)
-				if resolvedCache == "" {
-					resolvedCache = os.Getenv("DESYNC_CACHE_DIR")
-				}
-				if resolvedCache != "" {
-					os.MkdirAll(resolvedCache, 0o755)
-				}
-
-				client, err := cmdshared.NewClientFromConfig(
-					cfg, storeOpt, resolvedStore, resolvedIndex,
-					resolvedCache, resolvedChunkSize, gate)
+				client, safePruning, safePropTime, err := buildClient(p, remote, operation, serverConfig)
 				if err != nil {
 					return err
 				}
-
-				storageOps := int(maxStorageOps)
-				if storageOps <= 0 {
-					storageOps = 20
-				}
-				desync.InitWorkerPool(storeOpt.N, storageOps)
-
 				agent.client = client
-				agent.safePruning = storeOpt.SafePruning
-				agent.safePropagationTime = storeOpt.SafePropagationTime
-
-				// If the server enables safe-pruning, the client must
-				// also use it to avoid corrupting the pruning protocol.
-				if serverConfig != nil {
-					if opts, err := serverConfig.GetStoreOptionsFor(resolvedStore); err == nil && opts.SafePruning {
-						agent.safePruning = true
-						if opts.SafePropagationTime > agent.safePropagationTime {
-							agent.safePropagationTime = opts.SafePropagationTime
-						}
-					}
-				}
-
+				agent.safePruning = safePruning
+				agent.safePropagationTime = safePropTime
 				return nil
 			}
 			return agent.Run(ctx)
@@ -244,6 +289,10 @@ Configure Git LFS to use this agent:
 	flags.BoolVar(&indexes, "indexes", false,
 		"translate LFS OIDs to desync index names and write to stdout (one per line);\n"+
 			"reads OIDs from positional args, or from the first token of each stdin line when no args are given")
+	flags.StringVar(&importDir, "import", "",
+		"bulk-import LFS objects from a local directory; walks the directory\n"+
+			"recursively, verifies SHA-256 of each file against its filename,\n"+
+			"and uploads missing objects to the chunk and index stores")
 	flags.BoolVar(&noPipelined, "no-pipelined", false,
 		"disable pipelined mode (spawn one process per concurrent transfer instead of handling all in one)")
 	flags.IntVar(&maxConcurrentUploads, "max-concurrent-uploads", 8,
