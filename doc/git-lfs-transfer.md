@@ -68,7 +68,7 @@ The config file uses the same JSON format as the main desync `config.json` (see 
 - **`defaults.chunk-size`** — min:avg:max chunk size in KB (default `16:64:256`).
 - **`defaults.digest`** — hash algorithm: `sha512-256` (default) or `sha256`.
 - **`defaults.concurrency`** — number of concurrent goroutines for chunk I/O (default `10`).
-- **`defaults.max-in-flight`** — maximum total in-flight bytes across all concurrent `git-lfs-transfer` processes. `0` to disable. Overridable via `DESYNC_MAX_INFLIGHT` env var. When multiple SSH connections are open (`lfs.concurrenttransfers > 1`), each connection spawns a separate process; this limit coordinates them via shared memory.
+- **`defaults.max-in-flight`** — maximum total in-flight bytes across all concurrent `git-lfs-transfer` processes, e.g. `"2G"`, `"500M"`, or raw bytes as a string. `0` to disable (default). Overridable via `DESYNC_MAX_INFLIGHT` env var. When multiple SSH connections are open (`lfs.concurrenttransfers > 1`), each connection spawns a separate process; this limit coordinates them via shared memory.
 - **`defaults.max-storage-ops`** — maximum concurrent storage operations (GetChunk, StoreChunk, GetIndex, StoreIndex) across all processes. `0` to disable. Overridable via `DESYNC_MAX_STORAGE_OPS` env var. Limits S3/network backend load.
 - **`store-options.<url>.safe-pruning`** — enable the safe concurrent pruning protocol on uploads. See [Safe Pruning](#safe-pruning).
 - **`store-options.<url>.safe-propagation-time`** — max store write propagation delay for safe pruning. Go duration format, default `1s`.
