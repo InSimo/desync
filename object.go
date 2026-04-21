@@ -9,8 +9,16 @@ import (
 // file, reassembling it from chunks on the fly. It uses a sliding-window
 // prefetch: at most N chunks are in-flight at any time. Results arrive on
 // a single channel and are parked in a pre-allocated array indexed by
-// absolute chunk position. New requests are submitted as results arrive,
-// so the window slides forward without deadlocking the shared pool.
+// absolute chunk position.
+//
+// Position invariant (single source of truth):
+//
+//	The next byte to serve is idx.Chunks[chunkIdx].Start + chunkOffset.
+//	For 0 <= i < chunkIdx, chunks[i] is released (zero slot).
+//	If chunkIdx <  len(idx.Chunks): 0 <= chunkOffset < Chunks[chunkIdx].Size.
+//	If chunkIdx == len(idx.Chunks): we are at EOF and chunkOffset == 0.
+//
+// Every state-mutating method must preserve this invariant.
 //
 // Object implements io.Reader, io.Seeker, and io.Closer.
 type Object struct {
@@ -18,21 +26,23 @@ type Object struct {
 	store    Store
 	n        int // max in-flight chunks
 	size     int64
-	Progress ProgressFunc // optional, called after each chunk is consumed
+	Progress ProgressFunc // optional, called when a chunk is released
 
-	// Per-chunk state — allocated once on first Read, indexed by absolute chunk position.
+	// Prefetch pipeline. chunks[i] holds the state for chunk i of the index.
 	chunks []objectChunkSlot
 
-	// Flow control
-	chunkIdx       int // current chunk being read (absolute index)
+	// Scheduling
 	nextRequestIdx int // next chunk to submit to workers
 	inFlight       int // chunks requested but not yet arrived
 
 	// I/O
 	resultCh chan FetchResult // single channel for all results
-	buf      []byte           // unconsumed bytes from chunks[chunkIdx]
-	offset   int64
-	closed   bool
+
+	// Position (see invariant above).
+	chunkIdx    int
+	chunkOffset int64
+
+	closed bool
 }
 
 type objectChunkSlot struct {
@@ -48,96 +58,98 @@ func (o *Object) Stat() (ObjectInfo, error) {
 	return ObjectInfo{Size: o.size}, nil
 }
 
+// currentOffset returns the global byte position in [0, size].
+func (o *Object) currentOffset() int64 {
+	if o.chunkIdx >= len(o.idx.Chunks) {
+		return o.size
+	}
+	return int64(o.idx.Chunks[o.chunkIdx].Start) + o.chunkOffset
+}
+
+// splitOffset converts a global byte offset to (chunkIdx, chunkOffset)
+// preserving the position invariant. Called only from Seek.
+func (o *Object) splitOffset(global int64) (int, int64) {
+	if global >= o.size {
+		return len(o.idx.Chunks), 0
+	}
+	// Linear scan — runs once per Seek, not once per Read.
+	for i, c := range o.idx.Chunks {
+		if int64(c.Start+c.Size) > global {
+			return i, global - int64(c.Start)
+		}
+	}
+	return len(o.idx.Chunks), 0
+}
+
 // Read reads up to len(p) bytes from the object, automatically fetching
-// and buffering chunks as needed. Supports the read-seek-read pattern used
-// by http.ServeContent: after a Seek, o.buf is cleared even though the
-// current chunk may still be valid in the slot — Read re-populates buf
-// from the current chunk rather than treating buf-empty as "advance".
+// and buffering chunks as needed.
 func (o *Object) Read(p []byte) (int, error) {
 	if o.closed {
 		return 0, io.ErrClosedPipe
 	}
 	if o.chunks == nil {
-		startChunk := o.chunkForOffset(o.offset)
-		if startChunk >= len(o.idx.Chunks) {
-			return 0, io.EOF
-		}
-		o.startPrefetch(startChunk)
+		o.startPrefetch()
 	}
 
 	total := 0
-	for len(p) > 0 {
-		if len(o.buf) == 0 {
-			if o.chunkIdx >= len(o.idx.Chunks) {
-				if total > 0 {
-					return total, nil
-				}
-				return 0, io.EOF
-			}
-			// Wait for the current chunk to arrive (no-op if already valid
-			// from a prior Read or a Seek within the prefetch window).
-			pool := GetWorkerPool()
-			for !o.chunks[o.chunkIdx].valid {
-				o.receiveOne(pool)
-			}
-			if o.chunks[o.chunkIdx].err != nil {
-				if total > 0 {
-					return total, nil
-				}
-				return 0, fmt.Errorf("desync: chunk fetch error: %w", o.chunks[o.chunkIdx].err)
-			}
-			chunkStart := int64(o.idx.Chunks[o.chunkIdx].Start)
-			chunkEnd := chunkStart + int64(len(o.chunks[o.chunkIdx].data))
-			if o.offset >= chunkEnd {
-				// Offset landed at or past the end of this chunk (sequential
-				// read exhausted it, or a Seek arrived right at the boundary).
-				if err := o.advanceToNextChunk(); err != nil {
-					if total > 0 {
-						return total, nil
-					}
-					return 0, err
-				}
-				continue
-			}
-			o.buf = o.chunks[o.chunkIdx].data
-			if skip := int(o.offset - chunkStart); skip > 0 {
-				o.buf = o.buf[skip:]
-			}
+	pool := GetWorkerPool()
+	for len(p) > 0 && o.chunkIdx < len(o.idx.Chunks) {
+		slot := &o.chunks[o.chunkIdx]
+		for !slot.valid {
+			o.receiveOne(pool)
 		}
-		n := copy(p, o.buf)
-		o.buf = o.buf[n:]
+		if slot.err != nil {
+			if total > 0 {
+				return total, nil
+			}
+			return 0, fmt.Errorf("desync: chunk fetch error: %w", slot.err)
+		}
+		n := copy(p, slot.data[o.chunkOffset:])
 		p = p[n:]
 		total += n
-		o.offset += int64(n)
+		o.chunkOffset += int64(n)
+		if int(o.chunkOffset) == len(slot.data) {
+			o.releaseSlot(o.chunkIdx)
+			o.chunkIdx++
+			o.chunkOffset = 0
+			o.submitMore(pool)
+		}
+	}
+	if total == 0 {
+		return 0, io.EOF
 	}
 	return total, nil
 }
 
-// Seek sets the read position. It preserves in-flight prefetch work
-// when possible (short seeks forward reuse already-requested chunks).
+// Seek sets the read position. Chunks already in the prefetch window are
+// reused; released chunks will be re-requested on demand.
 func (o *Object) Seek(offset int64, whence int) (int64, error) {
-	var newOffset int64
+	var newGlobal int64
 	switch whence {
 	case io.SeekStart:
-		newOffset = offset
+		newGlobal = offset
 	case io.SeekCurrent:
-		newOffset = o.offset + offset
+		newGlobal = o.currentOffset() + offset
 	case io.SeekEnd:
-		newOffset = o.size + offset
+		newGlobal = o.size + offset
 	default:
 		return 0, fmt.Errorf("desync: invalid seek whence %d", whence)
 	}
-	if newOffset < 0 {
+	if newGlobal < 0 {
 		return 0, fmt.Errorf("desync: negative seek position")
 	}
-	o.offset = newOffset
-	o.buf = nil
-	// Don't drain — prior work may still be useful after a short seek.
-	// startPrefetch will skip already-requested/valid chunks.
+	o.chunkIdx, o.chunkOffset = o.splitOffset(newGlobal)
+
 	if o.chunks != nil {
-		o.startPrefetch(o.chunkForOffset(newOffset))
+		// Pull the request pointer back if the new position is behind
+		// already-issued requests. submitMore skips slots still valid or
+		// in flight, so this is cheap.
+		if o.chunkIdx < o.nextRequestIdx {
+			o.nextRequestIdx = o.chunkIdx
+		}
+		o.submitMore(GetWorkerPool())
 	}
-	return o.offset, nil
+	return o.currentOffset(), nil
 }
 
 // Close releases all resources. Any in-flight chunk fetches are drained.
@@ -154,21 +166,13 @@ func (o *Object) Size() int64 {
 	return o.size
 }
 
-// startPrefetch sets the read position to fromChunk and fills the
-// prefetch window. Prior in-flight work is preserved.
-func (o *Object) startPrefetch(fromChunk int) {
-	pool := GetWorkerPool()
-
-	// Allocate state on first call.
-	if o.chunks == nil {
-		o.chunks = make([]objectChunkSlot, len(o.idx.Chunks))
-		o.resultCh = make(chan FetchResult, o.n)
-	}
-
-	o.chunkIdx = fromChunk
-	o.nextRequestIdx = fromChunk
-	o.buf = nil
-	o.submitMore(pool)
+// startPrefetch allocates the slot array and channel and kicks off the
+// first window of requests starting from the current chunkIdx.
+func (o *Object) startPrefetch() {
+	o.chunks = make([]objectChunkSlot, len(o.idx.Chunks))
+	o.resultCh = make(chan FetchResult, o.n)
+	o.nextRequestIdx = o.chunkIdx
+	o.submitMore(GetWorkerPool())
 }
 
 // submitMore fills the prefetch window up to o.n in-flight requests.
@@ -199,6 +203,18 @@ func (o *Object) receiveOne(pool *WorkerPool) {
 	o.submitMore(pool)
 }
 
+// releaseSlot releases any memory held by chunk i and zeroes the slot.
+// The caller is responsible for advancing past it.
+func (o *Object) releaseSlot(i int) {
+	if o.chunks[i].chunk != nil {
+		o.chunks[i].chunk.Release()
+	}
+	o.chunks[i] = objectChunkSlot{}
+	if o.Progress != nil {
+		o.Progress(o.currentOffset())
+	}
+}
+
 // drainPending consumes all in-flight results and releases all chunks.
 func (o *Object) drainPending() {
 	if o.resultCh == nil {
@@ -218,46 +234,4 @@ func (o *Object) drainPending() {
 		}
 		o.chunks[i] = objectChunkSlot{}
 	}
-}
-
-// advanceToNextChunk releases the current chunk, moves to the next,
-// and waits for it to arrive.
-func (o *Object) advanceToNextChunk() error {
-	pool := GetWorkerPool()
-
-	// Release and clear the current chunk slot before moving forward.
-	if o.chunks[o.chunkIdx].chunk != nil {
-		o.chunks[o.chunkIdx].chunk.Release()
-	}
-	o.chunks[o.chunkIdx] = objectChunkSlot{}
-	if o.Progress != nil {
-		o.Progress(o.offset)
-	}
-	o.chunkIdx++
-
-	if o.chunkIdx >= len(o.idx.Chunks) {
-		return io.EOF
-	}
-
-	// Wait until the new current chunk arrives — park out-of-order results.
-	for !o.chunks[o.chunkIdx].valid {
-		o.receiveOne(pool)
-	}
-
-	slot := &o.chunks[o.chunkIdx]
-	if slot.err != nil {
-		return fmt.Errorf("desync: chunk fetch error: %w", slot.err)
-	}
-	o.buf = slot.data
-	return nil
-}
-
-// chunkForOffset returns the index of the chunk containing the given byte offset.
-func (o *Object) chunkForOffset(offset int64) int {
-	for i, c := range o.idx.Chunks {
-		if int64(c.Start+c.Size) > offset {
-			return i
-		}
-	}
-	return len(o.idx.Chunks)
 }
