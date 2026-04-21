@@ -49,7 +49,10 @@ func (o *Object) Stat() (ObjectInfo, error) {
 }
 
 // Read reads up to len(p) bytes from the object, automatically fetching
-// and buffering chunks as needed.
+// and buffering chunks as needed. Supports the read-seek-read pattern used
+// by http.ServeContent: after a Seek, o.buf is cleared even though the
+// current chunk may still be valid in the slot — Read re-populates buf
+// from the current chunk rather than treating buf-empty as "advance".
 func (o *Object) Read(p []byte) (int, error) {
 	if o.closed {
 		return 0, io.ErrClosedPipe
@@ -60,45 +63,52 @@ func (o *Object) Read(p []byte) (int, error) {
 			return 0, io.EOF
 		}
 		o.startPrefetch(startChunk)
-		// Wait for the first chunk and set up buf.
-		pool := GetWorkerPool()
-		for !o.chunks[o.chunkIdx].valid {
-			o.receiveOne(pool)
-		}
-		if o.chunks[o.chunkIdx].err != nil {
-			return 0, fmt.Errorf("desync: chunk fetch error: %w", o.chunks[o.chunkIdx].err)
-		}
-		o.buf = o.chunks[o.chunkIdx].data
-		// If offset is mid-chunk, skip leading bytes.
-		chunkStart := int64(o.idx.Chunks[o.chunkIdx].Start)
-		if skip := int(o.offset - chunkStart); skip > 0 && skip < len(o.buf) {
-			o.buf = o.buf[skip:]
-		}
 	}
 
 	total := 0
 	for len(p) > 0 {
-		if len(o.buf) > 0 {
-			n := copy(p, o.buf)
-			o.buf = o.buf[n:]
-			p = p[n:]
-			total += n
-			o.offset += int64(n)
-			continue
-		}
-		// Current chunk exhausted — advance to next.
-		if o.chunkIdx+1 >= len(o.idx.Chunks) {
-			if total > 0 {
-				return total, nil
+		if len(o.buf) == 0 {
+			if o.chunkIdx >= len(o.idx.Chunks) {
+				if total > 0 {
+					return total, nil
+				}
+				return 0, io.EOF
 			}
-			return 0, io.EOF
-		}
-		if err := o.advanceToNextChunk(); err != nil {
-			if total > 0 {
-				return total, nil
+			// Wait for the current chunk to arrive (no-op if already valid
+			// from a prior Read or a Seek within the prefetch window).
+			pool := GetWorkerPool()
+			for !o.chunks[o.chunkIdx].valid {
+				o.receiveOne(pool)
 			}
-			return 0, err
+			if o.chunks[o.chunkIdx].err != nil {
+				if total > 0 {
+					return total, nil
+				}
+				return 0, fmt.Errorf("desync: chunk fetch error: %w", o.chunks[o.chunkIdx].err)
+			}
+			chunkStart := int64(o.idx.Chunks[o.chunkIdx].Start)
+			chunkEnd := chunkStart + int64(len(o.chunks[o.chunkIdx].data))
+			if o.offset >= chunkEnd {
+				// Offset landed at or past the end of this chunk (sequential
+				// read exhausted it, or a Seek arrived right at the boundary).
+				if err := o.advanceToNextChunk(); err != nil {
+					if total > 0 {
+						return total, nil
+					}
+					return 0, err
+				}
+				continue
+			}
+			o.buf = o.chunks[o.chunkIdx].data
+			if skip := int(o.offset - chunkStart); skip > 0 {
+				o.buf = o.buf[skip:]
+			}
 		}
+		n := copy(p, o.buf)
+		o.buf = o.buf[n:]
+		p = p[n:]
+		total += n
+		o.offset += int64(n)
 	}
 	return total, nil
 }
